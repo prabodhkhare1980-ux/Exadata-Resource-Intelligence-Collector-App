@@ -5,3 +5,8 @@ __pycache__/
 .ruff_cache/
 .venv/
 output/
+.venv/
+logs/*
+!logs/.gitkeep
+output/*
+!output/.gitkeep
