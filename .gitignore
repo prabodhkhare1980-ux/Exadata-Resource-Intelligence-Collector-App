@@ -4,9 +4,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
-output/
-.venv/
 logs/*
 !logs/.gitkeep
 output/*
 !output/.gitkeep
+.secrets/
+*.pem
+*_id_rsa
+*_id_ed25519
