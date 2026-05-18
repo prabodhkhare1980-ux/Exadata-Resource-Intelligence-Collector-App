@@ -85,7 +85,11 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
                 pass
 
     if completed.returncode != 0:
-        stderr = _redact(completed.stderr.strip())
+        stderr = _redact(
+            completed.stderr.strip(),
+            credentials.ssh_password,
+            credentials.sudo_password,
+        )
         raise RemoteExecutionError(f"ssh exited {completed.returncode}: {stderr}")
     return completed.stdout
 
@@ -127,7 +131,11 @@ def _prepare_askpass(password: str) -> tuple[Path, tuple[int, int]]:
     return askpass, (read_fd, write_fd)
 
 
-def _redact(text: str) -> str:
-    # Password values are never intentionally placed in stderr; keep a central
-    # hook so future auth mechanisms can redact known secret patterns here.
-    return text
+def _redact(text: str, *secrets: str | None) -> str:
+    """Remove runtime secrets from text before including it in exceptions."""
+
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted

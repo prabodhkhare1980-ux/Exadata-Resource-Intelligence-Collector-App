@@ -38,33 +38,3 @@ collection:
     port: 22
     timeout_seconds: 60
     strict_host_key_checking: accept-new
-# Sample Phase 1 inventory for Exadata Resource Intelligence Collector.
-# Update host names, addresses, user, and SSH options for your environment.
-
-defaults:
-  user: oracle
-  port: 22
-  sudo: true
-  timeout_seconds: 60
-  output_dir: output
-  logs_dir: logs
-  ssh_options:
-    - StrictHostKeyChecking=accept-new
-    - ServerAliveInterval=15
-    - ServerAliveCountMax=2
-
-clusters:
-  - name: exadata_cluster_01
-    hosts:
-      - name: dbnode01
-        address: dbnode01.example.com
-      - name: dbnode02
-        address: dbnode02.example.com
-        timeout_seconds: 90
-
-  - name: rac_cluster_01
-    hosts:
-      - name: racnode01
-        address: 192.0.2.10
-        user: opc
-        sudo: true
