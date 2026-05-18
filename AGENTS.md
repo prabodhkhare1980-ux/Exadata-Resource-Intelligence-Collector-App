@@ -77,4 +77,6 @@ Phase 1 only:
 - CSV output
 - JSON output
 
+Authentication rule:
+On-prem Exadata login may use plain enterprise ID such as al44002, not domain-prefixed us\al44002. OCI Exadata may use a different ID such as AN697937AD. The app must resolve ssh_user by host override, then cluster override, then environment default.
 No ASM/IORM/SQL yet.
