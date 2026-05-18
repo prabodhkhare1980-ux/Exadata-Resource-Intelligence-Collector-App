@@ -21,7 +21,7 @@ class RuntimeCredentials:
 
 @dataclass
 class CredentialProvider:
-    """Secure prompt-and-cache provider keyed by environment and user."""
+    """Secure prompt-and-cache provider keyed by ssh_user and environment."""
 
     _passwords: dict[tuple[str, str], str] = field(default_factory=dict)
 
@@ -31,10 +31,10 @@ class CredentialProvider:
         if host.auth.method == "key":
             return RuntimeCredentials()
 
-        cache_key = (host.environment, host.ssh_user)
+        cache_key = (host.ssh_user, host.environment)
         password = self._passwords.get(cache_key)
         if password is None:
-            prompt = f"SSH password for {host.ssh_user} ({host.environment}): "
+            prompt = f"SSH password for {host.ssh_user} (environment: {host.environment}): "
             password = getpass.getpass(prompt)
             self._passwords[cache_key] = password
 
