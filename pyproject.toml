@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exadata-resource-intelligence-collector"
+version = "0.1.0"
+description = "Phase 1 Exadata infrastructure intelligence and capacity collector"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6.0"]
+
+test = ["pytest>=8.0", "PyYAML>=6.0"]
+
+[project.scripts]
+exadata-ric = "exadata_ric.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
