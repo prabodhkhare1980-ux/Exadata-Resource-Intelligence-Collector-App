@@ -1,14 +1,14 @@
 environments:
   onprem:
     description: On-premises Exadata estate
-    ssh_user: your_onprem_personal_id
+    ssh_user: al44002
     auth:
       method: password
       sudo: true
       sudo_password: same_as_ssh
   oci:
     description: OCI Exadata estate
-    ssh_user: your_oci_personal_id
+    ssh_user: AN697937AD
     auth:
       method: password
       sudo: true
@@ -19,18 +19,20 @@ clusters:
     environment: onprem
     hosts:
       - name: onprem-rac01-db01
-        address: onprem-rac01-db01.example.com
+        address: dc04dx26db01.internal.das
       - name: onprem-rac01-db02
-        address: onprem-rac01-db02.example.com
+        address: dc04dx26db02.internal.das
   - name: oci-vmcluster01
     environment: oci
-    ssh_user: cluster_specific_oci_id
+    # Optional cluster-level override when needed
+    # ssh_user: SOME_CLUSTER_OVERRIDE
     hosts:
       - name: oci-vmcluster01-db01
         address: 10.0.0.11
       - name: oci-vmcluster01-db02
         address: 10.0.0.12
-        ssh_user: host_specific_override_id
+        # Optional host-level override when needed
+        # ssh_user: SOME_HOST_OVERRIDE
 
 collection:
   output_dir: output

@@ -66,24 +66,41 @@ def load_config(path: str | Path) -> CollectionConfig:
         if not isinstance(cluster, dict):
             raise ConfigError("each cluster must be a mapping")
         cluster_name = _required_str(cluster, "name", "cluster")
-        environment_name = _required_str(cluster, "environment", cluster_name)
-        environment = environments.get(environment_name, {})
+        environment_name = _first_str(cluster.get("environment"))
+        if not environment_name:
+            raise ConfigError(f"cluster '{cluster_name}' requires 'environment'")
+        if environment_name not in environments:
+            raise ConfigError(
+                f"cluster '{cluster_name}' references unknown environment '{environment_name}'"
+            )
+        environment = environments[environment_name]
         if not isinstance(environment, dict):
             raise ConfigError(f"environment '{environment_name}' must be a mapping")
 
         cluster_auth = _merge_auth(environment.get("auth"), cluster.get("auth"))
-        cluster_user = _first_str(cluster.get("ssh_user"), environment.get("ssh_user"))
-        if not cluster_user:
-            raise ConfigError(
-                f"cluster '{cluster_name}' must resolve an ssh_user from the cluster or environment"
-            )
+        cluster_user = _first_str(cluster.get("ssh_user"))
+        environment_user = _first_str(environment.get("ssh_user"))
 
+        cluster_addresses: set[str] = set()
         for host in cluster.get("hosts", []):
             if not isinstance(host, dict):
                 raise ConfigError(f"cluster '{cluster_name}' hosts must be mappings")
             host_name = _required_str(host, "name", f"cluster '{cluster_name}' host")
-            address = _first_str(host.get("address"), host.get("hostname"), host_name)
-            host_user = _first_str(host.get("ssh_user"), cluster_user)
+            address = _first_str(host.get("address"), host.get("hostname"))
+            if not address:
+                raise ConfigError(
+                    f"cluster '{cluster_name}' host '{host_name}' requires 'address'"
+                )
+            if address in cluster_addresses:
+                raise ConfigError(
+                    f"cluster '{cluster_name}' has duplicate host address '{address}'"
+                )
+            cluster_addresses.add(address)
+            host_user = _first_str(host.get("ssh_user"), cluster_user, environment_user)
+            if not host_user:
+                raise ConfigError(
+                    f"cluster '{cluster_name}' host '{host_name}' could not resolve ssh_user"
+                )
             host_auth = _merge_auth(cluster_auth.__dict__, host.get("auth"))
             hosts.append(
                 HostConfig(

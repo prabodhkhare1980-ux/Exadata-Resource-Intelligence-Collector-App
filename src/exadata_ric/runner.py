@@ -23,7 +23,7 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
     script = build_phase1_script(PHASE1_COLLECTORS)
 
     for host in config.hosts:
-        LOGGER.info("collecting host=%s cluster=%s environment=%s user=%s", host.name, host.cluster, host.environment, host.ssh_user)
+        LOGGER.info("collecting cluster=%s environment=%s host=%s address=%s ssh_user=%s", host.cluster, host.environment, host.name, host.address, host.ssh_user)
         try:
             runtime_credentials = credentials.for_host(host)
             output = run_remote_script(host, script, runtime_credentials)
