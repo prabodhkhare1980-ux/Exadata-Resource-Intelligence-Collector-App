@@ -9,7 +9,7 @@ environments:
       enabled: true
       method: sudo
       sudo_password: none
-      force_tty: false
+      force_tty: true
 
   oci:
     description: OCI Exadata estate
@@ -21,7 +21,7 @@ environments:
       enabled: true
       method: sudo
       sudo_password: none
-      force_tty: false
+      force_tty: true
 
 clusters:
   - name: onprem-rac01
