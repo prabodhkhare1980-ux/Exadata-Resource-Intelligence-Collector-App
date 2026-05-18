@@ -135,3 +135,49 @@ For each host, the collector:
 5. Writes CSV and JSON locally.
 
 The collector does not use SCP, does not create temporary scripts on target servers, and does not install packages on target servers.
+
+
+## SSH user resolution precedence
+
+The collector resolves `ssh_user` in this exact order:
+
+1. `clusters[].hosts[].ssh_user`
+2. `clusters[].ssh_user`
+3. `environments.<name>.ssh_user`
+
+If none resolve, startup fails with a clear configuration error.
+
+## Preflight mode
+
+Run preflight checks before full collection:
+
+```bash
+python main.py --preflight
+```
+
+Preflight tests per host:
+
+1. SSH login
+2. `hostname` command
+3. `sudo -n true`
+4. If `sudo -n true` fails, sudo with password (when configured)
+
+Outputs:
+
+- `output/preflight_report.csv`
+- `output/preflight_report.json`
+
+## Troubleshooting
+
+### Permission denied
+
+- Verify the resolved user and address manually:
+  - `ssh <resolved_ssh_user>@<address> hostname`
+- On-prem normally uses plain IDs (for example `al44002`), not domain-prefixed IDs like `us\al44002`.
+- OCI may use a different personal ID (for example `AN697937AD`).
+
+### Host key verification failed
+
+- Test manually:
+  - `ssh <resolved_ssh_user>@<address> hostname`
+- If prompted, type `yes` once to trust and add the remote host key to your local known_hosts file.

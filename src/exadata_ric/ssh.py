@@ -90,7 +90,18 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
             credentials.ssh_password,
             credentials.sudo_password,
         )
-        raise RemoteExecutionError(f"ssh exited {completed.returncode}: {stderr}")
+        message = f"ssh exited {completed.returncode}: {stderr}"
+        if "Permission denied" in stderr:
+            message += (
+                f". Authentication failed for {host.ssh_user}@{host.address}. "
+                f"Try manually: ssh {host.ssh_user}@{host.address} hostname"
+            )
+        if "Host key verification failed" in stderr:
+            message += (
+                f". Host key verification failed for {host.ssh_user}@{host.address}. "
+                f"Try manually: ssh {host.ssh_user}@{host.address} hostname and type yes once to trust the key"
+            )
+        raise RemoteExecutionError(message)
     return completed.stdout
 
 
