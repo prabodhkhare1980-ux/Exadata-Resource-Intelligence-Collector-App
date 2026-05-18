@@ -1,0 +1,40 @@
+environments:
+  onprem:
+    description: On-premises Exadata estate
+    ssh_user: your_onprem_personal_id
+    auth:
+      method: password
+      sudo: true
+      sudo_password: same_as_ssh
+  oci:
+    description: OCI Exadata estate
+    ssh_user: your_oci_personal_id
+    auth:
+      method: password
+      sudo: true
+      sudo_password: same_as_ssh
+
+clusters:
+  - name: onprem-rac01
+    environment: onprem
+    hosts:
+      - name: onprem-rac01-db01
+        address: onprem-rac01-db01.example.com
+      - name: onprem-rac01-db02
+        address: onprem-rac01-db02.example.com
+  - name: oci-vmcluster01
+    environment: oci
+    ssh_user: cluster_specific_oci_id
+    hosts:
+      - name: oci-vmcluster01-db01
+        address: 10.0.0.11
+      - name: oci-vmcluster01-db02
+        address: 10.0.0.12
+        ssh_user: host_specific_override_id
+
+collection:
+  output_dir: output
+  ssh:
+    port: 22
+    timeout_seconds: 60
+    strict_host_key_checking: accept-new
