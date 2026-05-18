@@ -46,6 +46,12 @@ class SSHRunner:
         remote_shell = "sudo -n bash -s" if host.sudo else "bash -s"
         command = [*ssh_command, remote_shell]
 
+        self.logger.info(
+            "SSH execution settings: ssh_user=%s, address=%s, strict_host_key_checking=%s",
+            host.user or "",
+            host.address,
+            host.strict_host_key_checking,
+        )
         self.logger.debug("Running remote stdin command on %s: %s", host.name, command)
         try:
             completed = subprocess.run(
@@ -97,9 +103,13 @@ class SSHRunner:
             "-p",
             str(host.port),
             "-o",
-            "BatchMode=yes",
+            "BatchMode=no",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            f"StrictHostKeyChecking={host.strict_host_key_checking}",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive,publickey",
         ]
         for option in host.ssh_options:
             command.extend(["-o", option])
