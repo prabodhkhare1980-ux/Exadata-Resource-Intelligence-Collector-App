@@ -161,11 +161,13 @@ def _merge_auth(base: Any, override: Any) -> AuthConfig:
         raise ConfigError("auth blocks must be mappings")
 
     method = str(merged.get("method", "password")).lower()
+    if method == "ssh_key":
+        method = "key"
     if method not in {"password", "key"}:
-        raise ConfigError("auth.method must be 'password' or 'key'")
+        raise ConfigError("auth.method must be 'password', 'key', or 'ssh_key'")
     return AuthConfig(
         method=method,
-        key_file=_first_str(merged.get("key_file")),
+        key_file=_first_str(merged.get("key_file"), merged.get("private_key")),
         sudo=bool(merged.get("sudo", True)),
         sudo_password=str(merged.get("sudo_password", "same_as_ssh")),
     )

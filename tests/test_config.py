@@ -9,10 +9,10 @@ def test_load_sample_config_resolves_users():
     config = load_config(Path("config/clusters.yaml"))
 
     by_name = {host.name: host for host in config.hosts}
-    assert by_name["dc04dx26db01"].ssh_user == "al44002"
-    assert by_name["iad3dx02v2-mqj101"].ssh_user == "AN697937AD"
-    assert by_name["iad3dx02v2-mqj102"].ssh_user == "AN697937AD"
-    assert by_name["dc04dx26db01"].auth.method == "password"
+    assert by_name["dc04dx26db01"].ssh_user == "srcordma"
+    assert by_name["dc04dx26db02"].ssh_user == "srcordma"
+    assert by_name["iad3dx02v1-6rdqa1"].ssh_user == "srcordma"
+    assert by_name["dc04dx26db01"].auth.method == "key"
 
 
 def test_duplicate_address_same_cluster_fails(tmp_path: Path):

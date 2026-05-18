@@ -78,7 +78,26 @@ def preflight(inventory: Inventory) -> int:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+    _print_preflight_report(rows, csv_path, json_path)
     return 2 if failures else 0
+
+
+def _print_preflight_report(rows: list[dict[str, str]], csv_path: Path, json_path: Path) -> None:
+    print("\nPreflight Report")
+    print("=" * 110)
+    print(f"{'Status':<8} {'Environment':<12} {'Cluster':<20} {'Host':<20} {'SSH':<6} {'sudo -n':<8} Error")
+    print("-" * 110)
+    for row in rows:
+        print(
+            f"{row['status']:<8} {row['environment']:<12} {row['cluster']:<20} {row['host']:<20} "
+            f"{row['ssh_login_works']:<6} {row['sudo_n_hostname']:<8} {row['error']}"
+        )
+    passed = sum(1 for row in rows if row["status"] == "PASS")
+    failed = len(rows) - passed
+    print("-" * 110)
+    print(f"Summary: PASS={passed} FAIL={failed} TOTAL={len(rows)}")
+    print(f"CSV: {csv_path}")
+    print(f"JSON: {json_path}\n")
 
 # run() and main unchanged-ish
 
