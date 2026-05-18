@@ -1,18 +1,27 @@
 environments:
   onprem:
     description: On-premises Exadata estate
-    ssh_user: al44002
+    ssh_user: srcordma
     auth:
-      method: password
-      sudo: true
-      sudo_password: same_as_ssh
+      method: ssh_key
+      private_key: .secrets/ssh/srcordma_id_rsa
+    privilege:
+      enabled: true
+      method: sudo
+      sudo_password: none
+      force_tty: false
+
   oci:
     description: OCI Exadata estate
-    ssh_user: AN697937AD
+    ssh_user: srcordma
     auth:
-      method: password
-      sudo: true
-      sudo_password: same_as_ssh
+      method: ssh_key
+      private_key: .secrets/ssh/srcordma_id_rsa
+    privilege:
+      enabled: true
+      method: sudo
+      sudo_password: none
+      force_tty: false
 
 clusters:
   - name: onprem-rac01
@@ -22,13 +31,12 @@ clusters:
         address: dc04dx26db01.internal.das
       - name: dc04dx26db02
         address: dc04dx26db02.internal.das
-  - name: iad3dx02v2-mqj1
+
+  - name: iad3dx02v1-6rdqa1
     environment: oci
     hosts:
-      - name: iad3dx02v2-mqj101
-        address: iad3dx02v2-mqj101.east.ockyn.internal.das
-      - name: iad3dx02v2-mqj102
-        address: iad3dx02v2-mqj102.east.ockyn.internal.das
+      - name: iad3dx02v1-6rdqa1
+        address: iad3dx02v1-6rdqa1.east.ockyn.internal.das
 
 collection:
   output_dir: output

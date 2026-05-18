@@ -107,11 +107,11 @@ class OSCollector:
             error_lower = error.lower()
             if "permission denied" in error_lower:
                 error = (
-                    f"{error}\nManual test:\nssh {host.user}@{host.address} hostname"
+                    f"{error}\nManual test:\nssh -i <private_key> {host.user}@{host.address} hostname"
                 )
             elif "host key verification failed" in error_lower:
                 error = (
-                    f"{error}\nManual test:\nssh {host.user}@{host.address} hostname\nThen type yes once."
+                    f"{error}\nManual test:\nssh -i <private_key> {host.user}@{host.address} hostname\nThen type yes once."
                 )
             logger.error("Collection failed for %s: %s", host.name, error)
             return OSCollectionRecord(
