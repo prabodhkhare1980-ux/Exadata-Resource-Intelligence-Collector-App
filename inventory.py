@@ -16,6 +16,9 @@ class HostConfig:
     name: str
     address: str
     user: str | None = None
+    environment: str = ""
+    auth_method: str = "password"
+    strict_host_key_checking: str = "accept-new"
     port: int = 22
     sudo: bool = True
     timeout_seconds: int = 60
@@ -27,6 +30,7 @@ class ClusterConfig:
     """A group of hosts that belong to one Exadata/RAC cluster."""
 
     name: str
+    environment: str
     hosts: list[HostConfig]
 
 
@@ -62,43 +66,82 @@ def load_inventory(path: str | Path) -> Inventory:
     defaults = data.get("defaults", {}) or {}
     if not isinstance(defaults, dict):
         raise ValueError("Inventory 'defaults' must be a mapping when provided.")
+    environments = data.get("environments", {}) or {}
+    if not isinstance(environments, dict):
+        raise ValueError("Inventory 'environments' must be a mapping when provided.")
+    collection = data.get("collection", {}) or {}
+    if not isinstance(collection, dict):
+        raise ValueError("Inventory 'collection' must be a mapping when provided.")
 
     clusters_data = data.get("clusters")
     if not isinstance(clusters_data, list) or not clusters_data:
         raise ValueError("Inventory must contain a non-empty 'clusters' list.")
 
-    clusters = [_parse_cluster(cluster_data, defaults) for cluster_data in clusters_data]
-    output_dir = Path(data.get("output_dir") or defaults.get("output_dir") or "output")
+    clusters = [
+        _parse_cluster(cluster_data, defaults, environments, collection)
+        for cluster_data in clusters_data
+    ]
+    output_dir = Path(
+        collection.get("output_dir") or data.get("output_dir") or defaults.get("output_dir") or "output"
+    )
     logs_dir = Path(data.get("logs_dir") or defaults.get("logs_dir") or "logs")
 
     return Inventory(clusters=clusters, output_dir=output_dir, logs_dir=logs_dir)
 
 
-def _parse_cluster(cluster_data: Any, defaults: dict[str, Any]) -> ClusterConfig:
+def _parse_cluster(
+    cluster_data: Any,
+    defaults: dict[str, Any],
+    environments: dict[str, Any],
+    collection: dict[str, Any],
+) -> ClusterConfig:
     if not isinstance(cluster_data, dict):
         raise ValueError("Each cluster entry must be a mapping.")
 
     cluster_name = _required_string(cluster_data, "name", "cluster")
+    environment = _required_string(cluster_data, "environment", f"cluster '{cluster_name}'")
+    environment_data = environments.get(environment) or {}
+    if not isinstance(environment_data, dict):
+        raise ValueError(f"Environment '{environment}' must be a mapping.")
     hosts_data = cluster_data.get("hosts")
     if not isinstance(hosts_data, list) or not hosts_data:
         raise ValueError(f"Cluster '{cluster_name}' must contain a non-empty hosts list.")
 
-    hosts = [_parse_host(host_data, defaults, cluster_name) for host_data in hosts_data]
-    return ClusterConfig(name=cluster_name, hosts=hosts)
+    hosts = [
+        _parse_host(host_data, defaults, cluster_data, environment, environment_data, collection, cluster_name)
+        for host_data in hosts_data
+    ]
+    return ClusterConfig(name=cluster_name, environment=environment, hosts=hosts)
 
 
-def _parse_host(host_data: Any, defaults: dict[str, Any], cluster_name: str) -> HostConfig:
+def _parse_host(
+    host_data: Any,
+    defaults: dict[str, Any],
+    cluster_data: dict[str, Any],
+    environment: str,
+    environment_data: dict[str, Any],
+    collection: dict[str, Any],
+    cluster_name: str,
+) -> HostConfig:
     if not isinstance(host_data, dict):
         raise ValueError(f"Each host in cluster '{cluster_name}' must be a mapping.")
 
     name = _required_string(host_data, "name", f"host in cluster '{cluster_name}'")
     address = str(host_data.get("address") or name)
-    user = host_data.get("user", defaults.get("user"))
-    port = int(host_data.get("port", defaults.get("port", 22)))
+    user = host_data.get("ssh_user")
+    if not user:
+        user = cluster_data.get("ssh_user")
+    if not user:
+        user = environment_data.get("ssh_user")
+    port = int(host_data.get("port", collection.get("ssh", {}).get("port", defaults.get("port", 22))))
     sudo = bool(host_data.get("sudo", defaults.get("sudo", True)))
     timeout_seconds = int(
         host_data.get("timeout_seconds", defaults.get("timeout_seconds", 60))
     )
+    strict_host_key_checking = str(
+        collection.get("ssh", {}).get("strict_host_key_checking", "accept-new")
+    )
+    auth_method = str((environment_data.get("auth") or {}).get("method", "password"))
     ssh_options = _merge_ssh_options(defaults.get("ssh_options"), host_data.get("ssh_options"))
 
     if timeout_seconds <= 0:
@@ -110,6 +153,9 @@ def _parse_host(host_data: Any, defaults: dict[str, Any], cluster_name: str) -> 
         name=name,
         address=address,
         user=str(user) if user else None,
+        environment=environment,
+        auth_method=auth_method,
+        strict_host_key_checking=strict_host_key_checking,
         port=port,
         sudo=sudo,
         timeout_seconds=timeout_seconds,

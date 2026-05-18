@@ -18,21 +18,17 @@ clusters:
   - name: onprem-rac01
     environment: onprem
     hosts:
-      - name: onprem-rac01-db01
+      - name: dc04dx26db01
         address: dc04dx26db01.internal.das
-      - name: onprem-rac01-db02
+      - name: dc04dx26db02
         address: dc04dx26db02.internal.das
-  - name: oci-vmcluster01
+  - name: iad3dx02v2-mqj1
     environment: oci
-    # Optional cluster-level override when needed
-    # ssh_user: SOME_CLUSTER_OVERRIDE
     hosts:
-      - name: oci-vmcluster01-db01
-        address: 10.0.0.11
-      - name: oci-vmcluster01-db02
-        address: 10.0.0.12
-        # Optional host-level override when needed
-        # ssh_user: SOME_HOST_OVERRIDE
+      - name: iad3dx02v2-mqj101
+        address: iad3dx02v2-mqj101.east.ockyn.internal.das
+      - name: iad3dx02v2-mqj102
+        address: iad3dx02v2-mqj102.east.ockyn.internal.das
 
 collection:
   output_dir: output

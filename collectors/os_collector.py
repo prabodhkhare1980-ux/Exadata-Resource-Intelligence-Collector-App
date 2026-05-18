@@ -104,6 +104,15 @@ class OSCollector:
 
         if not result.ok:
             error = result.error or result.stderr.strip() or f"SSH exited with {result.returncode}"
+            error_lower = error.lower()
+            if "permission denied" in error_lower:
+                error = (
+                    f"{error}\nManual test:\nssh {host.user}@{host.address} hostname"
+                )
+            elif "host key verification failed" in error_lower:
+                error = (
+                    f"{error}\nManual test:\nssh {host.user}@{host.address} hostname\nThen type yes once."
+                )
             logger.error("Collection failed for %s: %s", host.name, error)
             return OSCollectionRecord(
                 cluster=cluster_name,
