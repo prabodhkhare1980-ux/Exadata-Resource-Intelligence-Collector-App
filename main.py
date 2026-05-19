@@ -9,10 +9,11 @@ import logging
 import sys
 from pathlib import Path
 
+from collectors.db_inventory_collector import DBInventoryCollector
 from collectors.os_collector import OSCollector
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
-from reports.writers import write_os_csv, write_os_json
+from reports.writers import write_db_inventory_csv, write_db_inventory_json, write_os_csv, write_os_json
 from ssh_runner import SSHRunner
 
 LOGGER = logging.getLogger(__name__)
@@ -106,14 +107,19 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
     inventory.logs_dir.mkdir(parents=True, exist_ok=True)
     runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
-    collector = OSCollector(runner, logging.getLogger("collectors.os"))
-    records = []
+    os_collector = OSCollector(runner, logging.getLogger("collectors.os"))
+    db_collector = DBInventoryCollector(runner, logging.getLogger("collectors.db_inventory"))
+    os_records = []
+    db_records = []
     for cluster in inventory.clusters:
         host_loggers = {host.name: host_logger(inventory.logs_dir, f"{cluster.name}_{host.name}") for host in cluster.hosts}
-        records.extend(collector.collect_cluster(cluster, host_loggers))
-    write_os_csv(records, inventory.output_dir)
-    write_os_json(records, inventory.output_dir)
-    failures = [record for record in records if record.status != "ok"]
+        os_records.extend(os_collector.collect_cluster(cluster, host_loggers))
+        db_records.extend(db_collector.collect_cluster(cluster, host_loggers))
+    write_os_csv(os_records, inventory.output_dir)
+    write_os_json(os_records, inventory.output_dir)
+    write_db_inventory_csv(db_records, inventory.output_dir)
+    write_db_inventory_json(db_records, inventory.output_dir)
+    failures = [record for record in os_records if record.status != "ok"] + [record for record in db_records if record.status != "ok"]
     return 2 if failures else 0
 
 
