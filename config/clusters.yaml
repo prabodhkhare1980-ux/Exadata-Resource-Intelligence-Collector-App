@@ -42,5 +42,5 @@ collection:
   output_dir: output
   ssh:
     port: 22
-    timeout_seconds: 60
+    timeout_seconds: 120
     strict_host_key_checking: accept-new
