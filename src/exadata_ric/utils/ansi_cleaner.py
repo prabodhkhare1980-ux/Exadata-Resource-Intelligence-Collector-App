@@ -7,6 +7,7 @@ import re
 ANSI_CSI = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC = re.compile(r"\x1B\][^\a]*\a")
 PROMPT_LINE = re.compile(r"^\s*(?:\[[^\]]+@[^\]]+\]|[\w.-]+@[\w.-]+[$#])\s*.*$")
+COMMAND_ECHO = re.compile(r"^(?:sudo -n |bash --noprofile|set \+e|export |unset PROMPT_COMMAND|PS1=|stty -echo).*$")
 
 
 def clean_output(text: str) -> str:
@@ -18,7 +19,7 @@ def clean_output(text: str) -> str:
     lines: list[str] = []
     blank_count = 0
     for line in cleaned.splitlines():
-        if PROMPT_LINE.match(line):
+        if PROMPT_LINE.match(line) or COMMAND_ECHO.match(line.strip()):
             continue
         if line.strip() == "":
             blank_count += 1

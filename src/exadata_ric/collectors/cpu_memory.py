@@ -11,7 +11,7 @@ class CpuMemoryCollector:
 
     def shell(self) -> str:
         return r'''
-printf '===SECTION:lscpu===\n'
+printf '===BEGIN_SECTION:lscpu===\n'
 printf 'cpu_count\t%s
 ' "$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || printf 0)"
 printf 'load_1m\t%s
@@ -20,7 +20,7 @@ printf 'load_5m\t%s
 ' "$(awk '{print $2}' /proc/loadavg 2>/dev/null || printf 0)"
 printf 'load_15m\t%s
 ' "$(awk '{print $3}' /proc/loadavg 2>/dev/null || printf 0)"
-printf '===SECTION:meminfo===\n'
+printf '===BEGIN_SECTION:meminfo===\n'
 printf 'mem_total_kb\t%s
 ' "$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || printf 0)"
 printf 'mem_available_kb\t%s
@@ -29,8 +29,11 @@ printf 'swap_total_kb\t%s
 ' "$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || printf 0)"
 printf 'swap_free_kb\t%s
 ' "$(awk '/^SwapFree:/ {print $2}' /proc/meminfo 2>/dev/null || printf 0)"
-printf '===SECTION:free===\n'
+printf '===BEGIN_SECTION:free===\n'
+printf '===END_SECTION:lscpu===\n'
+printf '===END_SECTION:meminfo===\n'
 free -m 2>/dev/null | awk 'NR==2{print "mem_total_mb\t"$2"\nmem_used_mb\t"$3"\nmem_free_mb\t"$4"\nmem_available_mb\t"$7} NR==3{print "swap_total_mb\t"$2"\nswap_used_mb\t"$3}'
+printf '===END_SECTION:free===\n'
 '''
 
     def parse(self, host: HostConfig, sections: dict[str, list[list[str]]]) -> CollectionResult:

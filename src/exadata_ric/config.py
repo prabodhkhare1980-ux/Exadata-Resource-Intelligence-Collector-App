@@ -23,6 +23,14 @@ class AuthConfig:
 
 
 @dataclass(frozen=True)
+class PrivilegeConfig:
+    enabled: bool = True
+    method: str = "sudo"
+    sudo_password: str = "none"
+    force_tty: bool = False
+
+
+@dataclass(frozen=True)
 class HostConfig:
     """One host to collect from."""
 
@@ -32,6 +40,7 @@ class HostConfig:
     environment: str
     ssh_user: str
     auth: AuthConfig
+    privilege: PrivilegeConfig
     port: int = 22
     timeout_seconds: int = 60
     strict_host_key_checking: str = "accept-new"
@@ -43,6 +52,7 @@ class CollectionConfig:
 
     output_dir: Path
     hosts: tuple[HostConfig, ...]
+    oracle_inventory_allow_pmon_sid_fallback: bool = False
 
 
 def load_config(path: str | Path) -> CollectionConfig:
@@ -78,6 +88,7 @@ def load_config(path: str | Path) -> CollectionConfig:
             raise ConfigError(f"environment '{environment_name}' must be a mapping")
 
         cluster_auth = _merge_auth(environment.get("auth"), cluster.get("auth"))
+        cluster_privilege = _merge_privilege(environment.get("privilege"), cluster.get("privilege"))
         cluster_user = _first_str(cluster.get("ssh_user"))
         environment_user = _first_str(environment.get("ssh_user"))
 
@@ -102,6 +113,7 @@ def load_config(path: str | Path) -> CollectionConfig:
                     f"cluster '{cluster_name}' host '{host_name}' could not resolve ssh_user"
                 )
             host_auth = _merge_auth(cluster_auth.__dict__, host.get("auth"))
+            host_privilege = _merge_privilege(cluster_privilege.__dict__, host.get("privilege"))
             hosts.append(
                 HostConfig(
                     name=host_name,
@@ -110,6 +122,7 @@ def load_config(path: str | Path) -> CollectionConfig:
                     environment=environment_name,
                     ssh_user=host_user,
                     auth=host_auth,
+                    privilege=host_privilege,
                     port=int(host.get("port", ssh_defaults.get("port", 22))),
                     timeout_seconds=int(
                         host.get("timeout_seconds", ssh_defaults.get("timeout_seconds", 60))
@@ -127,7 +140,31 @@ def load_config(path: str | Path) -> CollectionConfig:
         raise ConfigError("configuration must define at least one host")
 
     output_dir = Path(collection.get("output_dir", "output"))
-    return CollectionConfig(output_dir=output_dir, hosts=tuple(hosts))
+    oracle_inventory = raw.get("oracle_inventory", {})
+    allow_fallback = bool(oracle_inventory.get("allow_pmon_sid_fallback", False)) if isinstance(oracle_inventory, dict) else False
+    return CollectionConfig(output_dir=output_dir, hosts=tuple(hosts), oracle_inventory_allow_pmon_sid_fallback=allow_fallback)
+
+
+def _merge_privilege(base: Any, override: Any) -> PrivilegeConfig:
+    merged: dict[str, Any] = {}
+    if isinstance(base, PrivilegeConfig):
+        merged.update(base.__dict__)
+    elif isinstance(base, dict):
+        merged.update(base)
+    elif base is not None:
+        raise ConfigError("privilege blocks must be mappings")
+
+    if isinstance(override, dict):
+        merged.update(override)
+    elif override is not None:
+        raise ConfigError("privilege blocks must be mappings")
+
+    return PrivilegeConfig(
+        enabled=bool(merged.get("enabled", True)),
+        method=str(merged.get("method", "sudo")).lower(),
+        sudo_password=str(merged.get("sudo_password", "none")),
+        force_tty=bool(merged.get("force_tty", False)),
+    )
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
