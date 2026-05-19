@@ -1,52 +1,35 @@
 """Operating system inventory collector."""
-
 from __future__ import annotations
-
 from .base import CollectionResult
 from exadata_ric.config import HostConfig
 
-
 class OsCollector:
     name = "os"
-
     def shell(self) -> str:
         return r'''
-printf 'SECTION	os
-'
+printf '===SECTION:hostname===\n'
 if [ -r /etc/os-release ]; then . /etc/os-release; fi
-printf 'hostname	%s
+printf 'hostname\t%s
 ' "$(hostname 2>/dev/null || printf unknown)"
-printf 'fqdn	%s
+printf 'fqdn\t%s
 ' "$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf unknown)"
-printf 'os_name	%s
+printf 'os_name\t%s
 ' "${PRETTY_NAME:-unknown}"
-printf 'os_id	%s
+printf 'os_id\t%s
 ' "${ID:-unknown}"
-printf 'os_version	%s
+printf 'os_version\t%s
 ' "${VERSION_ID:-unknown}"
-printf 'kernel	%s
+printf 'kernel\t%s
 ' "$(uname -r 2>/dev/null || printf unknown)"
-printf 'architecture	%s
+printf 'architecture\t%s
 ' "$(uname -m 2>/dev/null || printf unknown)"
-printf 'uptime_seconds	%s
+printf 'uptime_seconds\t%s
 ' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1 || printf 0)"
-printf 'END	os
-'
 '''
 
     def parse(self, host: HostConfig, sections: dict[str, list[list[str]]]) -> CollectionResult:
-        row: dict[str, str | int | float | None] = _host_row(host)
-        for record in sections.get(self.name, []):
+        row = {"environment": host.environment,"cluster": host.cluster,"host": host.name,"address": host.address,"ssh_user": host.ssh_user}
+        for record in sections.get("hostname", []):
             if len(record) >= 2:
                 row[record[0]] = record[1]
         return CollectionResult(self.name, [row])
-
-
-def _host_row(host: HostConfig) -> dict[str, str | int | float | None]:
-    return {
-        "environment": host.environment,
-        "cluster": host.cluster,
-        "host": host.name,
-        "address": host.address,
-        "ssh_user": host.ssh_user,
-    }

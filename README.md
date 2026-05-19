@@ -42,3 +42,13 @@ Per host preflight validates:
 7. `output/preflight_report.json`
 
 No scripts are copied to targets and no remote temp files are created.
+
+## Phase 2 Output Normalization
+
+- SSH collection uses non-interactive mode (`ssh -T`) and `sudo -n bash -s` for remote execution.
+- Remote script bootstrap sets `TERM=dumb`, `LANG=C`, `LC_ALL=C`, unsets prompt command, blanks `PS1`, and disables echo where possible.
+- Section markers are normalized to `===SECTION:<name>===` and parsing reads only content under active section markers.
+- ANSI cleanup removes control sequences (`CSI` and `OSC`), shell prompt lines, carriage returns, and repeated blank lines before parsing.
+- Grid environment auto-detection reads `/etc/oratab` (`+ASM`/`-MGMTDB`) to infer `grid_home`, then exports `ORACLE_HOME` and `PATH` before checking `crsctl`/`srvctl`.
+- Normalized host JSON output is written to `output/json/normalized_hosts.json`.
+- Additional CSV outputs are written: `filesystem_usage.csv`, `hugepages.csv`, `cpu_inventory.csv`, and `db_inventory.csv`.

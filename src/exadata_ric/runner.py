@@ -10,6 +10,7 @@ from .auth import CredentialProvider
 from .collectors import CollectionResult, Collector, PHASE1_COLLECTORS
 from .config import CollectionConfig, HostConfig
 from .ssh import RemoteExecutionError, run_remote_script
+from .utils.output_cleaner import clean_output
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
         try:
             runtime_credentials = credentials.for_host(host)
             output = run_remote_script(host, script, runtime_credentials)
-            sections = parse_sections(output)
+            sections = parse_sections(clean_output(output))
             for collector in PHASE1_COLLECTORS:
                 all_results.append(collector.parse(host, sections))
         except (RemoteExecutionError, OSError, ValueError) as exc:
@@ -39,26 +40,32 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
 def build_phase1_script(collectors: tuple[Collector, ...]) -> str:
     """Build one streamed remote script for all Phase 1 collectors."""
 
-    body = ["set +e", "export LC_ALL=C"]
+    body = [
+        "set +e",
+        "export TERM=dumb",
+        "export LANG=C",
+        "export LC_ALL=C",
+        "unset PROMPT_COMMAND",
+        "PS1=''",
+        "stty -echo 2>/dev/null || true",
+    ]
     body.extend(collector.shell() for collector in collectors)
     return "\n".join(body) + "\n"
 
 
 def parse_sections(output: str) -> dict[str, list[list[str]]]:
-    """Parse tab-delimited SECTION/END output from the remote shell."""
+    """Parse marker-delimited section output from the remote shell."""
 
     sections: dict[str, list[list[str]]] = {}
     current: str | None = None
     for raw_line in output.splitlines():
-        parts = raw_line.split("\t")
-        if len(parts) >= 2 and parts[0] == "SECTION":
-            current = parts[1]
+        line = raw_line.strip()
+        if line.startswith("===SECTION:") and line.endswith("==="):
+            current = line[len("===SECTION:") : -3]
             sections.setdefault(current, [])
             continue
-        if len(parts) >= 2 and parts[0] == "END":
-            current = None
-            continue
         if current:
+            parts = raw_line.split("\t")
             sections.setdefault(current, []).append(parts)
     return sections
 
