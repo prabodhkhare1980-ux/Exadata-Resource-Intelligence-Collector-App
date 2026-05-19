@@ -36,7 +36,22 @@ def write_results(output_dir: Path, results: dict[str, list[dict[str, Any]]], er
     (json_dir / "normalized_hosts.json").write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     _write_csv(csv_dir / "filesystem_usage.csv", results.get("filesystem", []))
     _write_csv(csv_dir / "cpu_inventory.csv", results.get("cpu_memory", []))
-    _write_csv(csv_dir / "db_inventory.csv", results.get("grid_env_detector", []))
+    _write_csv(
+        csv_dir / "db_inventory.csv",
+        [
+            {
+                "environment": row.get("environment"),
+                "cluster": row.get("cluster"),
+                "host": row.get("host"),
+                "address": row.get("address"),
+                "db_unique_name": db.get("db_unique_name"),
+                "config_raw": db.get("config_raw"),
+                "status_raw": db.get("status_raw"),
+            }
+            for row in results.get("grid_env_detector", [])
+            for db in row.get("srvctl_databases", [])
+        ],
+    )
     _write_csv(
         csv_dir / "pmon_instances.csv",
         [
@@ -44,12 +59,13 @@ def write_results(output_dir: Path, results: dict[str, list[dict[str, Any]]], er
                 "environment": row.get("environment"),
                 "cluster": row.get("cluster"),
                 "host": row.get("host"),
-                "db_unique_name": db.get("db_unique_name"),
+                "db_unique_name": inst.get("mapped_db_unique_name"),
+                "os_user": inst.get("os_user"),
+                "pid": inst.get("pid"),
                 "sid": inst.get("sid"),
                 "mapping_source": inst.get("mapping_source"),
             }
             for row in results.get("grid_env_detector", [])
-            for db in row.get("srvctl_databases", []) or [{}]
             for inst in row.get("pmon_instances", [])
         ],
     )
