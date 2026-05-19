@@ -8,6 +8,7 @@ from exadata_ric.config import HostConfig
 
 
 _INSTANCE_STATUS = re.compile(r"^Instance\s+([A-Za-z0-9_$#]+)\s+is\s+(running|not running)(?:\s+on\s+node\s+(.+))?$", re.IGNORECASE)
+_DB_UNIQUE_NAME = re.compile(r"^[A-Za-z0-9_$#]+$")
 
 
 class GridEnvDetectorCollector:
@@ -52,7 +53,10 @@ printf '===END_SECTION:pmon_raw===\n'
         db_names = [
             record[1].strip()
             for record in sections.get("srvctl_databases", [])
-            if len(record) >= 2 and record[0] == "db_unique_name" and record[1].strip()
+            if len(record) >= 2
+            and record[0] == "db_unique_name"
+            and record[1].strip()
+            and _DB_UNIQUE_NAME.fullmatch(record[1].strip())
         ]
         details_by_db = self._parse_srvctl_details(sections.get("srvctl_details", []))
         db_entries: list[dict[str, object]] = []
@@ -113,6 +117,9 @@ printf '===END_SECTION:pmon_raw===\n'
             key, value = record[0], record[1]
             if key == "db_unique_name":
                 current_db = value.strip()
+                if not _DB_UNIQUE_NAME.fullmatch(current_db):
+                    current_db = None
+                    continue
                 details.setdefault(current_db, {})
                 continue
             if current_db and key in {"config_raw", "status_raw"}:
