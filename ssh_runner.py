@@ -32,7 +32,15 @@ class SSHRunner:
         self.debug_ssh = debug_ssh
 
     def run_script(self, host: "HostConfig", script: str) -> CommandResult:
-        ssh_command = self._build_ssh_command(host, allocate_tty=False)
+        ssh_command = self._build_ssh_command(host, allocate_tty=host.force_tty)
+        ssh_tty_mode = "-tt" if host.force_tty else "-T"
+        self.logger.debug(
+            "ssh_tty_mode=%s, force_tty=%s, environment=%s, host=%s",
+            ssh_tty_mode,
+            str(host.force_tty).lower(),
+            host.environment,
+            host.name,
+        )
         normalized_script = _normalize_remote_script(script)
         remote_shell = "bash --noprofile --norc -s"
         if host.privilege_enabled and host.privilege_method == "sudo":
@@ -41,6 +49,14 @@ class SSHRunner:
         return self._run(command, host, normalized_script)
 
     def run_command(self, host: "HostConfig", remote_command: str) -> CommandResult:
+        ssh_tty_mode = "-tt" if host.force_tty else "-T"
+        self.logger.debug(
+            "ssh_tty_mode=%s, force_tty=%s, environment=%s, host=%s",
+            ssh_tty_mode,
+            str(host.force_tty).lower(),
+            host.environment,
+            host.name,
+        )
         command = [*self._build_ssh_command(host, allocate_tty=host.force_tty), remote_command]
         return self._run(command, host, None)
 

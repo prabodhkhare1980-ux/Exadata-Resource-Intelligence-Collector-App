@@ -89,6 +89,10 @@ class DBInventoryCollector:
 
         sections = _parse_sections(result.stdout)
         databases = _parse_database_list(sections.get("database_list", ""))
+        pmon_sids = _parse_pmon_sids(sections.get("pmon", ""))
+        logger.debug("Authoritative srvctl DB list: %s", databases)
+        logger.debug("PMON SID list: %s", pmon_sids)
+        logger.debug("srvctl loop source=srvctl_config_database")
         srvctl_config = {db: sections.get(f"srvctl_config_{db}", "") for db in databases}
         srvctl_status = {db: sections.get(f"srvctl_status_{db}", "") for db in databases}
 
@@ -103,7 +107,7 @@ class DBInventoryCollector:
             date=sections.get("date", "").strip(),
             gi_version=sections.get("gi_version", "").strip(),
             oratab=sections.get("oratab", "").strip(),
-            pmon_processes=[line.strip() for line in sections.get("pmon", "").splitlines() if line.strip()],
+            pmon_processes=pmon_sids,
             databases=databases,
             srvctl_config=srvctl_config,
             srvctl_status=srvctl_status,
@@ -134,7 +138,7 @@ emit_section pmon
 (ps -ef 2>/dev/null | grep -E '[o]ra_pmon_' || true)
 
 emit_section database_list
-(ps -ef 2>/dev/null | awk '/ora_pmon_/ {sub(/^.*ora_pmon_/,"",$0); print $0}' | sed 's/[[:space:]].*$//' | sort -u || true)
+(srvctl config database 2>/dev/null | sed 's/[[:space:]].*$//' | sed '/^$/d' | sed '/[[:punct:]]/d' | sort -u || true)
 
 grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
 if [ -n "$grid_home" ]; then
@@ -148,7 +152,7 @@ emit_section gi_version
 emit_section crsctl_stat_res_t
 (crsctl stat res -t 2>&1 || true)
 
-for db in $(ps -ef 2>/dev/null | awk '/ora_pmon_/ {sub(/^.*ora_pmon_/,"",$0); print $0}' | sed 's/[[:space:]].*$//' | sort -u); do
+for db in $(srvctl config database 2>/dev/null | sed 's/[[:space:]].*$//' | sed '/^$/d' | sed '/[[:punct:]]/d' | sort -u); do
   emit_section "srvctl_config_${db}"
   (srvctl config database -d "$db" 2>&1 || true)
   emit_section "srvctl_status_${db}"
@@ -178,7 +182,27 @@ def _parse_sections(output: str) -> dict[str, str]:
 
 
 def _parse_database_list(output: str) -> list[str]:
-    return [line.strip() for line in output.splitlines() if line.strip()]
+    databases: list[str] = []
+    for line in output.splitlines():
+        candidate = line.strip().split()[0] if line.strip() else ""
+        if not candidate:
+            continue
+        if any(not char.isalnum() and char not in {"_", "-"} for char in candidate):
+            continue
+        databases.append(candidate)
+    return databases
+
+
+def _parse_pmon_sids(output: str) -> list[str]:
+    sids: list[str] = []
+    for line in output.splitlines():
+        marker = "ora_pmon_"
+        if marker not in line:
+            continue
+        sid = line.split(marker, 1)[1].strip().split()[0]
+        if sid:
+            sids.append(sid)
+    return sorted(set(sids))
 
 
 def _utc_now() -> str:
