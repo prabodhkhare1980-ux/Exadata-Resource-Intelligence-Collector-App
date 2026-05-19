@@ -15,7 +15,7 @@ from .runner import collect
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Exadata Resource Intelligence Collector")
-    parser.add_argument("--config", default="config/clusters.yaml", help="Path to cluster YAML configuration")
+    parser.add_argument("--config", default=None, help="Path to cluster YAML configuration")
     parser.add_argument("--output-dir", help="Override output directory from config")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--preflight", action="store_true", help="Run SSH/sudo preflight checks only")
@@ -27,7 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        config = load_config(args.config)
+        config_path = args.config or _resolve_default_config()
+        config = load_config(config_path)
     except (ConfigError, OSError) as exc:
         logging.getLogger(__name__).error("failed to load config: %s", exc)
         return 2
@@ -61,6 +62,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     logging.getLogger(__name__).info("collection completed successfully")
     return 0
+
+
+
+
+def _resolve_default_config() -> str:
+    local_path = "config/clusters.local.yaml"
+    example_path = "config/clusters.example.yaml"
+    from pathlib import Path
+
+    return local_path if Path(local_path).exists() else example_path
 
 
 if __name__ == "__main__":

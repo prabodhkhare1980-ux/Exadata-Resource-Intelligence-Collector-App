@@ -22,6 +22,16 @@ Phase 1 collector for Exadata/RAC using SSH stdin execution only.
   - `*_id_ed25519`
 - Key contents are never printed.
 
+## Setup
+
+1. Copy the template inventory to a local-only file:
+   ```bash
+   cp config/clusters.example.yaml config/clusters.local.yaml
+   ```
+2. Edit `config/clusters.local.yaml` with your real cluster/host inventory.
+3. Keep private keys under `.secrets/` (for example: `.secrets/ssh/srcordma_id_rsa`).
+4. Run the collector (it loads `config/clusters.local.yaml` automatically when present, otherwise it falls back to `config/clusters.example.yaml`).
+
 ## Usage
 
 ```bash
