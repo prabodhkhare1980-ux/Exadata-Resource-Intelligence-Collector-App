@@ -32,7 +32,8 @@ class SSHRunner:
         self.debug_ssh = debug_ssh
 
     def run_script(self, host: "HostConfig", script: str) -> CommandResult:
-        ssh_command = self._build_ssh_command(host, allocate_tty=False)
+        requires_tty = host.force_tty or (host.privilege_enabled and host.privilege_method == "sudo")
+        ssh_command = self._build_ssh_command(host, allocate_tty=requires_tty)
         normalized_script = _normalize_remote_script(script)
         remote_shell = "bash -s"
         if host.privilege_enabled and host.privilege_method == "sudo":
@@ -51,8 +52,8 @@ class SSHRunner:
         try:
             completed = subprocess.run(
                 command,
-                input=script,
-                text=True,
+                input=script.encode("utf-8") if script is not None else None,
+                text=False,
                 capture_output=True,
                 timeout=host.timeout_seconds,
                 check=False,
@@ -60,7 +61,13 @@ class SSHRunner:
             if self.debug_ssh:
                 self.logger.debug("SSH stdout (first 500 chars): %s", _clip(completed.stdout))
                 self.logger.debug("SSH stderr (first 500 chars): %s", _clip(completed.stderr))
-            return CommandResult(host, command, completed.stdout, completed.stderr, completed.returncode)
+            return CommandResult(
+                host,
+                command,
+                _coerce_text(completed.stdout),
+                _coerce_text(completed.stderr),
+                completed.returncode,
+            )
         except subprocess.TimeoutExpired as exc:
             stdout = _coerce_text(exc.stdout)
             stderr = _coerce_text(exc.stderr)
