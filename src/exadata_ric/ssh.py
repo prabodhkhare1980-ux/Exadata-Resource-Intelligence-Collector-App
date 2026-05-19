@@ -27,8 +27,8 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
 
     command = _ssh_command(host)
     if host.auth.sudo:
-        remote = "sudo -S -p '' /bin/sh -s"
-        stdin_text = f"{credentials.sudo_password or ''}\n{script}"
+        remote = "sudo -n bash -s"
+        stdin_text = script
     else:
         remote = "/bin/sh -s"
         stdin_text = script
@@ -108,6 +108,7 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
 def _ssh_command(host: HostConfig) -> list[str]:
     command = [
         "ssh",
+        "-T",
         "-p",
         str(host.port),
         "-o",

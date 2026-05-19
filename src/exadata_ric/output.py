@@ -32,6 +32,13 @@ def write_results(output_dir: Path, results: dict[str, list[dict[str, Any]]], er
     )
     _write_csv(csv_dir / "errors.csv", errors)
 
+    normalized = _build_normalized(results)
+    (json_dir / "normalized_hosts.json").write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_csv(csv_dir / "filesystem_usage.csv", results.get("filesystem", []))
+    _write_csv(csv_dir / "cpu_inventory.csv", results.get("cpu_memory", []))
+    _write_csv(csv_dir / "db_inventory.csv", results.get("grid_env_detector", []))
+    _write_csv(csv_dir / "hugepages.csv", [])
+
 
 def merge_results(results: list[CollectionResult]) -> dict[str, list[dict[str, Any]]]:
     """Group collection result rows by collector name."""
@@ -51,3 +58,22 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _build_normalized(results: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    by_host: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in results.get("os", []):
+        key = (str(row.get("cluster", "")), str(row.get("host", "")))
+        by_host[key] = {"cluster": key[0], "host": key[1], "os": row, "filesystem": [], "memory": {}, "cpu": {}, "hugepages": {}, "oracle_inventory": {}, "raw": {}}
+    for row in results.get("filesystem", []):
+        key = (str(row.get("cluster", "")), str(row.get("host", "")))
+        by_host.setdefault(key, {"cluster": key[0], "host": key[1], "os": {}, "filesystem": [], "memory": {}, "cpu": {}, "hugepages": {}, "oracle_inventory": {}, "raw": {}})["filesystem"].append(row)
+    for row in results.get("cpu_memory", []):
+        key = (str(row.get("cluster", "")), str(row.get("host", "")))
+        target = by_host.setdefault(key, {"cluster": key[0], "host": key[1], "os": {}, "filesystem": [], "memory": {}, "cpu": {}, "hugepages": {}, "oracle_inventory": {}, "raw": {}})
+        target["cpu"] = {k: row.get(k) for k in ("cpu_count", "load_1m", "load_5m", "load_15m")}
+        target["memory"] = {k: row.get(k) for k in ("mem_total_mb", "mem_used_mb", "mem_free_mb", "mem_available_mb", "swap_total_mb", "swap_used_mb")}
+    for row in results.get("grid_env_detector", []):
+        key = (str(row.get("cluster", "")), str(row.get("host", "")))
+        by_host.setdefault(key, {"cluster": key[0], "host": key[1], "os": {}, "filesystem": [], "memory": {}, "cpu": {}, "hugepages": {}, "oracle_inventory": {}, "raw": {}})["oracle_inventory"] = row
+    return list(by_host.values())
