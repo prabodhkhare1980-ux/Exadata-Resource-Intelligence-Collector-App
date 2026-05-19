@@ -38,6 +38,9 @@ class Inventory:
     clusters: list[ClusterConfig]
     output_dir: Path = Path("output")
     logs_dir: Path = Path("logs")
+    parallel_enabled: bool = True
+    max_clusters: int = 3
+    max_hosts_per_cluster: int = 2
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -108,7 +111,24 @@ def load_inventory(path: str | Path) -> Inventory:
         clusters.append(ClusterConfig(name=cluster_name, environment=environment, hosts=hosts))
 
     output_dir = Path(collection.get("output_dir", "output"))
-    return Inventory(clusters=clusters, output_dir=output_dir, logs_dir=Path("logs"))
+    parallel_cfg = collection.get("parallel") or {}
+    if not isinstance(parallel_cfg, dict):
+        raise ValueError("'collection.parallel' must be a mapping.")
+    parallel_enabled = bool(parallel_cfg.get("enabled", True))
+    max_clusters = int(parallel_cfg.get("max_clusters", 3))
+    max_hosts_per_cluster = int(parallel_cfg.get("max_hosts_per_cluster", 2))
+    if max_clusters < 1:
+        raise ValueError("'collection.parallel.max_clusters' must be >= 1.")
+    if max_hosts_per_cluster < 1:
+        raise ValueError("'collection.parallel.max_hosts_per_cluster' must be >= 1.")
+    return Inventory(
+        clusters=clusters,
+        output_dir=output_dir,
+        logs_dir=Path("logs"),
+        parallel_enabled=parallel_enabled,
+        max_clusters=max_clusters,
+        max_hosts_per_cluster=max_hosts_per_cluster,
+    )
 
 
 def _required_string(data: dict[str, Any], key: str, context: str) -> str:

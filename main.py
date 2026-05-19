@@ -7,10 +7,13 @@ import csv
 import json
 import logging
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
-from collectors.db_inventory_collector import DBInventoryCollector
-from collectors.os_collector import OSCollector
+from collectors.db_inventory_collector import DBInventoryCollector, DBInventoryRecord
+from collectors.os_collector import OSCollectionRecord, OSCollector
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
 from reports.writers import write_db_inventory_csv, write_db_inventory_json, write_os_csv, write_os_json
@@ -26,6 +29,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--show-inventory", action="store_true", help="Print resolved inventory details for each host and exit.")
     parser.add_argument("--preflight", action="store_true", help="Run SSH key/sudo preflight checks for each host.")
     parser.add_argument("--debug-ssh", action="store_true", help="Print sanitized SSH command plus first 500 chars of stdout/stderr.")
+    parser.add_argument("--max-clusters", type=int, help="Override collection.parallel.max_clusters")
+    parser.add_argument("--max-hosts-per-cluster", type=int, help="Override collection.parallel.max_hosts_per_cluster")
     return parser.parse_args(argv)
 
 
@@ -103,30 +108,139 @@ def _print_preflight_report(rows: list[dict[str, str]], csv_path: Path, json_pat
 
 # run() and main unchanged-ish
 
+def _collect_host(cluster, host, runner, logs_dir):
+    logger = host_logger(logs_dir, f"{cluster.name}_{host.name}")
+    os_collector = OSCollector(runner, logging.getLogger("collectors.os"))
+    db_collector = DBInventoryCollector(runner, logging.getLogger("collectors.db_inventory"))
+    os_record = os_collector.collect_host(cluster.name, host, logger)
+    db_record = db_collector.collect_host(cluster.name, host, logger)
+    return os_record, db_record
+
+
 def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
     inventory.logs_dir.mkdir(parents=True, exist_ok=True)
     runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
-    os_collector = OSCollector(runner, logging.getLogger("collectors.os"))
-    db_collector = DBInventoryCollector(runner, logging.getLogger("collectors.db_inventory"))
     os_records = []
     db_records = []
-    for cluster in inventory.clusters:
-        host_loggers = {host.name: host_logger(inventory.logs_dir, f"{cluster.name}_{host.name}") for host in cluster.hosts}
-        os_records.extend(os_collector.collect_cluster(cluster, host_loggers))
-        db_records.extend(db_collector.collect_cluster(cluster, host_loggers))
+    clusters_total = len(inventory.clusters)
+    hosts_total = sum(len(cluster.hosts) for cluster in inventory.clusters)
+    hosts_success = 0
+    hosts_failed = 0
+    start_time = time.perf_counter()
+
+    if not inventory.parallel_enabled:
+        for cluster in inventory.clusters:
+            LOGGER.info("Starting cluster %s", cluster.name)
+            for host in cluster.hosts:
+                LOGGER.info("Starting host %s", host.name)
+                os_record, db_record = _collect_host(cluster, host, runner, inventory.logs_dir)
+                os_records.append(os_record)
+                db_records.append(db_record)
+                if os_record.status == "ok" and db_record.status == "ok":
+                    hosts_success += 1
+                    LOGGER.info("Completed host %s", host.name)
+                else:
+                    hosts_failed += 1
+                    LOGGER.error("Failed host %s", host.name)
+    else:
+        with ThreadPoolExecutor(max_workers=inventory.max_clusters) as cluster_pool:
+            cluster_futures = {}
+            for cluster in inventory.clusters:
+                LOGGER.info("Starting cluster %s", cluster.name)
+                future = cluster_pool.submit(_collect_cluster_parallel, cluster, inventory, runner)
+                cluster_futures[future] = cluster.name
+            for future in as_completed(cluster_futures):
+                cluster_name = cluster_futures[future]
+                try:
+                    cluster_os, cluster_db, cluster_success, cluster_failed = future.result()
+                    os_records.extend(cluster_os)
+                    db_records.extend(cluster_db)
+                    hosts_success += cluster_success
+                    hosts_failed += cluster_failed
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.exception("Cluster execution failed for %s: %s", cluster_name, exc)
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
     write_db_inventory_csv(db_records, inventory.output_dir)
     write_db_inventory_json(db_records, inventory.output_dir)
+    duration_seconds = round(time.perf_counter() - start_time, 2)
+    LOGGER.info(
+        "Summary: clusters_total=%s hosts_total=%s hosts_success=%s hosts_failed=%s duration_seconds=%s",
+        clusters_total,
+        hosts_total,
+        hosts_success,
+        hosts_failed,
+        duration_seconds,
+    )
     failures = [record for record in os_records if record.status != "ok"] + [record for record in db_records if record.status != "ok"]
     return 2 if failures else 0
+
+
+def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
+    os_records = []
+    db_records = []
+    success = 0
+    failed = 0
+    with ThreadPoolExecutor(max_workers=inventory.max_hosts_per_cluster) as host_pool:
+        host_futures = {}
+        for host in cluster.hosts:
+            LOGGER.info("Starting host %s", host.name)
+            future = host_pool.submit(_collect_host, cluster, host, runner, inventory.logs_dir)
+            host_futures[future] = host
+        for future, host in host_futures.items():
+            timeout_seconds = max(host.timeout_seconds, 1) * 2
+            try:
+                os_record, db_record = future.result(timeout=timeout_seconds)
+                os_records.append(os_record)
+                db_records.append(db_record)
+                if os_record.status == "ok" and db_record.status == "ok":
+                    success += 1
+                    LOGGER.info("Completed host %s", host.name)
+                else:
+                    failed += 1
+                    LOGGER.error("Failed host %s", host.name)
+            except TimeoutError:
+                failed += 1
+                LOGGER.error("Failed host %s", host.name)
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                os_records.append(OSCollectionRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=f"Host timed out after {timeout_seconds} seconds"))
+                db_records.append(DBInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=f"Host timed out after {timeout_seconds} seconds"))
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                LOGGER.exception("Failed host %s", host.name)
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                os_records.append(OSCollectionRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=str(exc)))
+                db_records.append(DBInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=str(exc)))
+    return os_records, db_records, success, failed
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         inventory = load_inventory(args.config)
+        if args.max_clusters is not None:
+            if args.max_clusters < 1:
+                raise ValueError("--max-clusters must be >= 1")
+            inventory = Inventory(
+                clusters=inventory.clusters,
+                output_dir=inventory.output_dir,
+                logs_dir=inventory.logs_dir,
+                parallel_enabled=inventory.parallel_enabled,
+                max_clusters=args.max_clusters,
+                max_hosts_per_cluster=inventory.max_hosts_per_cluster,
+            )
+        if args.max_hosts_per_cluster is not None:
+            if args.max_hosts_per_cluster < 1:
+                raise ValueError("--max-hosts-per-cluster must be >= 1")
+            inventory = Inventory(
+                clusters=inventory.clusters,
+                output_dir=inventory.output_dir,
+                logs_dir=inventory.logs_dir,
+                parallel_enabled=inventory.parallel_enabled,
+                max_clusters=inventory.max_clusters,
+                max_hosts_per_cluster=args.max_hosts_per_cluster,
+            )
         configure_logging(inventory.logs_dir, args.verbose)
         if args.show_inventory:
             return show_inventory(inventory)

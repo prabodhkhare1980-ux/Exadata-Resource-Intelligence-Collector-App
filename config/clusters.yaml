@@ -44,3 +44,8 @@ collection:
     port: 22
     timeout_seconds: 120
     strict_host_key_checking: accept-new
+
+  parallel:
+    enabled: true
+    max_clusters: 3
+    max_hosts_per_cluster: 2
