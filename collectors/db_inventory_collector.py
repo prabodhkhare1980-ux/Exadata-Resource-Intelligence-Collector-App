@@ -136,6 +136,12 @@ emit_section pmon
 emit_section database_list
 (ps -ef 2>/dev/null | awk '/ora_pmon_/ {sub(/^.*ora_pmon_/,"",$0); print $0}' | sed 's/[[:space:]].*$//' | sort -u || true)
 
+grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
+if [ -n "$grid_home" ]; then
+  export ORACLE_HOME="$grid_home"
+  export PATH="$ORACLE_HOME/bin:$PATH"
+fi
+
 emit_section gi_version
 (crsctl query crs activeversion 2>&1 || true)
 

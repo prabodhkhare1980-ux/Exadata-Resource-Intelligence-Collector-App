@@ -32,12 +32,11 @@ class SSHRunner:
         self.debug_ssh = debug_ssh
 
     def run_script(self, host: "HostConfig", script: str) -> CommandResult:
-        requires_tty = host.force_tty or (host.privilege_enabled and host.privilege_method == "sudo")
-        ssh_command = self._build_ssh_command(host, allocate_tty=requires_tty)
+        ssh_command = self._build_ssh_command(host, allocate_tty=False)
         normalized_script = _normalize_remote_script(script)
-        remote_shell = "bash -s"
+        remote_shell = "bash --noprofile --norc -s"
         if host.privilege_enabled and host.privilege_method == "sudo":
-            remote_shell = "sudo -n bash -s"
+            remote_shell = "sudo -n bash --noprofile --norc -s"
         command = [*ssh_command, remote_shell]
         return self._run(command, host, normalized_script)
 
