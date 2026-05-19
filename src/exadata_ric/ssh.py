@@ -27,10 +27,10 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
 
     command = _ssh_command(host)
     if host.auth.sudo:
-        remote = "sudo -n bash -s"
+        remote = "sudo -n bash --noprofile --norc -s"
         stdin_text = script
     else:
-        remote = "/bin/sh -s"
+        remote = "bash --noprofile --norc -s"
         stdin_text = script
     command.append(remote)
 

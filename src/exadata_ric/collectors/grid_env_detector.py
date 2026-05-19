@@ -9,7 +9,7 @@ class GridEnvDetectorCollector:
     def shell(self) -> str:
         return r'''
 printf '===SECTION:grid_env===\n'
-grid_home="$(awk -F: '/^\+ASM|^-MGMTDB/ && $2 ~ /^\// {print $2; exit}' /etc/oratab 2>/dev/null)"
+grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
 printf 'grid_home\t%s
 ' "${grid_home:-}"
 if [ -n "$grid_home" ]; then export ORACLE_HOME="$grid_home"; export PATH="$ORACLE_HOME/bin:$PATH"; fi
