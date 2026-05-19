@@ -24,6 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging.")
     parser.add_argument("--show-inventory", action="store_true", help="Print resolved inventory details for each host and exit.")
     parser.add_argument("--preflight", action="store_true", help="Run SSH key/sudo preflight checks for each host.")
+    parser.add_argument("--debug-ssh", action="store_true", help="Print sanitized SSH command plus first 500 chars of stdout/stderr.")
     return parser.parse_args(argv)
 
 
@@ -35,8 +36,8 @@ def show_inventory(inventory: Inventory) -> int:
     return 0
 
 
-def preflight(inventory: Inventory) -> int:
-    runner = SSHRunner(logging.getLogger("ssh_runner"))
+def preflight(inventory: Inventory, debug_ssh: bool = False) -> int:
+    runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     failures = 0
@@ -101,10 +102,10 @@ def _print_preflight_report(rows: list[dict[str, str]], csv_path: Path, json_pat
 
 # run() and main unchanged-ish
 
-def run(inventory: Inventory) -> int:
+def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
     inventory.logs_dir.mkdir(parents=True, exist_ok=True)
-    runner = SSHRunner(logging.getLogger("ssh_runner"))
+    runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
     collector = OSCollector(runner, logging.getLogger("collectors.os"))
     records = []
     for cluster in inventory.clusters:
@@ -124,8 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.show_inventory:
             return show_inventory(inventory)
         if args.preflight:
-            return preflight(inventory)
-        return run(inventory)
+            return preflight(inventory, debug_ssh=args.debug_ssh)
+        return run(inventory, debug_ssh=args.debug_ssh)
     except Exception as exc:
         logging.basicConfig(level=logging.ERROR, format="%(levelname)s %(message)s")
         logging.getLogger(__name__).exception("Fatal error: %s", exc)
