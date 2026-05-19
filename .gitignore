@@ -12,3 +12,5 @@ output/*
 *.pem
 *_id_rsa
 *_id_ed25519
+
+config/clusters.local.yaml

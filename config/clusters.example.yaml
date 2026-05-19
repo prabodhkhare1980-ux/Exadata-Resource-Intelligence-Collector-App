@@ -28,15 +28,15 @@ clusters:
     environment: onprem
     hosts:
       - name: dc04dx26db01
-        address: dc04dx26db01.internal.das
+        address: onprem-db01.example.internal
       - name: dc04dx26db02
-        address: dc04dx26db02.internal.das
+        address: onprem-db02.example.internal
 
   - name: iad3dx02v1-6rdqa1
     environment: oci
     hosts:
       - name: iad3dx02v1-6rdqa1
-        address: iad3dx02v1-6rdqa1.east.ockyn.internal.das
+        address: oci-db01.example.internal
 
 collection:
   output_dir: output

@@ -6,7 +6,7 @@ from exadata_ric.config import ConfigError, load_config
 
 
 def test_load_sample_config_resolves_users():
-    config = load_config(Path("config/clusters.yaml"))
+    config = load_config(Path("config/clusters.example.yaml"))
 
     by_name = {host.name: host for host in config.hosts}
     assert by_name["dc04dx26db01"].ssh_user == "srcordma"

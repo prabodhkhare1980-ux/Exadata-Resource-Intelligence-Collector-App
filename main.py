@@ -24,7 +24,7 @@ LOGGER = logging.getLogger(__name__)
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect Phase 1 OS capacity intelligence from Exadata/RAC nodes.")
-    parser.add_argument("--config", default="config/clusters.yaml", help="Path to YAML inventory file. Default: config/clusters.yaml")
+    parser.add_argument("--config", default=None, help="Path to YAML inventory file. Default: config/clusters.local.yaml (if present) else config/clusters.example.yaml")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging.")
     parser.add_argument("--show-inventory", action="store_true", help="Print resolved inventory details for each host and exit.")
     parser.add_argument("--preflight", action="store_true", help="Run SSH key/sudo preflight checks for each host.")
@@ -215,10 +215,18 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
     return os_records, db_records, success, failed
 
 
+
+def resolve_default_config_path() -> str:
+    local_path = Path("config/clusters.local.yaml")
+    if local_path.exists():
+        return str(local_path)
+    return "config/clusters.example.yaml"
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    config_path = args.config or resolve_default_config_path()
     try:
-        inventory = load_inventory(args.config)
+        inventory = load_inventory(config_path)
         if args.max_clusters is not None:
             if args.max_clusters < 1:
                 raise ValueError("--max-clusters must be >= 1")
