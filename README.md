@@ -52,3 +52,16 @@ No scripts are copied to targets and no remote temp files are created.
 - Grid environment auto-detection reads `/etc/oratab` (`+ASM`/`-MGMTDB`) to infer `grid_home`, then exports `ORACLE_HOME` and `PATH` before checking `crsctl`/`srvctl`.
 - Normalized host JSON output is written to `output/json/normalized_hosts.json`.
 - Additional CSV outputs are written: `filesystem_usage.csv`, `hugepages.csv`, `cpu_inventory.csv`, and `db_inventory.csv`.
+
+## TTY-aware sudo execution
+
+- OCI mode should keep `privilege.force_tty: false` so SSH runs with `-T` and retains clean non-interactive output.
+- On-prem mode can set `privilege.force_tty: true` so SSH runs with `-tt` for sudo policies that require a TTY.
+- In TTY mode, shell prompt/echo/control noise is cleaned before parsing, and parser accepts only content between `===BEGIN_SECTION:<name>===` and `===END_SECTION:<name>===` markers.
+
+## Oracle inventory mapping rules
+
+- Use `srvctl config database` as authoritative input for database names (`db_unique_name`).
+- Use PMON only as runtime instance evidence from `ps -eo user,pid,ppid,lstart,cmd | awk '/[o]ra_pmon_/ {print $0}'`.
+- Never pass raw PMON SID values directly to `srvctl ... -d`.
+- Optional fallback is controlled by `oracle_inventory.allow_pmon_sid_fallback`.

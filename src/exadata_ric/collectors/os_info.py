@@ -7,7 +7,7 @@ class OsCollector:
     name = "os"
     def shell(self) -> str:
         return r'''
-printf '===SECTION:hostname===\n'
+printf '===BEGIN_SECTION:hostname===\n'
 if [ -r /etc/os-release ]; then . /etc/os-release; fi
 printf 'hostname\t%s
 ' "$(hostname 2>/dev/null || printf unknown)"
@@ -25,6 +25,7 @@ printf 'architecture\t%s
 ' "$(uname -m 2>/dev/null || printf unknown)"
 printf 'uptime_seconds\t%s
 ' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1 || printf 0)"
+printf '===END_SECTION:hostname===\n'
 '''
 
     def parse(self, host: HostConfig, sections: dict[str, list[list[str]]]) -> CollectionResult:

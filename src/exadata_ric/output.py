@@ -37,6 +37,22 @@ def write_results(output_dir: Path, results: dict[str, list[dict[str, Any]]], er
     _write_csv(csv_dir / "filesystem_usage.csv", results.get("filesystem", []))
     _write_csv(csv_dir / "cpu_inventory.csv", results.get("cpu_memory", []))
     _write_csv(csv_dir / "db_inventory.csv", results.get("grid_env_detector", []))
+    _write_csv(
+        csv_dir / "pmon_instances.csv",
+        [
+            {
+                "environment": row.get("environment"),
+                "cluster": row.get("cluster"),
+                "host": row.get("host"),
+                "db_unique_name": db.get("db_unique_name"),
+                "sid": inst.get("sid"),
+                "mapping_source": inst.get("mapping_source"),
+            }
+            for row in results.get("grid_env_detector", [])
+            for db in row.get("srvctl_databases", []) or [{}]
+            for inst in row.get("pmon_instances", [])
+        ],
+    )
     _write_csv(csv_dir / "hugepages.csv", [])
 
 

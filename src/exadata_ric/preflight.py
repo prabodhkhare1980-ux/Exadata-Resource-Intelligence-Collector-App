@@ -43,19 +43,15 @@ def _check_host(host: HostConfig, provider: CredentialProvider) -> dict[str, Any
         run_remote_script(host, "hostname\n", runtime_credentials)
 
         sudo_n_ok = True
-        sudo_pw_ok = None
-        if host.auth.sudo:
+        effective_user = ""
+        if host.privilege.enabled and host.privilege.method == "sudo":
             try:
                 run_remote_script(host, "sudo -n true\n", runtime_credentials)
+                effective_user = run_remote_script(host, "whoami\n", runtime_credentials).strip()
             except (RemoteExecutionError, OSError, ValueError):
                 sudo_n_ok = False
-                try:
-                    run_remote_script(host, "true\n", runtime_credentials)
-                    sudo_pw_ok = True
-                except (RemoteExecutionError, OSError, ValueError):
-                    sudo_pw_ok = False
 
-        passed = sudo_n_ok or sudo_pw_ok is True or not host.auth.sudo
-        return {**base, "status": "PASS" if passed else "FAIL", "ssh_login": True, "hostname_command": True, "sudo_n_true": sudo_n_ok, "sudo_with_password": sudo_pw_ok, "error": ""}
+        passed = sudo_n_ok or not host.privilege.enabled
+        return {**base, "status": "PASS" if passed else "FAIL", "ssh_ok": True, "sudo_ok": sudo_n_ok, "force_tty_used": host.privilege.force_tty, "effective_user": effective_user, "error": ""}
     except (RemoteExecutionError, OSError, ValueError) as exc:
-        return {**base, "status": "FAIL", "ssh_login": False, "hostname_command": False, "sudo_n_true": False, "sudo_with_password": False, "error": str(exc)}
+        return {**base, "status": "FAIL", "ssh_ok": False, "sudo_ok": False, "force_tty_used": host.privilege.force_tty, "effective_user": "", "error": str(exc)}

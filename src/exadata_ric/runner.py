@@ -60,9 +60,12 @@ def parse_sections(output: str) -> dict[str, list[list[str]]]:
     current: str | None = None
     for raw_line in output.splitlines():
         line = raw_line.strip()
-        if line.startswith("===SECTION:") and line.endswith("==="):
-            current = line[len("===SECTION:") : -3]
+        if line.startswith("===BEGIN_SECTION:") and line.endswith("==="):
+            current = line[len("===BEGIN_SECTION:") : -3]
             sections.setdefault(current, [])
+            continue
+        if line.startswith("===END_SECTION:") and line.endswith("==="):
+            current = None
             continue
         if current:
             parts = raw_line.split("\t")

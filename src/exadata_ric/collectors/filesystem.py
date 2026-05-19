@@ -11,8 +11,9 @@ class FilesystemCollector:
 
     def shell(self) -> str:
         return r'''
-printf '===SECTION:df===\n'
+printf '===BEGIN_SECTION:df===\n'
 df -P -B1 -T 2>/dev/null | awk 'NR > 1 && $2 != "tmpfs" && $2 != "devtmpfs" {print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7}'
+printf '===END_SECTION:df===\n'
 '''
 
     def parse(self, host: HostConfig, sections: dict[str, list[list[str]]]) -> CollectionResult:
