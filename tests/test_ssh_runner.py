@@ -35,3 +35,26 @@ def test_build_ssh_command_uses_force_tty_false() -> None:
     command = SSHRunner._build_ssh_command(_host(False, "oci"), allocate_tty=False)
     assert "-T" in command
     assert "-tt" not in command
+
+
+def test_run_script_uses_non_interactive_sudo_bash_c_with_tty(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(command, input=None, **kwargs):  # noqa: ANN001
+        captured["command"] = command
+        captured["input"] = input
+        from subprocess import CompletedProcess
+
+        return CompletedProcess(args=command, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    runner = SSHRunner()
+    runner.run_script(_host(True, "onprem"), "echo hello\n")
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[-1].startswith("sudo -n bash -c ")
+    assert "bash -i" not in command[-1]
+    assert "su -" not in command[-1]
+    assert captured["input"] is None

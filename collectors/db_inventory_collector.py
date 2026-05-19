@@ -138,7 +138,7 @@ emit_section pmon
 (ps -ef 2>/dev/null | grep -E '[o]ra_pmon_' || true)
 
 emit_section database_list
-(srvctl config database 2>/dev/null | sed 's/[[:space:]].*$//' | sed '/^$/d' | sed '/[[:punct:]]/d' | sort -u || true)
+(srvctl config database 2>/dev/null | awk '{print $1}' | sed '/^$/d' | sort -u || true)
 
 grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
 if [ -n "$grid_home" ]; then
@@ -152,7 +152,7 @@ emit_section gi_version
 emit_section crsctl_stat_res_t
 (crsctl stat res -t 2>&1 || true)
 
-for db in $(srvctl config database 2>/dev/null | sed 's/[[:space:]].*$//' | sed '/^$/d' | sed '/[[:punct:]]/d' | sort -u); do
+for db in $(srvctl config database 2>/dev/null | awk '{print $1}' | sed '/^$/d' | sort -u); do
   emit_section "srvctl_config_${db}"
   (srvctl config database -d "$db" 2>&1 || true)
   emit_section "srvctl_status_${db}"
@@ -177,18 +177,29 @@ def _parse_sections(output: str) -> dict[str, str]:
             sections[current] = []
             continue
         if current is not None:
+            if _is_prompt_line(line):
+                continue
             sections[current].append(line)
     return {name: "\n".join(lines).strip() for name, lines in sections.items()}
 
 
+def _is_prompt_line(line: str) -> bool:
+    stripped = line.strip()
+    if stripped in {"$", "#", ">"}:
+        return True
+    return stripped.startswith("bash-") and stripped.endswith("#")
+
+
 def _parse_database_list(output: str) -> list[str]:
     databases: list[str] = []
+    seen: set[str] = set()
     for line in output.splitlines():
         candidate = line.strip().split()[0] if line.strip() else ""
         if not candidate:
             continue
-        if any(not char.isalnum() and char not in {"_", "-"} for char in candidate):
+        if candidate in seen:
             continue
+        seen.add(candidate)
         databases.append(candidate)
     return databases
 
