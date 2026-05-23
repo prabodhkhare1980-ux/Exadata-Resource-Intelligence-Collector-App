@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 from ssh_runner import SSHRunner
+from collectors.shared_context import SharedHostContext
 
 if TYPE_CHECKING:
     from inventory import ClusterConfig, HostConfig
@@ -63,8 +64,9 @@ class OSCollectionRecord:
 class OSCollector:
     """Collect Phase 1 OS, filesystem, CPU, and memory data from remote hosts."""
 
-    def __init__(self, runner: SSHRunner, logger: logging.Logger | None = None) -> None:
+    def __init__(self, runner: SSHRunner, context: SharedHostContext | None = None, logger: logging.Logger | None = None) -> None:
         self.runner = runner
+        self.context = context
         self.logger = logger or logging.getLogger(__name__)
 
     def collect_cluster(
@@ -100,6 +102,16 @@ class OSCollector:
 
         logger.info("Starting OS collection for %s (%s)", host.name, host.address)
         result = self.runner.run_script(host, OS_COLLECTION_SCRIPT)
+
+        if self.context is not None:
+            host_cmd = self.context.run_cached(host, "hostname", "hostname -f 2>/dev/null || hostname 2>/dev/null")
+            if host_cmd.ok and host_cmd.stdout.strip():
+                sections = _parse_sections(result.stdout) if result.ok else {}
+                sections["hostname"] = host_cmd.stdout.strip()
+            else:
+                sections = _parse_sections(result.stdout) if result.ok else {}
+        else:
+            sections = _parse_sections(result.stdout) if result.ok else {}
         collected_at = _utc_now()
 
         if not result.ok:
@@ -125,7 +137,6 @@ class OSCollector:
                 raw={"stdout": result.stdout, "stderr": result.stderr},
             )
 
-        sections = _parse_sections(result.stdout)
         record = OSCollectionRecord(
             cluster=cluster_name,
             host=host.name,

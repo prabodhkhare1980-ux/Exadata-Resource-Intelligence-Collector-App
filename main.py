@@ -14,6 +14,7 @@ from pathlib import Path
 
 from collectors.db_inventory_collector import DBInventoryCollector, DBInventoryRecord
 from collectors.os_collector import OSCollectionRecord, OSCollector
+from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
 from reports.writers import write_db_inventory_csv, write_db_inventory_json, write_os_csv, write_os_json
@@ -110,8 +111,9 @@ def _print_preflight_report(rows: list[dict[str, str]], csv_path: Path, json_pat
 
 def _collect_host(cluster, host, runner, logs_dir):
     logger = host_logger(logs_dir, f"{cluster.name}_{host.name}")
-    os_collector = OSCollector(runner, logging.getLogger("collectors.os"))
-    db_collector = DBInventoryCollector(runner, logging.getLogger("collectors.db_inventory"))
+    context = SharedHostContext(runner, logging.getLogger("collectors.shared_context"))
+    os_collector = OSCollector(runner, context=context, logger=logging.getLogger("collectors.os"))
+    db_collector = DBInventoryCollector(runner, context=context, logger=logging.getLogger("collectors.db_inventory"))
     os_record = os_collector.collect_host(cluster.name, host, logger)
     db_record = db_collector.collect_host(cluster.name, host, logger)
     return os_record, db_record
