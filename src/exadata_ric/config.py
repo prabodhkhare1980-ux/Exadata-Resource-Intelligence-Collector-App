@@ -55,6 +55,7 @@ class CollectionConfig:
     oracle_inventory_allow_pmon_sid_fallback: bool = False
     asm_enabled: bool = True
     asm_timeout_seconds: int = 30
+    asm_fail_host_on_error: bool = False
 
 
 def load_config(path: str | Path) -> CollectionConfig:
@@ -145,6 +146,7 @@ def load_config(path: str | Path) -> CollectionConfig:
     asm_collection = collection.get("asm", {}) if isinstance(collection, dict) else {}
     asm_enabled = bool(asm_collection.get("enabled", True)) if isinstance(asm_collection, dict) else True
     asm_timeout_seconds = int(asm_collection.get("timeout_seconds", 30)) if isinstance(asm_collection, dict) else 30
+    asm_fail_host_on_error = bool(asm_collection.get("fail_host_on_error", False)) if isinstance(asm_collection, dict) else False
     oracle_inventory = raw.get("oracle_inventory", {})
     allow_fallback = bool(oracle_inventory.get("allow_pmon_sid_fallback", False)) if isinstance(oracle_inventory, dict) else False
     return CollectionConfig(
@@ -153,6 +155,7 @@ def load_config(path: str | Path) -> CollectionConfig:
         oracle_inventory_allow_pmon_sid_fallback=allow_fallback,
         asm_enabled=asm_enabled,
         asm_timeout_seconds=asm_timeout_seconds,
+        asm_fail_host_on_error=asm_fail_host_on_error,
     )
 
 

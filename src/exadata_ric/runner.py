@@ -30,7 +30,23 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
             output = run_remote_script(host, script, runtime_credentials)
             sections = parse_sections(clean_output(output))
             for collector in PHASE1_COLLECTORS:
-                all_results.append(collector.parse(host, sections))
+                try:
+                    if collector.name == "asm_diskgroups":
+                        LOGGER.info("Starting ASM diskgroup collection for %s", host.name)
+                    parsed = collector.parse(host, sections)
+                    all_results.append(parsed)
+                    if collector.name == "asm_diskgroups":
+                        status = _asm_status(parsed.rows)
+                        if status == "success":
+                            LOGGER.info("Completed ASM diskgroup collection for %s", host.name)
+                        else:
+                            LOGGER.warning("ASM collection skipped/failed for %s", host.name)
+                except Exception as exc:  # noqa: BLE001
+                    if collector.name == "asm_diskgroups" and not config.asm_fail_host_on_error:
+                        LOGGER.warning("ASM collection skipped/failed for %s", host.name)
+                        all_results.append(CollectionResult("asm_diskgroups", [{"cluster": host.cluster, "host": host.name, "address": host.address, "asm_collection_status": "failed", "warning_level": "ERROR", "error": str(exc)}]))
+                        continue
+                    raise
         except (RemoteExecutionError, OSError, ValueError) as exc:
             LOGGER.error("collection failed for host=%s cluster=%s: %s", host.name, host.cluster, exc)
             errors.append(_error_row(host, exc))
@@ -86,3 +102,11 @@ def _error_row(host: HostConfig, exc: BaseException) -> dict[str, Any]:
         "error_type": type(exc).__name__,
         "error": str(exc),
     }
+
+
+def _asm_status(rows: list[dict[str, Any]]) -> str:
+    for row in rows:
+        status = str(row.get("asm_collection_status", "")).strip().lower()
+        if status:
+            return status
+    return "failed"
