@@ -1,4 +1,6 @@
-from exadata_ric.config import AuthConfig, HostConfig
+from pathlib import Path
+
+from exadata_ric.config import AuthConfig, CollectionConfig, HostConfig, PrivilegeConfig
 from exadata_ric.runner import build_phase1_script, parse_sections
 from exadata_ric.collectors import PHASE1_COLLECTORS
 
@@ -11,15 +13,17 @@ def _host():
         environment="onprem",
         ssh_user="user1",
         auth=AuthConfig(method="password"),
+        privilege=PrivilegeConfig(),
     )
 
 
 def test_build_script_contains_all_phase1_sections():
-    script = build_phase1_script(PHASE1_COLLECTORS)
+    script = build_phase1_script(PHASE1_COLLECTORS, CollectionConfig(output_dir=Path("output"), hosts=(_host(),)))
 
     assert "SECTION\tos" in script
     assert "SECTION\tcpu_memory" in script
     assert "SECTION\tfilesystem" in script
+    assert "export ASM_TIMEOUT_SECONDS=30" in script
 
 
 def test_parse_sections_and_collectors():

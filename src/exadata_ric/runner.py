@@ -21,7 +21,7 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
     credentials = credential_provider or CredentialProvider()
     all_results: list[CollectionResult] = []
     errors: list[dict[str, Any]] = []
-    script = build_phase1_script(PHASE1_COLLECTORS)
+    script = build_phase1_script(PHASE1_COLLECTORS, config)
 
     for host in config.hosts:
         LOGGER.info("collecting cluster=%s environment=%s host=%s address=%s ssh_user=%s", host.cluster, host.environment, host.name, host.address, host.ssh_user)
@@ -37,7 +37,7 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
     return all_results, errors
 
 
-def build_phase1_script(collectors: tuple[Collector, ...]) -> str:
+def build_phase1_script(collectors: tuple[Collector, ...], config: CollectionConfig) -> str:
     """Build one streamed remote script for all Phase 1 collectors."""
 
     body = [
@@ -48,6 +48,8 @@ def build_phase1_script(collectors: tuple[Collector, ...]) -> str:
         "unset PROMPT_COMMAND",
         "PS1=''",
         "stty -echo 2>/dev/null || true",
+        f"export ASM_ENABLED={'true' if config.asm_enabled else 'false'}",
+        f"export ASM_TIMEOUT_SECONDS={config.asm_timeout_seconds}",
     ]
     body.extend(collector.shell() for collector in collectors)
     return "\n".join(body) + "\n"
