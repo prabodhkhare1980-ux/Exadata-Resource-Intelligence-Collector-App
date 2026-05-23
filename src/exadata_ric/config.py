@@ -53,6 +53,8 @@ class CollectionConfig:
     output_dir: Path
     hosts: tuple[HostConfig, ...]
     oracle_inventory_allow_pmon_sid_fallback: bool = False
+    asm_enabled: bool = True
+    asm_timeout_seconds: int = 30
 
 
 def load_config(path: str | Path) -> CollectionConfig:
@@ -140,9 +142,18 @@ def load_config(path: str | Path) -> CollectionConfig:
         raise ConfigError("configuration must define at least one host")
 
     output_dir = Path(collection.get("output_dir", "output"))
+    asm_collection = collection.get("asm", {}) if isinstance(collection, dict) else {}
+    asm_enabled = bool(asm_collection.get("enabled", True)) if isinstance(asm_collection, dict) else True
+    asm_timeout_seconds = int(asm_collection.get("timeout_seconds", 30)) if isinstance(asm_collection, dict) else 30
     oracle_inventory = raw.get("oracle_inventory", {})
     allow_fallback = bool(oracle_inventory.get("allow_pmon_sid_fallback", False)) if isinstance(oracle_inventory, dict) else False
-    return CollectionConfig(output_dir=output_dir, hosts=tuple(hosts), oracle_inventory_allow_pmon_sid_fallback=allow_fallback)
+    return CollectionConfig(
+        output_dir=output_dir,
+        hosts=tuple(hosts),
+        oracle_inventory_allow_pmon_sid_fallback=allow_fallback,
+        asm_enabled=asm_enabled,
+        asm_timeout_seconds=asm_timeout_seconds,
+    )
 
 
 def _merge_privilege(base: Any, override: Any) -> PrivilegeConfig:

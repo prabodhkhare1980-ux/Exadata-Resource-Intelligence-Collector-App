@@ -40,6 +40,9 @@ clusters:
 
 collection:
   output_dir: output
+  asm:
+    enabled: true
+    timeout_seconds: 30
   ssh:
     port: 22
     timeout_seconds: 120
