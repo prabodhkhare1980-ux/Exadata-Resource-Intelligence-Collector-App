@@ -93,15 +93,16 @@ fi
             usable_file_mb = self._to_int(parts[9])
             diskgroup_name = parts[12].rstrip("/")
             used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2) if total_mb > 0 else 0.0
-            risk = ""
+            warning_level = "OK"
             if used_pct >= 95:
-                risk = "CRITICAL"
+                warning_level = "CRITICAL"
             elif used_pct >= 85:
-                risk = "WARNING"
+                warning_level = "WARNING"
             rows.append(
                 {
                     "cluster": host.cluster,
                     "host": host.name,
+                    "address": host.address,
                     "diskgroup_name": diskgroup_name,
                     "state": state,
                     "type": dg_type,
@@ -109,13 +110,14 @@ fi
                     "free_mb": free_mb,
                     "usable_file_mb": usable_file_mb,
                     "used_pct": used_pct,
-                    "risk": risk,
+                    "warning_level": warning_level,
                 }
             )
         rows.append(
             {
                 "cluster": host.cluster,
                 "host": host.name,
+                "address": host.address,
                 "asm_collection_status": status,
             }
         )

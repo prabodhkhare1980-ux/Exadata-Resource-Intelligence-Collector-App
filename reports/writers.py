@@ -9,6 +9,7 @@ from typing import Iterable
 
 from collectors.db_inventory_collector import DBInventoryRecord
 from collectors.os_collector import OSCollectionRecord
+from collectors.asm_diskgroups_collector import ASMDiskgroupRecord
 
 CSV_FIELDS = [
     "cluster",
@@ -68,6 +69,29 @@ def write_db_inventory_csv(records: Iterable[DBInventoryRecord], output_dir: Pat
 def write_db_inventory_json(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "db_inventory.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+ASM_CSV_FIELDS = [
+    "cluster", "host", "address", "diskgroup_name", "state", "type", "total_mb", "free_mb", "usable_file_mb", "used_pct", "warning_level", "asm_collection_status",
+]
+
+def write_asm_diskgroups_csv(records: Iterable[ASMDiskgroupRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "asm_diskgroups.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=ASM_CSV_FIELDS)
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+def write_asm_diskgroups_json(records: Iterable[ASMDiskgroupRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "asm_diskgroups.json"
     with json_path.open("w", encoding="utf-8") as json_file:
         json.dump([record.to_json_dict() for record in records], json_file, indent=2)
         json_file.write("\n")
