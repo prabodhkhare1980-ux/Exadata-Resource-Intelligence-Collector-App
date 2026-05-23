@@ -13,11 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collectors.db_inventory_collector import DBInventoryCollector, DBInventoryRecord
+from collectors.asm_diskgroups_collector import ASMDiskgroupCollector, ASMDiskgroupRecord
 from collectors.os_collector import OSCollectionRecord, OSCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
-from reports.writers import write_db_inventory_csv, write_db_inventory_json, write_os_csv, write_os_json
+from reports.writers import write_asm_diskgroups_csv, write_asm_diskgroups_json, write_db_inventory_csv, write_db_inventory_json, write_os_csv, write_os_json
 from ssh_runner import SSHRunner
 
 LOGGER = logging.getLogger(__name__)
@@ -109,14 +110,22 @@ def _print_preflight_report(rows: list[dict[str, str]], csv_path: Path, json_pat
 
 # run() and main unchanged-ish
 
-def _collect_host(cluster, host, runner, logs_dir):
+def _collect_host(cluster, host, runner, logs_dir, inventory):
     logger = host_logger(logs_dir, f"{cluster.name}_{host.name}")
     context = SharedHostContext(runner, logging.getLogger("collectors.shared_context"))
     os_collector = OSCollector(runner, context=context, logger=logging.getLogger("collectors.os"))
     db_collector = DBInventoryCollector(runner, context=context, logger=logging.getLogger("collectors.db_inventory"))
     os_record = os_collector.collect_host(cluster.name, host, logger)
     db_record = db_collector.collect_host(cluster.name, host, logger)
-    return os_record, db_record
+    asm_collector = ASMDiskgroupCollector(runner, context=context, logger=logging.getLogger("collectors.asm_diskgroups"))
+    try:
+        asm_records = asm_collector.collect_host(cluster.name, host, logger, enabled=inventory.asm_enabled, timeout_seconds=inventory.asm_timeout_seconds)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ASM collection skipped/failed for %s", host.name)
+        if inventory.asm_fail_host_on_error:
+            raise
+        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR")]
+    return os_record, db_record, asm_records
 
 
 def run(inventory: Inventory, debug_ssh: bool = False) -> int:
@@ -125,6 +134,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
     os_records = []
     db_records = []
+    asm_records = []
     clusters_total = len(inventory.clusters)
     hosts_total = sum(len(cluster.hosts) for cluster in inventory.clusters)
     hosts_success = 0
@@ -136,9 +146,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
             LOGGER.info("Starting cluster %s", cluster.name)
             for host in cluster.hosts:
                 LOGGER.info("Starting host %s", host.name)
-                os_record, db_record = _collect_host(cluster, host, runner, inventory.logs_dir)
+                os_record, db_record, host_asm_records = _collect_host(cluster, host, runner, inventory.logs_dir, inventory)
                 os_records.append(os_record)
                 db_records.append(db_record)
+                asm_records.extend(host_asm_records)
                 if os_record.status == "ok" and db_record.status == "ok":
                     hosts_success += 1
                     LOGGER.info("Completed host %s", host.name)
@@ -155,9 +166,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
             for future in as_completed(cluster_futures):
                 cluster_name = cluster_futures[future]
                 try:
-                    cluster_os, cluster_db, cluster_success, cluster_failed = future.result()
+                    cluster_os, cluster_db, cluster_asm, cluster_success, cluster_failed = future.result()
                     os_records.extend(cluster_os)
                     db_records.extend(cluster_db)
+                    asm_records.extend(cluster_asm)
                     hosts_success += cluster_success
                     hosts_failed += cluster_failed
                 except Exception as exc:  # noqa: BLE001
@@ -166,6 +178,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_os_json(os_records, inventory.output_dir)
     write_db_inventory_csv(db_records, inventory.output_dir)
     write_db_inventory_json(db_records, inventory.output_dir)
+    write_asm_diskgroups_csv(asm_records, inventory.output_dir)
+    write_asm_diskgroups_json(asm_records, inventory.output_dir)
     duration_seconds = round(time.perf_counter() - start_time, 2)
     LOGGER.info(
         "Summary: clusters_total=%s hosts_total=%s hosts_success=%s hosts_failed=%s duration_seconds=%s",
@@ -182,20 +196,22 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
 def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
     os_records = []
     db_records = []
+    asm_records = []
     success = 0
     failed = 0
     with ThreadPoolExecutor(max_workers=inventory.max_hosts_per_cluster) as host_pool:
         host_futures = {}
         for host in cluster.hosts:
             LOGGER.info("Starting host %s", host.name)
-            future = host_pool.submit(_collect_host, cluster, host, runner, inventory.logs_dir)
+            future = host_pool.submit(_collect_host, cluster, host, runner, inventory.logs_dir, inventory)
             host_futures[future] = host
         for future, host in host_futures.items():
             timeout_seconds = max(host.timeout_seconds, 1) * 2
             try:
-                os_record, db_record = future.result(timeout=timeout_seconds)
+                os_record, db_record, host_asm_records = future.result(timeout=timeout_seconds)
                 os_records.append(os_record)
                 db_records.append(db_record)
+                asm_records.extend(host_asm_records)
                 if os_record.status == "ok" and db_record.status == "ok":
                     success += 1
                     LOGGER.info("Completed host %s", host.name)
@@ -214,7 +230,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
                 now = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 os_records.append(OSCollectionRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=str(exc)))
                 db_records.append(DBInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=str(exc)))
-    return os_records, db_records, success, failed
+    return os_records, db_records, asm_records, success, failed
 
 
 
@@ -239,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
                 parallel_enabled=inventory.parallel_enabled,
                 max_clusters=args.max_clusters,
                 max_hosts_per_cluster=inventory.max_hosts_per_cluster,
+                asm_enabled=inventory.asm_enabled,
+                asm_timeout_seconds=inventory.asm_timeout_seconds,
+                asm_fail_host_on_error=inventory.asm_fail_host_on_error,
             )
         if args.max_hosts_per_cluster is not None:
             if args.max_hosts_per_cluster < 1:
@@ -250,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
                 parallel_enabled=inventory.parallel_enabled,
                 max_clusters=inventory.max_clusters,
                 max_hosts_per_cluster=args.max_hosts_per_cluster,
+                asm_enabled=inventory.asm_enabled,
+                asm_timeout_seconds=inventory.asm_timeout_seconds,
+                asm_fail_host_on_error=inventory.asm_fail_host_on_error,
             )
         configure_logging(inventory.logs_dir, args.verbose)
         if args.show_inventory:
