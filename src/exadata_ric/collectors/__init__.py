@@ -1,5 +1,6 @@
 """Phase 1 collectors."""
 
+from .asm_diskgroups import AsmDiskgroupCollector
 from .base import Collector, CollectionResult
 from .cpu_memory import CpuMemoryCollector
 from .filesystem import FilesystemCollector
@@ -8,14 +9,16 @@ from .os_info import OsCollector
 
 PHASE1_COLLECTORS: tuple[Collector, ...] = (
     OsCollector(),
+    GridEnvDetectorCollector(),
+    AsmDiskgroupCollector(),
     CpuMemoryCollector(),
     FilesystemCollector(),
-    GridEnvDetectorCollector(),
 )
 
 __all__ = [
     "CollectionResult",
     "Collector",
+    "AsmDiskgroupCollector",
     "CpuMemoryCollector",
     "FilesystemCollector",
     "OsCollector",

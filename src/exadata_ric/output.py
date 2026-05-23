@@ -71,6 +71,13 @@ def write_results(output_dir: Path, results: dict[str, list[dict[str, Any]]], er
     )
     _write_csv(csv_dir / "hugepages.csv", [])
 
+    asm_rows = results.get("asm_diskgroups", [])
+    (output_dir / "asm_diskgroups.json").write_text(
+        json.dumps(asm_rows, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _write_csv(output_dir / "asm_diskgroups.csv", asm_rows)
+
 
 def merge_results(results: list[CollectionResult]) -> dict[str, list[dict[str, Any]]]:
     """Group collection result rows by collector name."""
