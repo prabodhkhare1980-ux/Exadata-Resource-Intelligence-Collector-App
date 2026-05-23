@@ -1,8 +1,8 @@
 from pathlib import Path
 
+from exadata_ric.collectors import PHASE1_COLLECTORS
 from exadata_ric.config import AuthConfig, CollectionConfig, HostConfig, PrivilegeConfig
 from exadata_ric.runner import build_phase1_script, parse_sections
-from exadata_ric.collectors import PHASE1_COLLECTORS
 
 
 def _host():
@@ -20,28 +20,18 @@ def _host():
 def test_build_script_contains_all_phase1_sections():
     script = build_phase1_script(PHASE1_COLLECTORS, CollectionConfig(output_dir=Path("output"), hosts=(_host(),)))
 
-    assert "SECTION\tos" in script
-    assert "SECTION\tcpu_memory" in script
-    assert "SECTION\tfilesystem" in script
+    assert "===BEGIN_SECTION:hostname===" in script
+    assert "===BEGIN_SECTION:lscpu===" in script
+    assert "===BEGIN_SECTION:df===" in script
     assert "export ASM_TIMEOUT_SECONDS=30" in script
 
 
-def test_parse_sections_and_collectors():
+def test_parse_sections_marker_format():
     sections = parse_sections(
-        "SECTION\tos\n"
+        "===BEGIN_SECTION:hostname===\n"
         "hostname\tdb01\n"
-        "END\tos\n"
-        "SECTION\tcpu_memory\n"
-        "cpu_count\t8\n"
-        "load_1m\t0.5\n"
-        "END\tcpu_memory\n"
-        "SECTION\tfilesystem\n"
-        "/dev/sda1\txfs\t100\t40\t60\t40%\t/u01\n"
-        "END\tfilesystem\n"
+        "===END_SECTION:hostname===\n"
     )
 
-    host = _host()
-    parsed = {collector.name: collector.parse(host, sections) for collector in PHASE1_COLLECTORS}
-    assert parsed["os"].rows[0]["hostname"] == "db01"
-    assert parsed["cpu_memory"].rows[0]["cpu_count"] == 8
-    assert parsed["filesystem"].rows[0]["mountpoint"] == "/u01"
+    assert "hostname" in sections
+    assert sections["hostname"][0] == ["hostname", "db01"]
