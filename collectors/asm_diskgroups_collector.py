@@ -96,6 +96,8 @@ class ASMDiskgroupCollector:
             logger.warning("ASM diskgroup collection partial: rows=%s error=%s", len(dg_rows), summary.asm_collection_error or summary.asm_error or "unknown")
         else:
             logger.warning("ASM diskgroup collection failed: error=%s", summary.asm_collection_error or summary.asm_error or "unknown")
+        else:
+            logger.warning("ASM diskgroup collection failed: error=%s", summary.asm_collection_error or summary.asm_error or "unknown")
             logger.warning("ASM collection failed for %s: %s", host.name, reason)
             return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_error=reason)]
 
@@ -165,6 +167,27 @@ def _parse_lsdg(cluster: str, host: str, address: str, text: str, status: str, s
         if not asm_collection_error:
             asm_collection_error = "failed_parse_no_valid_diskgroup_rows"
 
+    summary_kwargs = {
+        "cluster": cluster,
+        "host": host,
+        "address": address,
+        "warning_level": "ERROR" if status.startswith("failed") else "",
+        "asm_collection_status": status,
+        "asm_collection_error": asm_collection_error,
+        "asm_error": asm_error,
+        "grid_home": env.get("grid_home", ""),
+        "grid_owner": env.get("grid_owner", ""),
+        "asm_sid": env.get("asm_sid", ""),
+        "asmcmd_path": env.get("asmcmd_path", ""),
+        "asm_command": sections.get("asm_command", "").strip(),
+        "asm_stdout": sections.get("asm_stdout", "").strip(),
+        "asm_stderr": sections.get("asm_stderr", "").strip(),
+        "asm_returncode": sections.get("asm_returncode", "").strip(),
+        "sqlplus_stdout": sections.get("sqlplus_stdout", "").strip(),
+        "sqlplus_stderr": sections.get("sqlplus_stderr", "").strip(),
+        "sqlplus_returncode": sections.get("sqlplus_returncode", "").strip(),
+    }
+    summary = ASMDiskgroupRecord(**summary_kwargs)
     summary = ASMDiskgroupRecord(
         cluster=cluster,
         host=host,
@@ -235,6 +258,10 @@ export TERM=dumb
 begin_section() { printf '===BEGIN_SECTION:%s===\n' "$1"; }
 end_section() { printf '===END_SECTION:%s===\n' "$1"; }
 
+
+begin_section() { printf '===BEGIN_SECTION:%s===\n' "$1"; }
+end_section() { printf '===END_SECTION:%s===\n' "$1"; }
+
 ASM_TIMEOUT_SECONDS="${ASM_TIMEOUT_SECONDS:-__ASM_TIMEOUT_SECONDS__}"
 effective_user="$(id -un 2>/dev/null || true)"
 asm_sid="$(ps -ef | grep pmon | grep ASM | awk '{print $NF}' | sed 's/.*pmon_//' | head -n1)"
@@ -242,6 +269,23 @@ grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
 grid_owner=""
 if [ -n "$grid_home" ] && [ -e "$grid_home/bin/crsctl" ]; then
   grid_owner="$(stat -c '%U' "$grid_home/bin/crsctl" 2>/dev/null || true)"
+fi
+asmcmd_path="$grid_home/bin/asmcmd"
+
+begin_section asm_env
+printf 'grid_home=%s\n' "$grid_home"
+printf 'grid_owner=%s\n' "$grid_owner"
+printf 'asm_sid=%s\n' "$asm_sid"
+printf 'asmcmd_path=%s\n' "$asmcmd_path"
+printf 'effective_user=%s\n' "$effective_user"
+end_section asm_env
+
+errs=""
+if [ -z "$grid_home" ]; then errs="${errs} GRID_HOME_NOT_FOUND"; fi
+if [ -z "$asm_sid" ]; then errs="${errs} ASM_SID_NOT_FOUND"; fi
+if [ -z "$grid_owner" ]; then errs="${errs} GRID_OWNER_NOT_FOUND"; fi
+if [ -n "$grid_home" ] && [ ! -x "$grid_home/bin/asmcmd" ]; then errs="${errs} ASMCMD_NOT_FOUND"; fi
+
 fi
 asmcmd_path="$grid_home/bin/asmcmd"
 
@@ -315,6 +359,24 @@ begin_section sqlplus_fallback
 sqlplus_stdout="$(timeout "${ASM_TIMEOUT_SECONDS}s" sudo -n -u "$grid_owner" env ORACLE_HOME="$grid_home" ORACLE_SID="$asm_sid" PATH="$grid_home/bin:/usr/bin:/bin" "$grid_home/bin/sqlplus" -s / as sysasm <<'SQL' 2>&1
 set pages 0 lines 300 feedback off heading off trimspool on
 select name||'|'||state||'|'||type||'|'||total_mb||'|'||free_mb||'|'||usable_file_mb from v\$asm_diskgroup;
+exit
+SQL
+)"
+sqlplus_rc=$?
+printf '%s\n' "$sqlplus_stdout"
+end_section sqlplus_fallback
+begin_section sqlplus_returncode; echo "$sqlplus_rc"; end_section sqlplus_returncode
+begin_section sqlplus_stdout; printf '%s\n' "$sqlplus_stdout"; end_section sqlplus_stdout
+begin_section sqlplus_stderr; printf '%s\n' ""; end_section sqlplus_stderr
+
+if [ "$sqlplus_rc" -eq 0 ]; then
+  begin_section asm_collection_status; echo partial; end_section asm_collection_status
+  exit 0
+fi
+
+begin_section asm_collection_status; echo failed_asmcmd; end_section asm_collection_status
+begin_section asm_collection_error; echo "asmcmd_failed_rc_${asm_rc};sqlplus_failed_rc_${sqlplus_rc}"; end_section asm_collection_error
+begin_section asm_error; echo "asmcmd_failed_rc_${asm_rc};sqlplus_failed_rc_${sqlplus_rc}"; end_section asm_error
 asmcmd_cmd="sudo -n -u $grid_owner env ORACLE_HOME=$grid_home ORACLE_SID=$asm_sid PATH=$grid_home/bin:/usr/bin:/bin asmcmd lsdg"
 emit_section asm_command
 printf '%s\n' "$asmcmd_cmd"
