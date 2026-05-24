@@ -13,51 +13,74 @@ class AsmDiskgroupCollector:
 if [ "${ASM_ENABLED:-true}" != "true" ]; then
   printf '===BEGIN_SECTION:asm_status===\n'
   printf 'asm_collection_status\tskipped\n'
+  printf 'asm_collection_error\tasm_collection_disabled\n'
   printf 'asm_status\tskipped\n'
   printf '===END_SECTION:asm_status===\n'
 else
-printf '===BEGIN_SECTION:asm_grid_home===\n'
-asm_grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
+asm_identity="$(awk -F: '/^\+ASM/ {print $1 "|" $2; exit}' /etc/oratab 2>/dev/null)"
+asm_sid="${asm_identity%%|*}"
+asm_grid_home="${asm_identity#*|}"
+if [ "$asm_identity" = "$asm_grid_home" ]; then
+  asm_sid=""
+fi
+asmcmd_path="${asm_grid_home}/bin/asmcmd"
+grid_owner=""
+if [ -n "$asm_grid_home" ] && [ -f "$asm_grid_home/bin/crsctl" ]; then
+  grid_owner="$(stat -c '%U' "$asm_grid_home/bin/crsctl" 2>/dev/null)"
+fi
+if [ -z "$grid_owner" ] && [ -n "$asm_grid_home" ] && [ -f "$asmcmd_path" ]; then
+  grid_owner="$(stat -c '%U' "$asmcmd_path" 2>/dev/null)"
+fi
+
+printf '===BEGIN_SECTION:asm_env===\n'
 printf 'grid_home\t%s\n' "${asm_grid_home:-}"
-printf '===END_SECTION:asm_grid_home===\n'
+printf 'grid_owner\t%s\n' "${grid_owner:-}"
+printf 'asm_sid\t%s\n' "${asm_sid:-}"
+printf 'asmcmd_path\t%s\n' "${asmcmd_path:-}"
+printf '===END_SECTION:asm_env===\n'
+
+printf 'ASM env resolved: host=%s grid_home=%s grid_owner=%s asm_sid=%s\n' "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)" "${asm_grid_home:-}" "${grid_owner:-}" "${asm_sid:-}" >&2
+
 printf '===BEGIN_SECTION:asm_status===\n'
-if [ -z "$asm_grid_home" ]; then
-  printf 'asm_collection_status\tskipped\n'
-  printf 'asm_status\tskipped\n'
+if [ -z "$asm_grid_home" ] || [ -z "$asm_sid" ] || [ -z "$grid_owner" ] || [ ! -d "$asm_grid_home" ] || [ ! -f "$asmcmd_path" ]; then
+  printf 'asm_collection_status\tfailed\n'
+  printf 'asm_collection_error\tmissing_required_asm_environment\n'
+  printf 'asm_status\tfailed\n'
   printf '===END_SECTION:asm_status===\n'
 else
-  export ASM_COLLECTION_STATUS=success
-  run_asm_cmd() {
-    cmd_name="$1"; shift
-    start_epoch="$(date +%s)"
-    printf 'asm_command_start\t%s\t%s\n' "$cmd_name" "$start_epoch"
-    output="$(sudo -n -u grid bash -c "export ORACLE_HOME='$asm_grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; $*" 2>&1)"
-    rc=$?
-    end_epoch="$(date +%s)"
-    duration="$((end_epoch-start_epoch))"
-    printf 'asm_command_end\t%s\t%s\t%s\t%s\n' "$cmd_name" "$end_epoch" "$duration" "$rc"
-    if [ "$rc" -ne 0 ]; then
-      if [ "$ASM_COLLECTION_STATUS" = "success" ]; then ASM_COLLECTION_STATUS=partial; fi
-      printf 'asm_warning\t%s\t%s\n' "$cmd_name" "command_failed_or_timed_out"
-    fi
-    printf '%s\n' "$output"
-    return 0
-  }
-printf '===BEGIN_SECTION:asm_lsdg===\n'
-run_asm_cmd asmcmd_lsdg "timeout ${ASM_TIMEOUT_SECONDS:-30}s asmcmd lsdg"
-printf '===END_SECTION:asm_lsdg===\n'
-printf '===BEGIN_SECTION:asm_lsdsk===\n'
-run_asm_cmd asmcmd_lsdsk "timeout ${ASM_TIMEOUT_SECONDS:-30}s asmcmd lsdsk"
-printf '===END_SECTION:asm_lsdsk===\n'
-printf '===BEGIN_SECTION:asm_crs_dg===\n'
-run_asm_cmd crsctl_stat_res "timeout ${ASM_TIMEOUT_SECONDS:-30}s crsctl stat res -t" | awk '/\.dg/ || /^asm_/'
-printf '===END_SECTION:asm_crs_dg===\n'
-  if [ "$ASM_COLLECTION_STATUS" = "partial" ]; then
-    printf 'asm_collection_status\tpartial\n'
+  asm_timeout="${ASM_TIMEOUT_SECONDS:-30}"
+  printf '===BEGIN_SECTION:asm_lsdg===\n'
+  asm_lsdg_output="$(sudo -n -u "$grid_owner" env ORACLE_HOME="$asm_grid_home" ORACLE_SID="$asm_sid" PATH="$asm_grid_home/bin:$PATH" timeout "${asm_timeout}s" asmcmd lsdg 2>&1)"
+  asmcmd_rc=$?
+  printf '%s\n' "$asm_lsdg_output"
+  printf '===END_SECTION:asm_lsdg===\n'
+
+  if [ "$asmcmd_rc" -ne 0 ]; then
+    printf '===BEGIN_SECTION:asm_sqlplus_lsdg===\n'
+    sqlplus_output="$(sudo -n -u "$grid_owner" env ORACLE_HOME="$asm_grid_home" ORACLE_SID="$asm_sid" PATH="$asm_grid_home/bin:$PATH" timeout "${asm_timeout}s" sqlplus -s / as sysasm <<'SQL' 2>&1
+set pages 0 lines 200 feedback off verify off heading off echo off
+select state||' '||type||' N 512 4096 4194304 '||total_mb||' '||free_mb||' 0 '||usable_file_mb||' 0 N '||name||'/' from v$asm_diskgroup;
+exit
+SQL
+)"
+    sqlplus_rc=$?
+    printf '%s\n' "$sqlplus_output"
+    printf '===END_SECTION:asm_sqlplus_lsdg===\n'
   else
-    printf 'asm_collection_status\tsuccess\n'
+    sqlplus_rc=0
   fi
-  printf 'asm_status\t%s\n' "$ASM_COLLECTION_STATUS"
+
+  if [ "$asmcmd_rc" -eq 0 ]; then
+    printf 'asm_collection_status\tsuccess\n'
+    printf 'asm_status\tsuccess\n'
+  elif [ "$sqlplus_rc" -eq 0 ]; then
+    printf 'asm_collection_status\tpartial\n'
+    printf 'asm_status\tpartial\n'
+  else
+    printf 'asm_collection_status\tfailed\n'
+    printf 'asm_collection_error\tasmcmd_and_sqlplus_failed\n'
+    printf 'asm_status\tfailed\n'
+  fi
   printf '===END_SECTION:asm_status===\n'
 fi
 fi
@@ -119,9 +142,26 @@ fi
                 "host": host.name,
                 "address": host.address,
                 "asm_collection_status": status,
+                "grid_home": self._get_env_value(sections, "grid_home"),
+                "grid_owner": self._get_env_value(sections, "grid_owner"),
+                "asm_sid": self._get_env_value(sections, "asm_sid"),
+                "asmcmd_path": self._get_env_value(sections, "asmcmd_path"),
+                "asm_collection_error": self._get_status_value(sections, "asm_collection_error"),
             }
         )
         return CollectionResult(self.name, rows)
+
+    def _get_env_value(self, sections: dict[str, list[list[str]]], key: str) -> str:
+        for record in sections.get("asm_env", []):
+            if len(record) >= 2 and record[0] == key:
+                return record[1].strip()
+        return ""
+
+    def _get_status_value(self, sections: dict[str, list[list[str]]], key: str) -> str:
+        for record in sections.get("asm_status", []):
+            if len(record) >= 2 and record[0] == key:
+                return record[1].strip()
+        return ""
 
     def _to_int(self, value: str) -> int:
         try:
