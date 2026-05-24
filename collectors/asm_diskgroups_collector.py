@@ -144,6 +144,10 @@ else
 fi
 
 emit_section asm_lsdg
+set +e
+asm_output="$($asm_runner "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1)"
+asm_rc=$?
+set -e
 asm_output="$($asm_runner "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1)"
 asm_rc=$?
 printf '%s

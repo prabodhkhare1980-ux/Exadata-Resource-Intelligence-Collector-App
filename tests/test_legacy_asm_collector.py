@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from types import SimpleNamespace
 
 from collectors.asm_diskgroups_collector import ASMDiskgroupCollector
@@ -21,3 +26,11 @@ def test_failed_status_from_sections() -> None:
     collector = ASMDiskgroupCollector(_Runner(out))
     rows = collector.collect_host("c1", _host(), __import__('logging').getLogger('t'))
     assert rows[-1].asm_collection_status == "failed"
+
+
+def test_script_disables_errexit_around_asm_cmd() -> None:
+    from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
+
+    assert "set +e" in ASM_COLLECTION_SCRIPT
+    assert "asm_rc=$?" in ASM_COLLECTION_SCRIPT
+    assert "set -e" in ASM_COLLECTION_SCRIPT
