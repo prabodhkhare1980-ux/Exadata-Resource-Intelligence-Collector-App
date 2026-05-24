@@ -14,7 +14,7 @@ def _host() -> HostConfig:
     )
 
 
-def test_parse_asm_lsdg_rows_with_risk() -> None:
+def test_parse_asm_lsdg_rows_with_warning_level() -> None:
     collector = AsmDiskgroupCollector()
     sections = {
         "asm_status": [["asm_collection_status", "success"]],
@@ -30,5 +30,5 @@ def test_parse_asm_lsdg_rows_with_risk() -> None:
     assert row["total_mb"] == 1000000
     assert row["free_mb"] == 120000
     assert row["used_pct"] == 88.0
-    assert row["risk"] == "WARNING"
+    assert row["warning_level"] == "WARNING"
     assert result.rows[1]["asm_collection_status"] == "success"
