@@ -50,6 +50,7 @@ class ASMDiskgroupCollector:
             return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="skipped")]
 
         script = ASM_COLLECTION_SCRIPT.replace("__ASM_TIMEOUT_SECONDS__", str(max(1, int(timeout_seconds))))
+        script = ASM_COLLECTION_SCRIPT.format(timeout=max(1, int(timeout_seconds)))
         result = self.runner.run_script(host, script)
         if not result.ok:
             logger.warning("ASM collection skipped/failed for %s", host.name)
@@ -123,6 +124,7 @@ fi
 
 emit_section asm_lsdg
 sudo -n -u grid bash -c "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1 || true
+sudo -n -u grid bash -c "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout {timeout}s asmcmd lsdg" 2>&1 || true
 
 emit_section asm_collection_status
 echo success
