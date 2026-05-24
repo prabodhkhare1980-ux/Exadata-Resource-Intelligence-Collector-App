@@ -41,6 +41,9 @@ class Inventory:
     parallel_enabled: bool = True
     max_clusters: int = 3
     max_hosts_per_cluster: int = 2
+    asm_enabled: bool = True
+    asm_timeout_seconds: int = 30
+    asm_fail_host_on_error: bool = False
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -121,6 +124,9 @@ def load_inventory(path: str | Path) -> Inventory:
         raise ValueError("'collection.parallel.max_clusters' must be >= 1.")
     if max_hosts_per_cluster < 1:
         raise ValueError("'collection.parallel.max_hosts_per_cluster' must be >= 1.")
+    asm_cfg = collection.get("asm") or {}
+    if not isinstance(asm_cfg, dict):
+        raise ValueError("'collection.asm' must be a mapping.")
     return Inventory(
         clusters=clusters,
         output_dir=output_dir,
@@ -128,6 +134,9 @@ def load_inventory(path: str | Path) -> Inventory:
         parallel_enabled=parallel_enabled,
         max_clusters=max_clusters,
         max_hosts_per_cluster=max_hosts_per_cluster,
+        asm_enabled=bool(asm_cfg.get("enabled", True)),
+        asm_timeout_seconds=int(asm_cfg.get("timeout_seconds", 30)),
+        asm_fail_host_on_error=bool(asm_cfg.get("fail_host_on_error", False)),
     )
 
 
