@@ -33,6 +33,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--debug-ssh", action="store_true", help="Print sanitized SSH command plus first 500 chars of stdout/stderr.")
     parser.add_argument("--max-clusters", type=int, help="Override collection.parallel.max_clusters")
     parser.add_argument("--max-hosts-per-cluster", type=int, help="Override collection.parallel.max_hosts_per_cluster")
+    parser.add_argument("--collector", choices=["all", "asm"], default="all", help="Run all collectors (default) or a single collector.")
+    parser.add_argument("--host", default=None, help="Host name filter, used with --collector asm for standalone ASM test mode.")
     return parser.parse_args(argv)
 
 
@@ -193,6 +195,26 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     return 2 if failures else 0
 
 
+def run_asm_only(inventory: Inventory, debug_ssh: bool = False, host_filter: str | None = None) -> int:
+    inventory.output_dir.mkdir(parents=True, exist_ok=True)
+    inventory.logs_dir.mkdir(parents=True, exist_ok=True)
+    runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
+    asm_records = []
+    for cluster in inventory.clusters:
+        for host in cluster.hosts:
+            if host_filter and host.name != host_filter:
+                continue
+            logger = host_logger(inventory.logs_dir, f"{cluster.name}_{host.name}")
+            context = SharedHostContext(runner, logging.getLogger("collectors.shared_context"))
+            asm_collector = ASMDiskgroupCollector(runner, context=context, logger=logging.getLogger("collectors.asm_diskgroups"))
+            asm_records.extend(
+                asm_collector.collect_host(cluster.name, host, logger, enabled=inventory.asm_enabled, timeout_seconds=inventory.asm_timeout_seconds)
+            )
+    write_asm_diskgroups_csv(asm_records, inventory.output_dir)
+    write_asm_diskgroups_json(asm_records, inventory.output_dir)
+    return 0
+
+
 def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
     os_records = []
     db_records = []
@@ -278,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
             return show_inventory(inventory)
         if args.preflight:
             return preflight(inventory, debug_ssh=args.debug_ssh)
+        if args.collector == "asm":
+            return run_asm_only(inventory, debug_ssh=args.debug_ssh, host_filter=args.host)
         return run(inventory, debug_ssh=args.debug_ssh)
     except Exception as exc:
         logging.basicConfig(level=logging.ERROR, format="%(levelname)s %(message)s")
