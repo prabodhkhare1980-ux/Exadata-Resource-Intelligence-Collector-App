@@ -1,5 +1,3 @@
-"""ASM diskgroup collector."""
-
 from __future__ import annotations
 
 import logging
@@ -29,6 +27,19 @@ class ASMDiskgroupRecord:
     used_pct: float = 0.0
     warning_level: str = ""
     asm_collection_status: str = ""
+    asm_collection_error: str = ""
+    asm_error: str = ""
+    grid_home: str = ""
+    grid_owner: str = ""
+    asm_sid: str = ""
+    asmcmd_path: str = ""
+    asm_command: str = ""
+    asm_stdout: str = ""
+    asm_stderr: str = ""
+    asm_returncode: str = ""
+    sqlplus_stdout: str = ""
+    sqlplus_stderr: str = ""
+    sqlplus_returncode: str = ""
 
     def to_csv_row(self) -> dict[str, object]:
         return asdict(self)
@@ -46,35 +57,27 @@ class ASMDiskgroupCollector:
     def collect_host(self, cluster_name: str, host: "HostConfig", logger: logging.Logger, *, enabled: bool = True, timeout_seconds: int = 30) -> list[ASMDiskgroupRecord]:
         logger.info("Starting ASM diskgroup collection for %s", host.name)
         if not enabled:
-            logger.warning("ASM collection skipped/failed for %s", host.name)
-            return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="skipped")]
+            reason = "asm_collection_disabled"
+            logger.warning("ASM diskgroup collection failed: error=%s", reason)
+            return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_collection_error=reason, asm_error=reason)]
 
         script = ASM_COLLECTION_SCRIPT.replace("__ASM_TIMEOUT_SECONDS__", str(max(1, int(timeout_seconds))))
         result = self.runner.run_script(host, script)
         if not result.ok:
-            logger.warning("ASM collection skipped/failed for %s: %s", host.name, result.error or result.stderr.strip() or f"SSH exited with {result.returncode}")
-            return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR")]
+            reason = result.error or result.stderr.strip() or f"SSH exited with {result.returncode}"
+            logger.warning("ASM diskgroup collection failed: error=%s", reason)
+            return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_collection_error=reason, asm_error=reason)]
 
         sections = _parse_sections(result.stdout)
-        status = sections.get("asm_collection_status", "failed").strip() or "failed"
-        script = ASM_COLLECTION_SCRIPT.format(timeout=max(1, int(timeout_seconds)))
-        result = self.runner.run_script(host, script)
-        if not result.ok:
-            logger.warning("ASM collection skipped/failed for %s", host.name)
-            return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed")]
-
-        sections = _parse_sections(result.stdout)
-        status = sections.get("asm_collection_status", "success").strip() or "failed"
-        rows = _parse_lsdg(cluster_name, host.name, host.address, sections.get("asm_lsdg", ""), status)
-        if status == "success":
-            logger.info("Completed ASM diskgroup collection for %s", host.name)
+        rows = _parse_lsdg(cluster_name, host.name, host.address, sections)
+        dg_rows = [r for r in rows if r.diskgroup_name and r.total_mb > 0]
+        summary = rows[-1]
+        if summary.asm_collection_status == "success" and len(dg_rows) > 0:
+            logger.info("Completed ASM diskgroup collection: status=success rows=%s", len(dg_rows))
+        elif summary.asm_collection_status == "partial":
+            logger.warning("ASM diskgroup collection partial: rows=%s error=%s", len(dg_rows), summary.asm_collection_error or summary.asm_error or "unknown")
         else:
-            error_detail = sections.get("asm_error", "").strip()
-            if error_detail:
-                logger.warning("ASM collection skipped/failed for %s: %s", host.name, error_detail.splitlines()[0])
-            else:
-                logger.warning("ASM collection skipped/failed for %s", host.name)
-            logger.warning("ASM collection skipped/failed for %s", host.name)
+            logger.warning("ASM diskgroup collection failed: error=%s", summary.asm_collection_error or summary.asm_error or "unknown")
         return rows
 
 
@@ -91,9 +94,11 @@ def _parse_sections(output: str) -> dict[str, str]:
     return {k: "\n".join(v).strip() for k, v in sections.items()}
 
 
-def _parse_lsdg(cluster: str, host: str, address: str, text: str, status: str) -> list[ASMDiskgroupRecord]:
+def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str]) -> list[ASMDiskgroupRecord]:
+    status = sections.get("asm_collection_status", "failed").strip() or "failed"
+    asm_lsdg_text = sections.get("asm_lsdg", "")
     rows: list[ASMDiskgroupRecord] = []
-    for line in text.splitlines():
+    for line in asm_lsdg_text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.lower().startswith("state") or set(stripped) <= {"-", " "}:
             continue
@@ -103,14 +108,48 @@ def _parse_lsdg(cluster: str, host: str, address: str, text: str, status: str) -
         total_mb = _to_int(parts[6])
         free_mb = _to_int(parts[7])
         usable_file_mb = _to_int(parts[9])
-        used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2) if total_mb > 0 else 0.0
+        diskgroup_name = parts[12].rstrip("/")
+        if not diskgroup_name or total_mb <= 0:
+            continue
+        used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2)
         warning_level = "OK"
         if used_pct >= 95:
             warning_level = "CRITICAL"
         elif used_pct >= 85:
             warning_level = "WARNING"
-        rows.append(ASMDiskgroupRecord(cluster=cluster, host=host, address=address, diskgroup_name=parts[12].rstrip('/'), state=parts[0], type=parts[1], total_mb=total_mb, free_mb=free_mb, usable_file_mb=usable_file_mb, used_pct=used_pct, warning_level=warning_level, asm_collection_status=status))
-    rows.append(ASMDiskgroupRecord(cluster=cluster, host=host, address=address, asm_collection_status=status))
+        rows.append(ASMDiskgroupRecord(cluster=cluster, host=host, address=address, diskgroup_name=diskgroup_name, state=parts[0], type=parts[1], total_mb=total_mb, free_mb=free_mb, usable_file_mb=usable_file_mb, used_pct=used_pct, warning_level=warning_level, asm_collection_status=status))
+
+    asm_error = sections.get("asm_error", "").strip()
+    asm_collection_error = sections.get("asm_collection_error", "").strip() or asm_error
+    if status == "success" and not rows:
+        status = "failed_parse"
+        if not asm_collection_error:
+            asm_collection_error = "failed_parse_no_valid_diskgroup_rows"
+
+    summary = ASMDiskgroupRecord(
+        cluster=cluster,
+        host=host,
+        address=address,
+        warning_level="ERROR" if status.startswith("failed") else "",
+        asm_collection_status=status,
+        asm_collection_error=asm_collection_error,
+        asm_error=asm_error,
+        grid_home=sections.get("grid_home", "").strip(),
+        grid_owner=sections.get("grid_owner", "").strip(),
+        asm_sid=sections.get("asm_sid", "").strip(),
+        asmcmd_path=sections.get("asmcmd_path", "").strip(),
+        asm_command=sections.get("asm_command", "").strip(),
+        asm_stdout=sections.get("asm_stdout", "").strip(),
+        asm_stderr=sections.get("asm_stderr", "").strip(),
+        asm_returncode=sections.get("asm_returncode", "").strip(),
+        sqlplus_stdout=sections.get("sqlplus_stdout", "").strip(),
+        sqlplus_stderr=sections.get("sqlplus_stderr", "").strip(),
+        sqlplus_returncode=sections.get("sqlplus_returncode", "").strip(),
+    )
+    if status.startswith("failed") and not rows:
+        rows.append(summary)
+    else:
+        rows.append(summary)
     return rows
 
 
@@ -127,45 +166,83 @@ emit_section() {
   printf '\n__ERIC_SECTION__:%s\n' "$1"
 }
 
+ASM_TIMEOUT_SECONDS="${ASM_TIMEOUT_SECONDS:-__ASM_TIMEOUT_SECONDS__}"
+effective_user="$(id -un 2>/dev/null || true)"
+asm_sid="$(ps -ef | grep pmon | grep ASM | awk '{print $NF}' | sed 's/.*pmon_//' | head -n1)"
 grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
-if [ -z "$grid_home" ]; then
-  emit_section asm_collection_status
-  echo skipped
+grid_owner=""
+if [ -n "$grid_home" ] && [ -e "$grid_home/bin/crsctl" ]; then
+  grid_owner="$(stat -c '%U' "$grid_home/bin/crsctl" 2>/dev/null || true)"
+fi
+asmcmd_path="$grid_home/bin/asmcmd"
+
+emit_section grid_owner
+printf '%s\n' "$grid_owner"
+emit_section grid_home
+printf '%s\n' "$grid_home"
+emit_section asm_sid
+printf '%s\n' "$asm_sid"
+emit_section asmcmd_path
+printf '%s\n' "$asmcmd_path"
+emit_section effective_user
+printf '%s\n' "$effective_user"
+
+errs=""
+if [ -z "$grid_home" ]; then errs="${errs} grid_home_not_detected_from_oratab"; fi
+if [ -z "$asm_sid" ]; then errs="${errs} asm_sid_not_detected_from_pmon"; fi
+if [ -z "$grid_owner" ]; then errs="${errs} grid_owner_not_detected_from_crsctl_owner"; fi
+if [ -n "$grid_home" ] && [ ! -x "$grid_home/bin/asmcmd" ]; then errs="${errs} asmcmd_not_executable"; fi
+if [ -n "$grid_home" ] && [ ! -x "$grid_home/bin/sqlplus" ]; then errs="${errs} sqlplus_not_executable"; fi
+
+if [ -n "$errs" ]; then
+  emit_section asm_collection_status; echo failed
+  emit_section asm_collection_error; echo "missing_required_asm_environment:${errs# }"
+  emit_section asm_error; echo "missing_required_asm_environment:${errs# }"
   exit 0
 fi
 
-asm_runner=''
-if [ "$(id -un 2>/dev/null || true)" = "root" ]; then
-  asm_runner='su -s /bin/bash -c'
-elif [ "$(id -un 2>/dev/null || true)" = "grid" ]; then
-  asm_runner='bash -c'
-else
-  asm_runner='sudo -n -u grid bash -c'
-fi
+asmcmd_cmd="sudo -n -u $grid_owner env ORACLE_HOME=$grid_home ORACLE_SID=$asm_sid PATH=$grid_home/bin:/usr/bin:/bin asmcmd lsdg"
+emit_section asm_command
+printf '%s\n' "$asmcmd_cmd"
 
-emit_section asm_lsdg
 set +e
-asm_output="$($asm_runner "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1)"
+asm_stdout="$(timeout "${ASM_TIMEOUT_SECONDS}s" sudo -n -u "$grid_owner" env ORACLE_HOME="$grid_home" ORACLE_SID="$asm_sid" PATH="$grid_home/bin:/usr/bin:/bin" asmcmd lsdg 2>/tmp/asm_stderr.$$)"
 asm_rc=$?
+asm_stderr="$(cat /tmp/asm_stderr.$$ 2>/dev/null || true)"
+rm -f /tmp/asm_stderr.$$ >/dev/null 2>&1 || true
 set -e
-asm_output="$($asm_runner "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1)"
-asm_rc=$?
-printf '%s
-' "$asm_output"
+emit_section asm_returncode; echo "$asm_rc"
+emit_section asm_stdout; printf '%s\n' "$asm_stdout"
+emit_section asm_stderr; printf '%s\n' "$asm_stderr"
 
-emit_section asm_collection_status
-if [ $asm_rc -eq 0 ]; then
-  echo success
-else
-  echo failed
-  emit_section asm_error
-  printf '%s
-' "$asm_output"
+if [ "$asm_rc" -eq 0 ]; then
+  emit_section asm_lsdg; printf '%s\n' "$asm_stdout"
+  emit_section asm_collection_status; echo success
+  exit 0
 fi
-emit_section asm_lsdg
-sudo -n -u grid bash -c "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1 || true
-sudo -n -u grid bash -c "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout {timeout}s asmcmd lsdg" 2>&1 || true
 
-emit_section asm_collection_status
-echo success
+set +e
+sqlplus_stdout="$(timeout "${ASM_TIMEOUT_SECONDS}s" sudo -n -u "$grid_owner" env ORACLE_HOME="$grid_home" ORACLE_SID="$asm_sid" PATH="$grid_home/bin:/usr/bin:/bin" sqlplus -s / as sysasm <<'SQL' 2>/tmp/sql_stderr.$$
+set pages 0 lines 200 feedback off verify off heading off echo off
+select state||' '||type||' N 512 4096 4194304 '||total_mb||' '||free_mb||' 0 '||usable_file_mb||' 0 N '||name||'/' from v\$asm_diskgroup;
+exit
+SQL
+)"
+sqlplus_rc=$?
+sqlplus_stderr="$(cat /tmp/sql_stderr.$$ 2>/dev/null || true)"
+rm -f /tmp/sql_stderr.$$ >/dev/null 2>&1 || true
+set -e
+emit_section sqlplus_returncode; echo "$sqlplus_rc"
+emit_section sqlplus_stdout; printf '%s\n' "$sqlplus_stdout"
+emit_section sqlplus_stderr; printf '%s\n' "$sqlplus_stderr"
+
+if [ "$sqlplus_rc" -eq 0 ]; then
+  emit_section asm_lsdg; printf '%s\n' "$sqlplus_stdout"
+  emit_section asm_collection_status; echo partial
+  exit 0
+fi
+
+emit_section asm_collection_status; echo failed
+emit_section asm_collection_error; echo "asmcmd_failed_rc_${asm_rc};sqlplus_failed_rc_${sqlplus_rc}"
+emit_section asm_error; echo "asmcmd_failed_rc_${asm_rc};sqlplus_failed_rc_${sqlplus_rc}"
 '''.lstrip()
