@@ -32,3 +32,39 @@ def test_parse_asm_lsdg_rows_with_warning_level() -> None:
     assert row["used_pct"] == 88.0
     assert row["warning_level"] == "WARNING"
     assert result.rows[1]["asm_collection_status"] == "success"
+
+
+def test_parse_includes_asm_debug_fields_on_failure() -> None:
+    collector = AsmDiskgroupCollector()
+    sections = {
+        "asm_status": [["asm_collection_status", "failed"], ["asm_collection_error", "missing asmcmd"]],
+        "asm_env": [
+            ["grid_home", "/u01/app/19.0.0/grid"],
+            ["grid_owner", "oracle"],
+            ["asm_sid", "+ASM1"],
+            ["asmcmd_path", "/u01/app/19.0.0/grid/bin/asmcmd"],
+        ],
+        "asm_lsdg": [],
+    }
+    result = collector.parse(_host(), sections)
+    status_row = result.rows[-1]
+    assert status_row["asm_collection_status"] == "failed"
+    assert status_row["grid_home"] == "/u01/app/19.0.0/grid"
+    assert status_row["grid_owner"] == "oracle"
+    assert status_row["asm_sid"] == "+ASM1"
+    assert status_row["asmcmd_path"] == "/u01/app/19.0.0/grid/bin/asmcmd"
+    assert status_row["asm_collection_error"] == "missing asmcmd"
+
+
+def test_shell_supports_dynamic_grid_owner_and_sqlplus_fallback() -> None:
+    shell = AsmDiskgroupCollector().shell()
+    assert "awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab" in shell
+    assert "stat -c '%U' \"$asm_grid_home/bin/crsctl\"" in shell
+    assert "stat -c '%U' \"$asmcmd_path\"" in shell
+    assert "sudo -n -u \"$grid_owner\" env ORACLE_HOME=\"$asm_grid_home\" ORACLE_SID=\"$asm_sid\"" in shell
+    assert "sqlplus -s / as sysasm <<'SQL'" in shell
+
+
+def test_shell_has_missing_asmcmd_validation() -> None:
+    shell = AsmDiskgroupCollector().shell()
+    assert "[ ! -f \"$asmcmd_path\" ]" in shell
