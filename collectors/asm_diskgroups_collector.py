@@ -50,6 +50,13 @@ class ASMDiskgroupCollector:
             return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="skipped")]
 
         script = ASM_COLLECTION_SCRIPT.replace("__ASM_TIMEOUT_SECONDS__", str(max(1, int(timeout_seconds))))
+        result = self.runner.run_script(host, script)
+        if not result.ok:
+            logger.warning("ASM collection skipped/failed for %s: %s", host.name, result.error or result.stderr.strip() or f"SSH exited with {result.returncode}")
+            return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR")]
+
+        sections = _parse_sections(result.stdout)
+        status = sections.get("asm_collection_status", "failed").strip() or "failed"
         script = ASM_COLLECTION_SCRIPT.format(timeout=max(1, int(timeout_seconds)))
         result = self.runner.run_script(host, script)
         if not result.ok:
@@ -62,6 +69,11 @@ class ASMDiskgroupCollector:
         if status == "success":
             logger.info("Completed ASM diskgroup collection for %s", host.name)
         else:
+            error_detail = sections.get("asm_error", "").strip()
+            if error_detail:
+                logger.warning("ASM collection skipped/failed for %s: %s", host.name, error_detail.splitlines()[0])
+            else:
+                logger.warning("ASM collection skipped/failed for %s", host.name)
             logger.warning("ASM collection skipped/failed for %s", host.name)
         return rows
 
@@ -122,6 +134,30 @@ if [ -z "$grid_home" ]; then
   exit 0
 fi
 
+asm_runner=''
+if [ "$(id -un 2>/dev/null || true)" = "root" ]; then
+  asm_runner='su -s /bin/bash -c'
+elif [ "$(id -un 2>/dev/null || true)" = "grid" ]; then
+  asm_runner='bash -c'
+else
+  asm_runner='sudo -n -u grid bash -c'
+fi
+
+emit_section asm_lsdg
+asm_output="$($asm_runner "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1)"
+asm_rc=$?
+printf '%s
+' "$asm_output"
+
+emit_section asm_collection_status
+if [ $asm_rc -eq 0 ]; then
+  echo success
+else
+  echo failed
+  emit_section asm_error
+  printf '%s
+' "$asm_output"
+fi
 emit_section asm_lsdg
 sudo -n -u grid bash -c "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout __ASM_TIMEOUT_SECONDS__s asmcmd lsdg" 2>&1 || true
 sudo -n -u grid bash -c "export ORACLE_HOME='$grid_home'; export PATH=\$ORACLE_HOME/bin:\$PATH; timeout {timeout}s asmcmd lsdg" 2>&1 || true
