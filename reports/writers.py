@@ -80,6 +80,7 @@ ASM_CSV_FIELDS = [
     "asm_collection_error", "asm_error", "grid_home", "grid_owner", "asm_sid", "asmcmd_path",
     "asm_command", "asm_env_stdout", "asm_stdout", "asm_stderr", "asm_returncode", "asmcmd_stdout", "asmcmd_stderr",
     "sqlplus_stdout", "sqlplus_stderr", "sqlplus_returncode",
+    "asm_command", "asm_stdout", "asm_stderr", "asm_returncode", "sqlplus_stdout", "sqlplus_stderr", "sqlplus_returncode",
 ]
 
 def write_asm_diskgroups_csv(records: Iterable[ASMDiskgroupRecord], output_dir: Path) -> Path:
