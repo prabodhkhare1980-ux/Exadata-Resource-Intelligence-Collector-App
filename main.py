@@ -123,10 +123,10 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
     try:
         asm_records = asm_collector.collect_host(cluster.name, host, logger, enabled=inventory.asm_enabled, timeout_seconds=inventory.asm_timeout_seconds)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("ASM collection skipped/failed for %s", host.name)
+        logger.warning("ASM diskgroup collection failed: error=%s", exc)
         if inventory.asm_fail_host_on_error:
             raise
-        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR")]
+        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_collection_error=str(exc), asm_error=str(exc))]
     return os_record, db_record, asm_records
 
 
@@ -217,6 +217,16 @@ def run_asm_only(inventory: Inventory, debug_ssh: bool = False, host_filter: str
                     f"asmcmd_path={summary.asmcmd_path} asm_returncode={summary.asm_returncode} sqlplus_returncode={summary.sqlplus_returncode}"
                 )
                 print(f"[ASM-DEBUG] asm_command={summary.asm_command}")
+                if summary.asm_collection_error:
+                    print(f"[ASM-DEBUG] asm_collection_error={summary.asm_collection_error}")
+                if summary.asm_stdout:
+                    print(f"[ASM-DEBUG] asm_stdout={summary.asm_stdout}")
+                if summary.asm_stderr:
+                    print(f"[ASM-DEBUG] asm_stderr={summary.asm_stderr}")
+                if summary.sqlplus_stdout:
+                    print(f"[ASM-DEBUG] sqlplus_stdout={summary.sqlplus_stdout}")
+                if summary.sqlplus_stderr:
+                    print(f"[ASM-DEBUG] sqlplus_stderr={summary.sqlplus_stderr}")
                 if summary.asm_stderr:
                     print(f"[ASM-DEBUG] asm_stderr={summary.asm_stderr}")
                 if summary.sqlplus_stderr:

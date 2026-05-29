@@ -78,6 +78,8 @@ def write_db_inventory_json(records: Iterable[DBInventoryRecord], output_dir: Pa
 ASM_CSV_FIELDS = [
     "cluster", "host", "address", "diskgroup_name", "state", "type", "total_mb", "free_mb", "usable_file_mb", "used_pct", "warning_level", "asm_collection_status",
     "asm_collection_error", "asm_error", "grid_home", "grid_owner", "asm_sid", "asmcmd_path",
+    "asm_command", "asm_env_stdout", "asm_stdout", "asm_stderr", "asm_returncode", "asmcmd_stdout", "asmcmd_stderr",
+    "sqlplus_stdout", "sqlplus_stderr", "sqlplus_returncode",
     "asm_command", "asm_stdout", "asm_stderr", "asm_returncode", "sqlplus_stdout", "sqlplus_stderr", "sqlplus_returncode",
 ]
 

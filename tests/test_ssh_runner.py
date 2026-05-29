@@ -37,7 +37,7 @@ def test_build_ssh_command_uses_force_tty_false() -> None:
     assert "-tt" not in command
 
 
-def test_run_script_uses_non_interactive_sudo_bash_c_with_tty(monkeypatch) -> None:
+def test_run_script_streams_stdin_to_non_interactive_sudo_bash_with_tty(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_run(command, input=None, **kwargs):  # noqa: ANN001
@@ -54,7 +54,8 @@ def test_run_script_uses_non_interactive_sudo_bash_c_with_tty(monkeypatch) -> No
 
     command = captured["command"]
     assert isinstance(command, list)
-    assert command[-1].startswith("sudo -n bash -c ")
+    assert command[-1] == "sudo -n bash --noprofile --norc -s"
     assert "bash -i" not in command[-1]
     assert "su -" not in command[-1]
-    assert captured["input"] is None
+    assert captured["input"] is not None
+    assert b"echo hello" in captured["input"]
