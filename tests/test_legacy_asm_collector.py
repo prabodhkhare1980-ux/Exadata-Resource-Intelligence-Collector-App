@@ -34,3 +34,78 @@ def test_script_disables_errexit_around_asm_cmd() -> None:
     assert "set +e" in ASM_COLLECTION_SCRIPT
     assert "asm_rc=$?" in ASM_COLLECTION_SCRIPT
     assert "set -e" in ASM_COLLECTION_SCRIPT
+
+
+def test_parse_asmcmd_lsdg_success() -> None:
+    from collectors.asm_diskgroups_collector import _parse_lsdg
+
+    sections = {
+        "asm_collection_status": "success",
+        "asmcmd_stdout": "\n".join(
+            [
+                "State    Type  Rebal  Sector  Block       AU  Total_MB   Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name",
+                "MOUNTED  EXTERN N         512   4096  4194304   1000000    120000                0          120000              0             N  DATA/",
+            ]
+        ),
+    }
+
+    rows = _parse_lsdg("c1", "h1", "1.1.1.1", sections)
+
+    assert rows[0].diskgroup_name == "DATA"
+    assert rows[0].total_mb == 1000000
+    assert rows[0].free_mb == 120000
+    assert rows[0].used_pct == 88.0
+    assert rows[0].warning_level == "WARNING"
+    assert rows[-1].asm_collection_status == "success"
+
+
+def test_parse_sqlplus_fallback_success() -> None:
+    from collectors.asm_diskgroups_collector import _parse_lsdg
+
+    sections = {
+        "asm_collection_status": "success",
+        "asm_collection_error": "asmcmd_failed_sqlplus_succeeded",
+        "asmcmd_stdout": "",
+        "sqlplus_stdout": "DATA|MOUNTED|EXTERN|1000000|120000|120000",
+    }
+
+    rows = _parse_lsdg("c1", "h1", "1.1.1.1", sections)
+
+    assert rows[0].diskgroup_name == "DATA"
+    assert rows[0].state == "MOUNTED"
+    assert rows[0].type == "EXTERN"
+    assert rows[0].total_mb == 1000000
+    assert rows[-1].asm_collection_status == "success"
+    assert rows[-1].asm_collection_error == "asmcmd_failed_sqlplus_succeeded"
+
+
+def test_missing_grid_home_asm_sid_or_grid_owner_returns_failed_env() -> None:
+    from collectors.asm_diskgroups_collector import _parse_lsdg
+
+    sections = {
+        "asm_env": "grid_home\t\ngrid_owner\t\nasm_sid\t",
+        "asm_collection_status": "failed_env",
+        "asm_collection_error": "missing_required_asm_environment",
+        "asm_error": "missing ASM_SID from PMON; missing GRID_HOME from /etc/oratab; missing GRID_OWNER from GRID_HOME binaries",
+    }
+
+    rows = _parse_lsdg("c1", "h1", "1.1.1.1", sections)
+
+    assert len(rows) == 1
+    assert rows[-1].asm_collection_status == "failed_env"
+    assert rows[-1].warning_level == "ERROR"
+    assert rows[-1].asm_collection_error == "missing_required_asm_environment"
+
+
+def test_current_user_equal_grid_owner_branch_does_not_use_sudo() -> None:
+    from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
+
+    assert 'if [ "$current_user" = "$GRID_OWNER" ]; then\n    env ORACLE_HOME="$GRID_HOME"' in ASM_COLLECTION_SCRIPT
+    assert 'asm_command="env ORACLE_HOME=\\"$GRID_HOME\\"' in ASM_COLLECTION_SCRIPT
+
+
+def test_current_user_differs_from_grid_owner_branch_uses_sudo_n() -> None:
+    from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
+
+    assert 'sudo -n -u "$GRID_OWNER" env ORACLE_HOME="$GRID_HOME"' in ASM_COLLECTION_SCRIPT
+    assert 'asm_command="sudo -n -u \\"$GRID_OWNER\\" env ORACLE_HOME=\\"$GRID_HOME\\"' in ASM_COLLECTION_SCRIPT
