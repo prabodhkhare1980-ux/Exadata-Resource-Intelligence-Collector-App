@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ class HostConfig:
     environment: str
     ssh_user: str
     auth: AuthConfig
-    privilege: PrivilegeConfig
+    privilege: PrivilegeConfig = field(default_factory=PrivilegeConfig)
     port: int = 22
     timeout_seconds: int = 60
     strict_host_key_checking: str = "accept-new"

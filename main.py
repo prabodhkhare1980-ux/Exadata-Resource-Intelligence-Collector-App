@@ -33,6 +33,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--debug-ssh", action="store_true", help="Print sanitized SSH command plus first 500 chars of stdout/stderr.")
     parser.add_argument("--max-clusters", type=int, help="Override collection.parallel.max_clusters")
     parser.add_argument("--max-hosts-per-cluster", type=int, help="Override collection.parallel.max_hosts_per_cluster")
+    parser.add_argument("--collector", choices=["all", "asm"], default="all", help="Run all collectors (default) or a single collector.")
+    parser.add_argument("--host", default=None, help="Host name filter, used with --collector asm for standalone ASM test mode.")
     return parser.parse_args(argv)
 
 
@@ -121,10 +123,10 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
     try:
         asm_records = asm_collector.collect_host(cluster.name, host, logger, enabled=inventory.asm_enabled, timeout_seconds=inventory.asm_timeout_seconds)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("ASM collection skipped/failed for %s", host.name)
+        logger.warning("ASM diskgroup collection failed: error=%s", exc)
         if inventory.asm_fail_host_on_error:
             raise
-        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR")]
+        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_collection_error=str(exc), asm_error=str(exc))]
     return os_record, db_record, asm_records
 
 
@@ -191,6 +193,43 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     failures = [record for record in os_records if record.status != "ok"] + [record for record in db_records if record.status != "ok"]
     return 2 if failures else 0
+
+
+def run_asm_only(inventory: Inventory, debug_ssh: bool = False, host_filter: str | None = None) -> int:
+    inventory.output_dir.mkdir(parents=True, exist_ok=True)
+    inventory.logs_dir.mkdir(parents=True, exist_ok=True)
+    runner = SSHRunner(logging.getLogger("ssh_runner"), debug_ssh=debug_ssh)
+    asm_records = []
+    for cluster in inventory.clusters:
+        for host in cluster.hosts:
+            if host_filter and host.name != host_filter:
+                continue
+            logger = host_logger(inventory.logs_dir, f"{cluster.name}_{host.name}")
+            context = SharedHostContext(runner, logging.getLogger("collectors.shared_context"))
+            asm_collector = ASMDiskgroupCollector(runner, context=context, logger=logging.getLogger("collectors.asm_diskgroups"))
+            host_rows = asm_collector.collect_host(cluster.name, host, logger, enabled=inventory.asm_enabled, timeout_seconds=inventory.asm_timeout_seconds)
+            asm_records.extend(host_rows)
+            summary = host_rows[-1] if host_rows else None
+            if summary:
+                print(
+                    f"[ASM-DEBUG] host={host.name} status={summary.asm_collection_status} "
+                    f"grid_owner={summary.grid_owner} grid_home={summary.grid_home} asm_sid={summary.asm_sid} "
+                    f"asmcmd_path={summary.asmcmd_path} asm_returncode={summary.asm_returncode} sqlplus_returncode={summary.sqlplus_returncode}"
+                )
+                print(f"[ASM-DEBUG] asm_command={summary.asm_command}")
+                if summary.asm_collection_error:
+                    print(f"[ASM-DEBUG] asm_collection_error={summary.asm_collection_error}")
+                if summary.asm_stdout:
+                    print(f"[ASM-DEBUG] asm_stdout={summary.asm_stdout}")
+                if summary.asm_stderr:
+                    print(f"[ASM-DEBUG] asm_stderr={summary.asm_stderr}")
+                if summary.sqlplus_stdout:
+                    print(f"[ASM-DEBUG] sqlplus_stdout={summary.sqlplus_stdout}")
+                if summary.sqlplus_stderr:
+                    print(f"[ASM-DEBUG] sqlplus_stderr={summary.sqlplus_stderr}")
+    write_asm_diskgroups_csv(asm_records, inventory.output_dir)
+    write_asm_diskgroups_json(asm_records, inventory.output_dir)
+    return 0
 
 
 def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
@@ -278,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
             return show_inventory(inventory)
         if args.preflight:
             return preflight(inventory, debug_ssh=args.debug_ssh)
+        if args.collector == "asm":
+            return run_asm_only(inventory, debug_ssh=args.debug_ssh, host_filter=args.host)
         return run(inventory, debug_ssh=args.debug_ssh)
     except Exception as exc:
         logging.basicConfig(level=logging.ERROR, format="%(levelname)s %(message)s")

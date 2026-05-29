@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -43,11 +42,11 @@ class SSHRunner:
             host.name,
         )
         normalized_script = _normalize_remote_script(script)
-        remote_shell = f"bash -c {shlex.quote(normalized_script)}"
+        remote_shell = "bash --noprofile --norc -s"
         if host.privilege_enabled and host.privilege_method == "sudo":
-            remote_shell = f"sudo -n bash -c {shlex.quote(normalized_script)}"
+            remote_shell = "sudo -n bash --noprofile --norc -s"
         command = [*ssh_command, remote_shell]
-        return self._run(command, host, None)
+        return self._run(command, host, normalized_script)
 
     def run_command(self, host: "HostConfig", remote_command: str) -> CommandResult:
         ssh_tty_mode = "-tt" if host.force_tty else "-T"
