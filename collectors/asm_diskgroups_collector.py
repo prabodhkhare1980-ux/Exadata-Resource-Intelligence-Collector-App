@@ -93,6 +93,16 @@ class ASMDiskgroupCollector:
             logger.warning("ASM diskgroup collection partial: rows=%s error=%s", len(dg_rows), summary.asm_collection_error or summary.asm_error or "unknown")
         else:
             logger.warning("ASM diskgroup collection failed: error=%s", summary.asm_collection_error or summary.asm_error or "unknown")
+
+        rows = _parse_lsdg(cluster_name, host.name, host.address, _parse_sections(result.stdout))
+        dg_rows = [r for r in rows if r.diskgroup_name and r.total_mb > 0]
+        summary = rows[-1]
+        if summary.asm_collection_status == "success" and dg_rows:
+            logger.info("Completed ASM diskgroup collection: status=success rows=%s", len(dg_rows))
+        elif summary.asm_collection_status == "partial" and dg_rows:
+            logger.warning("ASM diskgroup collection partial: rows=%s error=%s", len(dg_rows), summary.asm_collection_error or summary.asm_error or "unknown")
+        else:
+            logger.warning("ASM diskgroup collection failed: error=%s", summary.asm_collection_error or summary.asm_error or "unknown")
             return [ASMDiskgroupRecord(cluster=cluster_name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_collection_error=reason, asm_error=reason)]
 
         sections = _parse_sections(result.stdout)
@@ -149,6 +159,14 @@ def _parse_sections(output: str) -> dict[str, str]:
                 current = "asmcmd_lsdg"
             sections[current] = []
             continue
+            sections[current] = []
+            continue
+        if line.startswith("__ERIC_SECTION__:"):
+            current = line.split(":", 1)[1].strip()
+            if current == "asm_lsdg":
+                current = "asmcmd_lsdg"
+            sections[current] = []
+            continue
         if line.startswith(END_PREFIX) and line.endswith("==="):
             current = None
             continue
@@ -176,6 +194,16 @@ def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str])
         rows = _parse_sqlplus_rows(cluster, host, address, sqlplus_stdout, status)
         source_had_output = True
 
+    status, asm_collection_error = _resolve_collection_status(
+        status=status,
+        has_rows=bool(rows),
+        env_missing=[name for name in ("grid_home", "grid_owner", "asm_sid") if not env.get(name)],
+        env_was_reported=bool(env_stdout),
+        asm_returncode=asm_rc,
+        sqlplus_returncode=sqlplus_rc,
+        source_had_output=source_had_output,
+        asm_collection_error=asm_collection_error,
+    )
     env_missing = [name for name in ("grid_home", "grid_owner", "asm_sid") if not env.get(name)]
     if env_missing and env_stdout:
         status = "failed_env"
@@ -237,6 +265,25 @@ def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str])
     return rows
 
 
+def _resolve_collection_status(*, status: str, has_rows: bool, env_missing: list[str], env_was_reported: bool, asm_returncode: str, sqlplus_returncode: str, source_had_output: bool, asm_collection_error: str) -> tuple[str, str]:
+    if env_missing and env_was_reported:
+        return "failed_env", asm_collection_error or "missing_" + "_".join(env_missing)
+
+    if has_rows:
+        return ("success" if status == "success" else "partial"), asm_collection_error
+
+    if (asm_returncode and asm_returncode != "0") and (not sqlplus_returncode or sqlplus_returncode != "0"):
+        error = asm_collection_error or f"asmcmd_failed_rc_{asm_returncode or 'unknown'};sqlplus_failed_rc_{sqlplus_returncode or 'not_run'}"
+        return "failed_asmcmd", error
+
+    if source_had_output and not status.startswith("failed"):
+        return "failed_parse", asm_collection_error or "failed_parse_no_valid_diskgroup_rows"
+
+    fallback_status = status if status.startswith("failed") else "failed_asmcmd"
+    return fallback_status, asm_collection_error or "no_asm_output_returned"
+
+
+def _parse_asmcmd_rows(cluster: str, host: str, address: str, text: str, status: str) -> list[ASMDiskgroupRecord]:
 def _parse_asmcmd_rows(cluster: str, host: str, address: str, text: str, status: str) -> list[ASMDiskgroupRecord]:
     env = _parse_env_section(sections.get("asm_env", ""))
     status = sections.get("asm_collection_status", "failed").strip() or "failed"
@@ -409,6 +456,14 @@ begin_section asm_env
 printf 'grid_home=%s\n' "$GRID_HOME"
 printf 'grid_owner=%s\n' "$GRID_OWNER"
 printf 'asm_sid=%s\n' "$ASM_SID"
+fi
+asmcmd_path="$GRID_HOME/bin/asmcmd"
+sqlplus_path="$GRID_HOME/bin/sqlplus"
+
+begin_section asm_env
+printf 'grid_home=%s\n' "$GRID_HOME"
+printf 'grid_owner=%s\n' "$GRID_OWNER"
+printf 'asm_sid=%s\n' "$ASM_SID"
 
 begin_section() { printf '===BEGIN_SECTION:%s===\n' "$1"; }
 end_section() { printf '===END_SECTION:%s===\n' "$1"; }
@@ -528,6 +583,14 @@ if [ "$asm_rc" -eq 0 ]; then
   begin_section sqlplus_stderr; echo ""; end_section sqlplus_stderr
   begin_section asm_collection_status; echo success; end_section asm_collection_status
   set -e
+
+if [ "$asm_rc" -eq 0 ]; then
+  begin_section sqlplus_fallback; end_section sqlplus_fallback
+  begin_section sqlplus_returncode; echo ""; end_section sqlplus_returncode
+  begin_section sqlplus_stdout; echo ""; end_section sqlplus_stdout
+  begin_section sqlplus_stderr; echo ""; end_section sqlplus_stderr
+  begin_section asm_collection_status; echo success; end_section asm_collection_status
+  set -e
 asmcmd_cmd="sudo -n -u $grid_owner env ORACLE_HOME=$grid_home ORACLE_SID=$asm_sid PATH=$grid_home/bin:/usr/bin:/bin asmcmd lsdg"
 begin_section asm_command
 printf '%s\n' "$asmcmd_cmd"
@@ -579,6 +642,12 @@ if [ "$sqlplus_rc" -eq 0 ]; then
   begin_section asm_error; echo "asmcmd_failed_rc_${asm_rc}"; end_section asm_error
   set -e
   exit 0
+fi
+
+begin_section asm_collection_status; echo failed_asmcmd; end_section asm_collection_status
+begin_section asm_collection_error; echo "asmcmd_failed_rc_${asm_rc};sqlplus_failed_rc_${sqlplus_rc}"; end_section asm_collection_error
+begin_section asm_error; echo "asmcmd_failed_rc_${asm_rc};sqlplus_failed_rc_${sqlplus_rc}"; end_section asm_error
+set -e
 fi
 
 begin_section asm_collection_status; echo failed_asmcmd; end_section asm_collection_status
