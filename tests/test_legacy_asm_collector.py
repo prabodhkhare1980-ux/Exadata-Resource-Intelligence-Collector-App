@@ -9,31 +9,70 @@ from collectors.asm_diskgroups_collector import ASMDiskgroupCollector
 
 
 class _Runner:
-    def __init__(self, stdout: str, ok: bool = True):
-        self._stdout = stdout
-        self._ok = ok
+    def __init__(self, results):
+        self.results = list(results)
+        self.commands = []
 
-    def run_script(self, host, script):
-        return SimpleNamespace(ok=self._ok, stdout=self._stdout, stderr="", error=None, returncode=0)
+    def run_command(self, host, command):
+        self.commands.append(command)
+        return self.results.pop(0)
 
 
 def _host():
     return SimpleNamespace(name="h1", address="1.1.1.1")
 
 
-def test_failed_status_from_sections() -> None:
-    out = "\n__ERIC_SECTION__:asm_lsdg\nORA-01017\n__ERIC_SECTION__:asm_collection_status\nfailed\n__ERIC_SECTION__:asm_error\nORA-01017\n"
-    collector = ASMDiskgroupCollector(_Runner(out))
+def test_direct_command_collection_success() -> None:
+    runner = _Runner([
+        SimpleNamespace(ok=True, stdout="+ASM1|/u01/app/23.0.0.0/grid\n", stderr="", error=None, returncode=0),
+        SimpleNamespace(ok=True, stdout="grid|asm_pmon_+ASM1\n", stderr="", error=None, returncode=0),
+        SimpleNamespace(
+            ok=True,
+            stdout="\n".join([
+                "State Type Rebal Sector Logical_Sector Block AU Total_MB Free_MB Req_mir_free_MB Usable_file_MB Offline_disks Voting_files Name",
+                "MOUNTED HIGH N 512 512 4096 4194304 301989888 124454028 0 41474256 0 N DATAC1/",
+                "MOUNTED HIGH N 512 512 4096 4194304 75497472 48650676 0 16206624 0 N RECOC1/",
+            ]),
+            stderr="",
+            error=None,
+            returncode=0,
+        ),
+    ])
+    collector = ASMDiskgroupCollector(runner)
     rows = collector.collect_host("c1", _host(), __import__('logging').getLogger('t'))
-    assert rows == []
+
+    metadata = [row for row in rows if row.record_type == "host_metadata"]
+    diskgroup_rows = [row for row in rows if row.record_type != "host_metadata"]
+    assert len(metadata) == 1
+    assert "DATAC1/" in metadata[0].asmcmd_stdout
+    assert [row.diskgroup_name for row in diskgroup_rows] == ["DATAC1", "RECOC1"]
+    assert diskgroup_rows[0].total_mb == 301989888
+    assert diskgroup_rows[0].free_mb == 124454028
+    assert diskgroup_rows[0].usable_file_mb == 41474256
+    assert diskgroup_rows[0].free_pct == 41.21
+    assert diskgroup_rows[0].usable_pct == 13.73
+    assert diskgroup_rows[0].asmcmd_stdout == ""
+    assert diskgroup_rows[1].total_mb == 75497472
+    assert diskgroup_rows[1].free_mb == 48650676
+    assert diskgroup_rows[1].usable_file_mb == 16206624
+    assert "awk -F:" in runner.commands[0]
+    assert "ps -eo user,args" in runner.commands[1]
+    assert runner.commands[2] == (
+        "sudo -n -u grid env ORACLE_HOME=/u01/app/23.0.0.0/grid "
+        "ORACLE_SID=+ASM1 PATH=/u01/app/23.0.0.0/grid/bin:/usr/bin:/bin "
+        "timeout 30s asmcmd lsdg"
+    )
 
 
-def test_script_disables_errexit_around_asm_cmd() -> None:
-    from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
-
-    assert "set +e" in ASM_COLLECTION_SCRIPT
-    assert "asm_rc=$?" in ASM_COLLECTION_SCRIPT
-    assert "set -e" in ASM_COLLECTION_SCRIPT
+def test_direct_command_collection_failed_env() -> None:
+    runner = _Runner([
+        SimpleNamespace(ok=True, stdout="", stderr="", error=None, returncode=0),
+        SimpleNamespace(ok=True, stdout="", stderr="", error=None, returncode=0),
+    ])
+    collector = ASMDiskgroupCollector(runner)
+    rows = collector.collect_host("c1", _host(), __import__('logging').getLogger('t'))
+    assert rows[0].asm_collection_status == "failed_env"
+    assert rows[0].asm_collection_error == "missing_required_asm_environment"
 
 
 def test_parse_asmcmd_lsdg_success() -> None:
@@ -110,7 +149,7 @@ def test_parse_sqlplus_fallback_success() -> None:
     assert rows[0].total_mb == 1000000
     assert len(rows) == 1
     assert rows[0].asm_collection_status == "success"
-    assert rows[-1].asm_collection_error == "asmcmd_failed_sqlplus_succeeded"
+    assert rows[-1].asm_collection_error == ""
 
 
 def test_missing_grid_home_asm_sid_or_grid_owner_returns_failed_env() -> None:
@@ -128,21 +167,14 @@ def test_missing_grid_home_asm_sid_or_grid_owner_returns_failed_env() -> None:
     assert rows == []
 
 
-def test_current_user_equal_grid_owner_branch_does_not_use_sudo() -> None:
-    from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
+def test_build_asmcmd_command_uses_sudo_n_direct_command() -> None:
+    from collectors.asm_diskgroups_collector import _build_asmcmd_command
 
-    assert 'if [ "$current_user" = "$GRID_OWNER" ]; then\n    env ORACLE_HOME="$GRID_HOME"' in ASM_COLLECTION_SCRIPT
-    assert 'asm_command="env ORACLE_HOME=\\"$GRID_HOME\\"' in ASM_COLLECTION_SCRIPT
-
-
-def test_current_user_differs_from_grid_owner_branch_uses_sudo_n() -> None:
-    from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
-
-    assert 'sudo -n -u "$GRID_OWNER" env ORACLE_HOME="$GRID_HOME"' in ASM_COLLECTION_SCRIPT
-    assert "/[a]sm_pmon/" in ASM_COLLECTION_SCRIPT
-    assert "/[o]hasd/" in ASM_COLLECTION_SCRIPT
-    assert "stat -c '%U'" not in ASM_COLLECTION_SCRIPT
-    assert 'asm_command="sudo -n -u \\"$GRID_OWNER\\" env ORACLE_HOME=\\"$GRID_HOME\\"' in ASM_COLLECTION_SCRIPT
+    assert _build_asmcmd_command("grid", "/u01/app/23.0.0.0/grid", "+ASM1", 30) == (
+        "sudo -n -u grid env ORACLE_HOME=/u01/app/23.0.0.0/grid "
+        "ORACLE_SID=+ASM1 PATH=/u01/app/23.0.0.0/grid/bin:/usr/bin:/bin "
+        "timeout 30s asmcmd lsdg"
+    )
 
 
 def test_parse_sections_strips_bash_prompt_and_ignores_unmarked_echo():

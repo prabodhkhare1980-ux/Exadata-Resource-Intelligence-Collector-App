@@ -24,8 +24,11 @@ def test_parse_asm_lsdg_rows_with_warning_level() -> None:
         ]
     }
     result = collector.parse(_host(), sections)
-    assert len(result.rows) == 1
-    row = result.rows[0]
+    rows = [row for row in result.rows if row.get("record_type") != "host_metadata"]
+    metadata = [row for row in result.rows if row.get("record_type") == "host_metadata"]
+    assert len(rows) == 1
+    assert len(metadata) == 1
+    row = rows[0]
     assert row["diskgroup_name"] == "DATA"
     assert row["total_mb"] == 1000000
     assert row["free_mb"] == 120000
@@ -50,7 +53,7 @@ def test_parse_includes_asm_debug_fields_on_diskgroup_rows() -> None:
         ],
     }
     result = collector.parse(_host(), sections)
-    row = result.rows[0]
+    row = [row for row in result.rows if row.get("record_type") != "host_metadata"][0]
     assert row["asm_collection_status"] == "success"
     assert row["grid_home"] == "/u01/app/19.0.0/grid"
     assert row["grid_owner"] == "oracle"
@@ -69,27 +72,27 @@ def test_parse_exact_captured_asm_stdout() -> None:
         ],
     }
     result = collector.parse(_host(), sections)
-    assert [row["diskgroup_name"] for row in result.rows] == ["DATAC1", "RECOC1"]
-    assert result.rows[0]["total_mb"] == 544776192
-    assert result.rows[0]["free_mb"] == 362123424
-    assert result.rows[0]["usable_file_mb"] == 120702048
-    assert result.rows[0]["used_pct"] == 33.53
-    assert result.rows[1]["total_mb"] == 944776192
-    assert result.rows[1]["free_mb"] == 544776192
-    assert result.rows[1]["used_pct"] == 42.34
+    rows = [row for row in result.rows if row.get("record_type") != "host_metadata"]
+    assert [row["diskgroup_name"] for row in rows] == ["DATAC1", "RECOC1"]
+    assert rows[0]["total_mb"] == 544776192
+    assert rows[0]["free_mb"] == 362123424
+    assert rows[0]["usable_file_mb"] == 120702048
+    assert rows[0]["free_pct"] == 66.47
+    assert rows[0]["usable_pct"] == 22.16
+    assert rows[0]["used_pct"] == 33.53
+    assert rows[1]["total_mb"] == 944776192
+    assert rows[1]["free_mb"] == 544776192
+    assert rows[1]["used_pct"] == 42.34
 
 
-def test_shell_supports_dynamic_grid_owner_and_sqlplus_fallback() -> None:
+def test_shell_uses_direct_asmcmd_without_sqlplus_fallback() -> None:
     shell = AsmDiskgroupCollector().shell()
     assert "awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab" in shell
     assert "ps -eo user,args" in shell
-    assert "/[a]sm_pmon/" in shell
-    assert "/[o]hasd/" in shell
+    assert "/[p]mon_\\+ASM/" in shell
     assert "stat -c '%U'" not in shell
-    assert "sudo -n -u \"$grid_owner\" env ORACLE_HOME=\"$asm_grid_home\" ORACLE_SID=\"$asm_sid\"" in shell
-    assert "sqlplus -s / as sysasm <<'SQL'" in shell
-
-
-def test_shell_has_missing_asmcmd_validation() -> None:
-    shell = AsmDiskgroupCollector().shell()
-    assert "[ ! -f \"$asmcmd_path\" ]" in shell
+    assert "sudo -n -u \"$grid_owner\" env ORACLE_HOME=\"$asm_grid_home\" ORACLE_SID=\"$asm_sid\" PATH=\"$asm_grid_home/bin:/usr/bin:/bin\"" in shell
+    assert "sqlplus" not in shell
+    assert "<<" not in shell
+    assert "mktemp" not in shell
+    assert "trap" not in shell
