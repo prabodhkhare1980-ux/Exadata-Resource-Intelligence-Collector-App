@@ -52,6 +52,8 @@ def test_run_writes_asm_outputs(monkeypatch, tmp_path: Path) -> None:
     assert (tmp_path / "asm_metadata.csv").exists()
     assert (tmp_path / "asm_metadata.json").exists()
     assert (tmp_path / "asm_summary.csv").exists()
+    assert (tmp_path / "health_summary.csv").exists()
+    assert (tmp_path / "health_summary.json").exists()
 
 
 def test_asm_script_template_is_deprecated_for_direct_commands() -> None:

@@ -105,6 +105,11 @@ HUGEPAGES_FIELDS = [
     "collection_error",
 ]
 
+HEALTH_SUMMARY_FIELDS = [
+    "cluster", "host", "category", "object_name", "metric", "value", "warning_level",
+    "details", "collected_at",
+]
+
 def write_asm_diskgroups_csv(records: Iterable[ASMDiskgroupRecord], output_dir: Path, *, include_debug: bool = False) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "asm_diskgroups.csv"
@@ -179,6 +184,304 @@ def write_hugepages_json(records: Iterable[HugePagesRecord], output_dir: Path) -
         json.dump([record.to_json_dict() for record in records], json_file, indent=2)
         json_file.write("\n")
     return json_path
+
+
+def write_health_summary_csv(
+    os_records: Iterable[OSCollectionRecord],
+    asm_records: Iterable[ASMDiskgroupRecord],
+    hugepages_records: Iterable[HugePagesRecord],
+    db_records: Iterable[DBInventoryRecord],
+    output_dir: Path,
+) -> Path:
+    """Write the combined dashboard-ready health feed to output/health_summary.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "health_summary.csv"
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=HEALTH_SUMMARY_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    return csv_path
+
+
+def write_health_summary_json(
+    os_records: Iterable[OSCollectionRecord],
+    asm_records: Iterable[ASMDiskgroupRecord],
+    hugepages_records: Iterable[HugePagesRecord],
+    db_records: Iterable[DBInventoryRecord],
+    output_dir: Path,
+) -> Path:
+    """Write the combined dashboard-ready health feed to output/health_summary.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "health_summary.json"
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def build_health_summary_rows(
+    os_records: Iterable[OSCollectionRecord],
+    asm_records: Iterable[ASMDiskgroupRecord],
+    hugepages_records: Iterable[HugePagesRecord],
+    db_records: Iterable[DBInventoryRecord],
+) -> list[dict[str, object]]:
+    """Merge collector health signals into a single normalized row set."""
+
+    rows: list[dict[str, object]] = []
+    rows.extend(_filesystem_health_rows(os_records))
+    rows.extend(_asm_health_rows(asm_records))
+    rows.extend(_hugepages_health_rows(hugepages_records))
+    rows.extend(_db_inventory_health_rows(db_records))
+    return rows
+
+
+def health_summary_counts(rows: Iterable[dict[str, object]]) -> dict[str, int]:
+    """Count normalized health rows by dashboard warning level."""
+
+    counts = {"CRITICAL": 0, "WARNING": 0, "OK": 0}
+    for row in rows:
+        level = _normalize_health_level(row.get("warning_level"))
+        if level in counts:
+            counts[level] += 1
+    return counts
+
+
+def _filesystem_health_rows(records: Iterable[OSCollectionRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        if record.status != "ok":
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "FILESYSTEM",
+                    "host",
+                    "collection_status",
+                    record.status,
+                    "CRITICAL",
+                    record.error,
+                    record.collected_at,
+                )
+            )
+            continue
+        for filesystem in record.filesystems:
+            use_pct = _percent_value(filesystem.get("use_percent"))
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "FILESYSTEM",
+                    str(filesystem.get("mounted_on") or filesystem.get("filesystem") or "filesystem"),
+                    "use_pct",
+                    use_pct,
+                    _filesystem_warning_level(use_pct),
+                    _details(
+                        filesystem=filesystem.get("filesystem"),
+                        type=filesystem.get("type"),
+                        size=filesystem.get("size"),
+                        used=filesystem.get("used"),
+                        available=filesystem.get("available"),
+                    ),
+                    record.collected_at,
+                )
+            )
+    return rows
+
+
+def _asm_health_rows(records: Iterable[ASMDiskgroupRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in _diskgroup_records(records):
+        if record.asm_collection_status != "success" or not record.diskgroup_name:
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "ASM",
+                    record.diskgroup_name or "ASM",
+                    "collection_status",
+                    record.asm_collection_status or "failed",
+                    _normalize_health_level(record.warning_level),
+                    record.asm_error or record.asm_collection_error,
+                    record.collected_at,
+                )
+            )
+            continue
+        rows.append(
+            _health_row(
+                record.cluster,
+                record.host,
+                "ASM",
+                record.diskgroup_name,
+                "used_pct",
+                record.used_pct,
+                _normalize_health_level(record.warning_level),
+                _details(
+                    state=record.state,
+                    type=record.type,
+                    total_tb=record.total_tb,
+                    free_tb=record.free_tb,
+                    usable_tb=record.usable_tb,
+                    free_pct=record.free_pct,
+                    usable_pct=record.usable_pct,
+                ),
+                record.collected_at,
+            )
+        )
+    return rows
+
+
+def _hugepages_health_rows(records: Iterable[HugePagesRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        metric = "free_pct" if record.collection_status == "success" else "collection_status"
+        value: object = record.hugepages_free_pct if record.collection_status == "success" else record.collection_status
+        rows.append(
+            _health_row(
+                record.cluster,
+                record.host,
+                "HUGEPAGES",
+                "host",
+                metric,
+                value,
+                _normalize_health_level(record.warning_level),
+                _details(
+                    total=record.hugepages_total,
+                    free=record.hugepages_free,
+                    used=record.hugepages_used,
+                    used_pct=record.hugepages_used_pct,
+                    collection_status=record.collection_status,
+                    collection_error=record.collection_error,
+                ),
+                record.collected_at,
+            )
+        )
+    return rows
+
+
+def _db_inventory_health_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        if record.status != "ok":
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "DB_INVENTORY",
+                    "host",
+                    "status",
+                    record.status,
+                    "CRITICAL",
+                    record.error,
+                    record.collected_at,
+                )
+            )
+            continue
+        if not record.databases:
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "DB_INVENTORY",
+                    "host",
+                    "status",
+                    record.status,
+                    "OK",
+                    _details(databases=0, pmon_processes=len(record.pmon_processes)),
+                    record.collected_at,
+                )
+            )
+            continue
+        for database in record.databases:
+            status_text = record.srvctl_status.get(database, "discovered")
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "DB_INVENTORY",
+                    database,
+                    "status",
+                    _compact_status(status_text),
+                    _db_warning_level(status_text),
+                    _details(status=status_text, config=record.srvctl_config.get(database, "")),
+                    record.collected_at,
+                )
+            )
+    return rows
+
+
+def _health_row(
+    cluster: str,
+    host: str,
+    category: str,
+    object_name: str,
+    metric: str,
+    value: object,
+    warning_level: str,
+    details: object,
+    collected_at: str,
+) -> dict[str, object]:
+    return {
+        "cluster": cluster,
+        "host": host,
+        "category": category,
+        "object_name": object_name,
+        "metric": metric,
+        "value": value,
+        "warning_level": _normalize_health_level(warning_level),
+        "details": details if isinstance(details, str) else json.dumps(details, sort_keys=True),
+        "collected_at": collected_at,
+    }
+
+
+def _filesystem_warning_level(use_pct: float) -> str:
+    if use_pct > 95:
+        return "CRITICAL"
+    if use_pct > 85:
+        return "WARNING"
+    return "OK"
+
+
+def _db_warning_level(status_text: str) -> str:
+    lowered = status_text.lower()
+    if any(token in lowered for token in ("failed", "failure", "error", "not running", "offline", "unknown")):
+        return "WARNING"
+    return "OK"
+
+
+def _normalize_health_level(level: object) -> str:
+    normalized = str(level or "OK").strip().upper()
+    if normalized in {"CRITICAL", "WARNING", "OK"}:
+        return normalized
+    if normalized in {"ERROR", "FAILED", "FAIL"}:
+        return "CRITICAL"
+    if normalized in {"INFO", "SKIPPED", ""}:
+        return "OK"
+    return "WARNING"
+
+
+def _percent_value(value: object) -> float:
+    text = str(value or "0").strip().rstrip("%")
+    try:
+        return round(float(text), 2)
+    except ValueError:
+        return 0.0
+
+
+def _details(**items: object) -> str:
+    clean = {key: value for key, value in items.items() if value not in (None, "")}
+    return json.dumps(clean, sort_keys=True)
+
+
+def _compact_status(status_text: str) -> str:
+    lines = [line.strip() for line in status_text.splitlines() if line.strip()]
+    if not lines:
+        return "discovered"
+    return " | ".join(lines)
+
 
 def _diskgroup_records(records: Iterable[ASMDiskgroupRecord]) -> list[ASMDiskgroupRecord]:
     return [record for record in records if record.record_type != "host_metadata"]
