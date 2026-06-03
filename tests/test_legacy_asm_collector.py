@@ -41,6 +41,20 @@ def test_direct_command_collection_success() -> None:
     collector = ASMDiskgroupCollector(runner)
     rows = collector.collect_host("c1", _host(), __import__('logging').getLogger('t'))
 
+    metadata = [row for row in rows if row.record_type == "host_metadata"]
+    diskgroup_rows = [row for row in rows if row.record_type != "host_metadata"]
+    assert len(metadata) == 1
+    assert "DATAC1/" in metadata[0].asmcmd_stdout
+    assert [row.diskgroup_name for row in diskgroup_rows] == ["DATAC1", "RECOC1"]
+    assert diskgroup_rows[0].total_mb == 301989888
+    assert diskgroup_rows[0].free_mb == 124454028
+    assert diskgroup_rows[0].usable_file_mb == 41474256
+    assert diskgroup_rows[0].free_pct == 41.21
+    assert diskgroup_rows[0].usable_pct == 13.73
+    assert diskgroup_rows[0].asmcmd_stdout == ""
+    assert diskgroup_rows[1].total_mb == 75497472
+    assert diskgroup_rows[1].free_mb == 48650676
+    assert diskgroup_rows[1].usable_file_mb == 16206624
     assert [row.diskgroup_name for row in rows] == ["DATAC1", "RECOC1"]
     assert rows[0].total_mb == 301989888
     assert rows[0].free_mb == 124454028
@@ -142,7 +156,7 @@ def test_parse_sqlplus_fallback_success() -> None:
     assert rows[0].total_mb == 1000000
     assert len(rows) == 1
     assert rows[0].asm_collection_status == "success"
-    assert rows[-1].asm_collection_error == "asmcmd_failed_sqlplus_succeeded"
+    assert rows[-1].asm_collection_error == ""
 
 
 def test_missing_grid_home_asm_sid_or_grid_owner_returns_failed_env() -> None:

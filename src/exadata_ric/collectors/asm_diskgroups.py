@@ -1,6 +1,8 @@
 """ASM diskgroup collector."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from .base import CollectionResult
 from exadata_ric.config import HostConfig
 
@@ -67,16 +69,35 @@ fi
             if len(record) >= 2 and record[0] == "asm_collection_status":
                 status = record[1].strip() or "failed"
 
+        collected_at = datetime.now(UTC).isoformat(timespec="seconds")
         env = {
+            "record_type": "diskgroup",
+            "collected_at": collected_at,
             "asm_collection_status": status,
-            "asm_collection_error": self._get_status_value(sections, "asm_collection_error"),
             "grid_home": self._get_env_value(sections, "grid_home"),
             "grid_owner": self._get_env_value(sections, "grid_owner"),
             "asm_sid": self._get_env_value(sections, "asm_sid"),
             "asmcmd_path": self._get_env_value(sections, "asmcmd_path"),
         }
-        rows = self._parse_asmcmd_rows(host, sections.get("asm_lsdg", []), env)
-        return CollectionResult(self.name, rows)
+        if status != "success":
+            env["asm_collection_error"] = self._get_status_value(sections, "asm_collection_error")
+        asm_lsdg_records = sections.get("asm_lsdg", [])
+        rows = self._parse_asmcmd_rows(host, asm_lsdg_records, env)
+        metadata = {
+            "cluster": host.cluster,
+            "host": host.name,
+            "address": host.address,
+            "record_type": "host_metadata",
+            "collected_at": collected_at,
+            "asm_collection_status": status,
+            "grid_home": env["grid_home"],
+            "grid_owner": env["grid_owner"],
+            "asm_sid": env["asm_sid"],
+            "asmcmd_path": env["asmcmd_path"],
+            "asmcmd_stdout": "\n".join("\t".join(record) for record in asm_lsdg_records),
+            "asmcmd_stderr": "",
+        }
+        return CollectionResult(self.name, [metadata, *rows])
 
     def _parse_asmcmd_rows(
         self, host: HostConfig, records: list[list[str]], env: dict[str, str]
@@ -109,6 +130,8 @@ fi
             usable_file_mb = int(values["usable_file_mb"])
             if not diskgroup_name or total_mb <= 0:
                 continue
+            free_pct = round((free_mb / total_mb) * 100, 2)
+            usable_pct = round((usable_file_mb / total_mb) * 100, 2)
             used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2)
             warning_level = "OK"
             if used_pct >= 95:
@@ -126,6 +149,8 @@ fi
                     "total_mb": total_mb,
                     "free_mb": free_mb,
                     "usable_file_mb": usable_file_mb,
+                    "free_pct": free_pct,
+                    "usable_pct": usable_pct,
                     "used_pct": used_pct,
                     "warning_level": warning_level,
                     **env,

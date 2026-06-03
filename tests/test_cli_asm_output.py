@@ -50,3 +50,6 @@ def test_main_writes_asm_outputs(monkeypatch, tmp_path: Path) -> None:
     assert rc == 0
     assert (tmp_path / "asm_diskgroups.json").exists()
     assert (tmp_path / "asm_diskgroups.csv").exists()
+    assert (tmp_path / "asm_metadata.json").exists()
+    assert (tmp_path / "asm_metadata.csv").exists()
+    assert (tmp_path / "asm_summary.csv").exists()

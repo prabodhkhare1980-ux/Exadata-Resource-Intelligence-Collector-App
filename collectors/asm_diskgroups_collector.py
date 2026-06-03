@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+from datetime import UTC, datetime
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
@@ -22,12 +23,16 @@ class ASMDiskgroupRecord:
     cluster: str
     host: str
     address: str
+    record_type: str = "diskgroup"
+    collected_at: str = ""
     diskgroup_name: str = ""
     state: str = ""
     type: str = ""
     total_mb: int = 0
     free_mb: int = 0
     usable_file_mb: int = 0
+    free_pct: float = 0.0
+    usable_pct: float = 0.0
     used_pct: float = 0.0
     warning_level: str = ""
     asm_collection_status: str = ""
@@ -39,8 +44,6 @@ class ASMDiskgroupRecord:
     asmcmd_path: str = ""
     asm_command: str = ""
     asm_env_stdout: str = ""
-    asm_stdout: str = ""
-    asm_stderr: str = ""
     asm_returncode: str = ""
     asmcmd_stdout: str = ""
     asmcmd_stderr: str = ""
@@ -49,10 +52,18 @@ class ASMDiskgroupRecord:
     sqlplus_returncode: str = ""
 
     def to_csv_row(self) -> dict[str, object]:
-        return asdict(self)
+        row = asdict(self)
+        if self.asm_collection_status == "success":
+            row["asm_collection_error"] = ""
+            row["asm_error"] = ""
+        return row
 
     def to_json_dict(self) -> dict[str, object]:
-        return asdict(self)
+        row = asdict(self)
+        if self.asm_collection_status == "success":
+            row.pop("asm_collection_error", None)
+            row.pop("asm_error", None)
+        return row
 
 
 class ASMDiskgroupCollector:
@@ -79,6 +90,7 @@ class ASMDiskgroupCollector:
                     cluster=cluster_name,
                     host=host.name,
                     address=host.address,
+                    collected_at=_utc_timestamp(),
                     asm_collection_status="failed",
                     warning_level="ERROR",
                     asm_collection_error=reason,
@@ -87,6 +99,13 @@ class ASMDiskgroupCollector:
             ]
 
         timeout = max(1, int(timeout_seconds))
+        collected_at = _utc_timestamp()
+        env_command = _with_timeout("awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab", timeout)
+        env_result = self._run_host_command(host, "asm_identity", env_command)
+        asm_sid, grid_home = _parse_asm_identity(env_result.stdout)
+
+        owner_command = _with_timeout("ps -eo user,args | awk '/[p]mon_\\+ASM/ {print $1 \"|\" $NF; exit}'", timeout)
+        owner_result = self._run_host_command(host, "asm_grid_owner", owner_command)
         env_command = _with_timeout("awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab", timeout)
         env_result = self.runner.run_command(host, env_command)
         asm_sid, grid_home = _parse_asm_identity(env_result.stdout)
@@ -106,6 +125,8 @@ class ASMDiskgroupCollector:
             ]
         )
         context = {
+            "record_type": "diskgroup",
+            "collected_at": collected_at,
             "asm_collection_status": "failed",
             "asm_collection_error": "",
             "asm_error": "",
@@ -141,6 +162,7 @@ class ASMDiskgroupCollector:
                     cluster=cluster_name,
                     host=host.name,
                     address=host.address,
+                    collected_at=collected_at,
                     asm_collection_status="failed_env",
                     warning_level="ERROR",
                     asm_collection_error=reason,
@@ -150,6 +172,8 @@ class ASMDiskgroupCollector:
                     asm_sid=asm_sid,
                     asmcmd_path=asmcmd_path,
                     asm_env_stdout=asm_env_stdout,
+                    asmcmd_stdout=env_result.stdout,
+                    asmcmd_stderr="\n".join(filter(None, [env_result.stderr.strip(), owner_result.stderr.strip()])),
                     asm_stdout=env_result.stdout,
                     asm_stderr="\n".join(filter(None, [env_result.stderr.strip(), owner_result.stderr.strip()])),
                     asm_returncode=str(env_result.returncode if not env_result.ok else owner_result.returncode),
@@ -161,6 +185,9 @@ class ASMDiskgroupCollector:
         context.update(
             {
                 "asm_command": asm_command,
+                "asm_returncode": str(asm_result.returncode),
+                "asmcmd_stdout": "",
+                "asmcmd_stderr": "",
                 "asm_stdout": asm_result.stdout,
                 "asm_stderr": asm_result.stderr,
                 "asm_returncode": str(asm_result.returncode),
@@ -179,6 +206,7 @@ class ASMDiskgroupCollector:
                     cluster=cluster_name,
                     host=host.name,
                     address=host.address,
+                    collected_at=collected_at,
                     asm_collection_status="failed",
                     warning_level="ERROR",
                     asm_collection_error="asmcmd_failed",
@@ -198,10 +226,104 @@ class ASMDiskgroupCollector:
             ]
 
         rows = _parse_asmcmd_rows(cluster_name, host.name, host.address, asm_result.stdout, context)
+        metadata = _build_host_metadata_record(cluster_name, host.name, host.address, context, asm_result.stdout, asm_result.stderr)
         if rows:
             logger.info("Completed ASM diskgroup collection: status=success rows=%s", len(rows))
         else:
             logger.warning("ASM diskgroup collection succeeded but no diskgroup rows were parsed")
+        return [metadata, *rows]
+
+    def _run_host_command(self, host: "HostConfig", key: str, command: str):
+        if self.context is not None:
+            return self.context.run_cached(host, key, command)
+        return self.runner.run_command(host, command)
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _with_timeout(remote_command: str, timeout_seconds: int) -> str:
+    return f"timeout {max(1, int(timeout_seconds))}s sh -c {shlex.quote(remote_command)}"
+
+
+def _parse_asm_identity(output: str) -> tuple[str, str]:
+    line = _first_nonempty_line(output)
+    if not line or "|" not in line:
+        return "", ""
+    asm_sid, grid_home = (part.strip() for part in line.split("|", 1))
+    return asm_sid, grid_home
+
+
+def _parse_grid_owner_identity(output: str) -> tuple[str, str]:
+    line = _first_nonempty_line(output)
+    if not line or "|" not in line:
+        return "", ""
+    grid_owner, asm_process = (part.strip() for part in line.split("|", 1))
+    return grid_owner, asm_process
+
+
+def _first_nonempty_line(output: str) -> str:
+    for line in output.splitlines():
+        stripped = _strip_shell_prompt(line).strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _build_asmcmd_command(grid_owner: str, grid_home: str, asm_sid: str, timeout_seconds: int) -> str:
+    path = f"{grid_home}/bin:/usr/bin:/bin"
+    return " ".join(
+        [
+            "sudo",
+            "-n",
+            "-u",
+            shlex.quote(grid_owner),
+            "env",
+            f"ORACLE_HOME={shlex.quote(grid_home)}",
+            f"ORACLE_SID={shlex.quote(asm_sid)}",
+            f"PATH={shlex.quote(path)}",
+            "timeout",
+            f"{max(1, int(timeout_seconds))}s",
+            "asmcmd",
+            "lsdg",
+        ]
+    )
+
+
+def _asm_failure_reason(stderr: str, returncode: int) -> str:
+    detail = stderr.strip() or f"asmcmd exited with {returncode}"
+    if "sudo" in detail.lower() and ("password" in detail.lower() or "not allowed" in detail.lower() or "a password is required" in detail.lower()):
+        return f"{detail}; configure NOPASSWD sudo for the service account"
+    return detail
+
+
+def _build_host_metadata_record(
+    cluster: str,
+    host: str,
+    address: str,
+    context: dict[str, str],
+    asmcmd_stdout: str,
+    asmcmd_stderr: str,
+) -> ASMDiskgroupRecord:
+    return ASMDiskgroupRecord(
+        cluster=cluster,
+        host=host,
+        address=address,
+        record_type="host_metadata",
+        collected_at=context.get("collected_at", ""),
+        asm_collection_status=context.get("asm_collection_status", ""),
+        warning_level="OK" if context.get("asm_collection_status") == "success" else "ERROR",
+        grid_home=context.get("grid_home", ""),
+        grid_owner=context.get("grid_owner", ""),
+        asm_sid=context.get("asm_sid", ""),
+        asmcmd_path=context.get("asmcmd_path", ""),
+        asm_command=context.get("asm_command", ""),
+        asm_env_stdout=context.get("asm_env_stdout", ""),
+        asm_returncode=context.get("asm_returncode", ""),
+        asmcmd_stdout=asmcmd_stdout,
+        asmcmd_stderr=asmcmd_stderr,
+    )
         return rows
 
 
@@ -295,6 +417,8 @@ def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str])
     asmcmd_stdout = _section_text(sections, "asmcmd_stdout") or _section_text(sections, "asm_lsdg")
     sqlplus_stdout = _section_text(sections, "sqlplus_stdout") or _section_text(sections, "asm_sqlplus_lsdg")
     context = {
+        "record_type": "diskgroup",
+        "collected_at": _utc_timestamp(),
         "asm_collection_status": status,
         "asm_collection_error": _section_text(sections, "asm_collection_error") or _section_text(sections, "asm_error"),
         "asm_error": _section_text(sections, "asm_error"),
@@ -304,10 +428,8 @@ def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str])
         "asmcmd_path": env.get("asmcmd_path", ""),
         "asm_command": _section_text(sections, "asm_command"),
         "asm_env_stdout": sections.get("asm_env", "").strip(),
-        "asm_stdout": asmcmd_stdout,
-        "asm_stderr": _section_text(sections, "asmcmd_stderr"),
         "asm_returncode": _section_text(sections, "asm_returncode"),
-        "asmcmd_stdout": asmcmd_stdout,
+        "asmcmd_stdout": "",
         "asmcmd_stderr": _section_text(sections, "asmcmd_stderr"),
         "sqlplus_stdout": sqlplus_stdout,
         "sqlplus_stderr": _section_text(sections, "sqlplus_stderr"),
@@ -421,6 +543,8 @@ def _build_diskgroup_record(
 ) -> ASMDiskgroupRecord | None:
     if not diskgroup_name or total_mb <= 0:
         return None
+    free_pct = round((free_mb / total_mb) * 100, 2)
+    usable_pct = round((usable_file_mb / total_mb) * 100, 2)
     used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2)
     warning_level = "OK"
     if used_pct >= 95:
@@ -431,28 +555,30 @@ def _build_diskgroup_record(
         cluster=cluster,
         host=host,
         address=address,
+        record_type="diskgroup",
+        collected_at=context.get("collected_at", ""),
         diskgroup_name=diskgroup_name,
         state=state,
         type=dg_type,
         total_mb=total_mb,
         free_mb=free_mb,
         usable_file_mb=usable_file_mb,
+        free_pct=free_pct,
+        usable_pct=usable_pct,
         used_pct=used_pct,
         warning_level=warning_level,
         asm_collection_status=context.get("asm_collection_status", ""),
-        asm_collection_error=context.get("asm_collection_error", ""),
-        asm_error=context.get("asm_error", ""),
+        asm_collection_error="" if context.get("asm_collection_status", "") == "success" else context.get("asm_collection_error", ""),
+        asm_error="" if context.get("asm_collection_status", "") == "success" else context.get("asm_error", ""),
         grid_home=context.get("grid_home", ""),
         grid_owner=context.get("grid_owner", ""),
         asm_sid=context.get("asm_sid", ""),
         asmcmd_path=context.get("asmcmd_path", ""),
         asm_command=context.get("asm_command", ""),
         asm_env_stdout=context.get("asm_env_stdout", ""),
-        asm_stdout=context.get("asm_stdout", ""),
-        asm_stderr=context.get("asm_stderr", ""),
         asm_returncode=context.get("asm_returncode", ""),
-        asmcmd_stdout=context.get("asmcmd_stdout", ""),
-        asmcmd_stderr=context.get("asmcmd_stderr", ""),
+        asmcmd_stdout="",
+        asmcmd_stderr="",
         sqlplus_stdout=context.get("sqlplus_stdout", ""),
         sqlplus_stderr=context.get("sqlplus_stderr", ""),
         sqlplus_returncode=context.get("sqlplus_returncode", ""),

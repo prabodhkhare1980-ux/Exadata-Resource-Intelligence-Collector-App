@@ -18,7 +18,17 @@ from collectors.os_collector import OSCollectionRecord, OSCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
-from reports.writers import write_asm_diskgroups_csv, write_asm_diskgroups_json, write_db_inventory_csv, write_db_inventory_json, write_os_csv, write_os_json
+from reports.writers import (
+    write_asm_diskgroups_csv,
+    write_asm_diskgroups_json,
+    write_asm_metadata_csv,
+    write_asm_metadata_json,
+    write_asm_summary_csv,
+    write_db_inventory_csv,
+    write_db_inventory_json,
+    write_os_csv,
+    write_os_json,
+)
 from ssh_runner import SSHRunner
 
 LOGGER = logging.getLogger(__name__)
@@ -126,7 +136,7 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
         logger.warning("ASM diskgroup collection failed: error=%s", exc)
         if inventory.asm_fail_host_on_error:
             raise
-        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, asm_collection_status="failed", warning_level="ERROR", asm_collection_error=str(exc), asm_error=str(exc))]
+        asm_records = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), asm_collection_status="failed", warning_level="ERROR", asm_collection_error=str(exc), asm_error=str(exc))]
     return os_record, db_record, asm_records
 
 
@@ -182,6 +192,9 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_inventory_json(db_records, inventory.output_dir)
     write_asm_diskgroups_csv(asm_records, inventory.output_dir)
     write_asm_diskgroups_json(asm_records, inventory.output_dir)
+    write_asm_metadata_csv(asm_records, inventory.output_dir)
+    write_asm_metadata_json(asm_records, inventory.output_dir)
+    write_asm_summary_csv(asm_records, inventory.output_dir)
     duration_seconds = round(time.perf_counter() - start_time, 2)
     LOGGER.info(
         "Summary: clusters_total=%s hosts_total=%s hosts_success=%s hosts_failed=%s duration_seconds=%s",
@@ -219,20 +232,19 @@ def run_asm_only(inventory: Inventory, debug_ssh: bool = False, host_filter: str
                 print(f"[ASM-DEBUG] asm_command={summary.asm_command}")
                 if summary.asm_collection_error:
                     print(f"[ASM-DEBUG] asm_collection_error={summary.asm_collection_error}")
-                if summary.asm_stdout:
-                    print(f"[ASM-DEBUG] asm_stdout={summary.asm_stdout}")
-                if summary.asm_stderr:
-                    print(f"[ASM-DEBUG] asm_stderr={summary.asm_stderr}")
+                if summary.asmcmd_stdout:
+                    print(f"[ASM-DEBUG] asmcmd_stdout={summary.asmcmd_stdout}")
+                if summary.asmcmd_stderr:
+                    print(f"[ASM-DEBUG] asmcmd_stderr={summary.asmcmd_stderr}")
                 if summary.sqlplus_stdout:
                     print(f"[ASM-DEBUG] sqlplus_stdout={summary.sqlplus_stdout}")
                 if summary.sqlplus_stderr:
                     print(f"[ASM-DEBUG] sqlplus_stderr={summary.sqlplus_stderr}")
-                if summary.asm_stderr:
-                    print(f"[ASM-DEBUG] asm_stderr={summary.asm_stderr}")
-                if summary.sqlplus_stderr:
-                    print(f"[ASM-DEBUG] sqlplus_stderr={summary.sqlplus_stderr}")
     write_asm_diskgroups_csv(asm_records, inventory.output_dir)
     write_asm_diskgroups_json(asm_records, inventory.output_dir)
+    write_asm_metadata_csv(asm_records, inventory.output_dir)
+    write_asm_metadata_json(asm_records, inventory.output_dir)
+    write_asm_summary_csv(asm_records, inventory.output_dir)
     return 0
 
 
