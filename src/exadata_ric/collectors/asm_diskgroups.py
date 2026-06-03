@@ -9,7 +9,7 @@ class AsmDiskgroupCollector:
     name = "asm_diskgroups"
 
     def shell(self) -> str:
-        return r'''
+        return r"""
 if [ "${ASM_ENABLED:-true}" != "true" ]; then
   printf '===BEGIN_SECTION:asm_status===\n'
   printf 'asm_collection_status\tskipped\n'
@@ -17,17 +17,16 @@ if [ "${ASM_ENABLED:-true}" != "true" ]; then
   printf 'asm_status\tskipped\n'
   printf '===END_SECTION:asm_status===\n'
 else
-asm_identity="$(awk -F: '/^\+ASM/ {print $1 "|" $2; exit}' /etc/oratab 2>/dev/null)"
+asm_timeout="${ASM_TIMEOUT_SECONDS:-30}"
+asm_identity="$(timeout "${asm_timeout}s" awk -F: '/^\+ASM/ {print $1 "|" $2; exit}' /etc/oratab 2>/dev/null)"
 asm_sid="${asm_identity%%|*}"
 asm_grid_home="${asm_identity#*|}"
 if [ "$asm_identity" = "$asm_grid_home" ]; then
   asm_sid=""
 fi
+grid_owner_identity="$(timeout "${asm_timeout}s" ps -eo user,args 2>/dev/null | awk '/[p]mon_\+ASM/ {print $1 "|" $NF; exit}')"
+grid_owner="${grid_owner_identity%%|*}"
 asmcmd_path="${asm_grid_home}/bin/asmcmd"
-grid_owner="$(ps -eo user,args 2>/dev/null | awk '/[a]sm_pmon/ {print $1; exit}')"
-if [ -z "$grid_owner" ]; then
-  grid_owner="$(ps -eo user,args 2>/dev/null | awk '/[o]hasd/ {print $1; exit}')"
-fi
 
 printf '===BEGIN_SECTION:asm_env===\n'
 printf 'grid_home\t%s\n' "${asm_grid_home:-}"
@@ -36,52 +35,31 @@ printf 'asm_sid\t%s\n' "${asm_sid:-}"
 printf 'asmcmd_path\t%s\n' "${asmcmd_path:-}"
 printf '===END_SECTION:asm_env===\n'
 
-printf 'ASM env resolved: host=%s grid_home=%s grid_owner=%s asm_sid=%s\n' "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)" "${asm_grid_home:-}" "${grid_owner:-}" "${asm_sid:-}" >&2
+printf '===BEGIN_SECTION:asm_lsdg===\n'
+if [ -n "$asm_grid_home" ] && [ -n "$asm_sid" ] && [ -n "$grid_owner" ]; then
+  sudo -n -u "$grid_owner" env ORACLE_HOME="$asm_grid_home" ORACLE_SID="$asm_sid" PATH="$asm_grid_home/bin:/usr/bin:/bin" timeout "${asm_timeout}s" asmcmd lsdg 2>&1
+  asmcmd_rc=$?
+else
+  asmcmd_rc=127
+fi
+printf '===END_SECTION:asm_lsdg===\n'
 
 printf '===BEGIN_SECTION:asm_status===\n'
-if [ -z "$asm_grid_home" ] || [ -z "$asm_sid" ] || [ -z "$grid_owner" ] || [ ! -d "$asm_grid_home" ] || [ ! -f "$asmcmd_path" ]; then
+if [ "$asmcmd_rc" -eq 0 ]; then
+  printf 'asm_collection_status\tsuccess\n'
+  printf 'asm_status\tsuccess\n'
+elif [ -z "$asm_grid_home" ] || [ -z "$asm_sid" ] || [ -z "$grid_owner" ]; then
   printf 'asm_collection_status\tfailed\n'
   printf 'asm_collection_error\tmissing_required_asm_environment\n'
   printf 'asm_status\tfailed\n'
-  printf '===END_SECTION:asm_status===\n'
 else
-  asm_timeout="${ASM_TIMEOUT_SECONDS:-30}"
-  printf '===BEGIN_SECTION:asm_lsdg===\n'
-  asm_lsdg_output="$(sudo -n -u "$grid_owner" env ORACLE_HOME="$asm_grid_home" ORACLE_SID="$asm_sid" PATH="$asm_grid_home/bin:$PATH" timeout "${asm_timeout}s" asmcmd lsdg 2>&1)"
-  asmcmd_rc=$?
-  printf '%s\n' "$asm_lsdg_output"
-  printf '===END_SECTION:asm_lsdg===\n'
-
-  if [ "$asmcmd_rc" -ne 0 ]; then
-    printf '===BEGIN_SECTION:asm_sqlplus_lsdg===\n'
-    sqlplus_output="$(sudo -n -u "$grid_owner" env ORACLE_HOME="$asm_grid_home" ORACLE_SID="$asm_sid" PATH="$asm_grid_home/bin:$PATH" timeout "${asm_timeout}s" sqlplus -s / as sysasm <<'SQL' 2>&1
-set pages 0 lines 200 feedback off verify off heading off echo off
-select state||' '||type||' N 512 4096 4194304 '||total_mb||' '||free_mb||' 0 '||usable_file_mb||' 0 N '||name||'/' from v$asm_diskgroup;
-exit
-SQL
-)"
-    sqlplus_rc=$?
-    printf '%s\n' "$sqlplus_output"
-    printf '===END_SECTION:asm_sqlplus_lsdg===\n'
-  else
-    sqlplus_rc=0
-  fi
-
-  if [ "$asmcmd_rc" -eq 0 ]; then
-    printf 'asm_collection_status\tsuccess\n'
-    printf 'asm_status\tsuccess\n'
-  elif [ "$sqlplus_rc" -eq 0 ]; then
-    printf 'asm_collection_status\tpartial\n'
-    printf 'asm_status\tpartial\n'
-  else
-    printf 'asm_collection_status\tfailed\n'
-    printf 'asm_collection_error\tasmcmd_and_sqlplus_failed\n'
-    printf 'asm_status\tfailed\n'
-  fi
-  printf '===END_SECTION:asm_status===\n'
+  printf 'asm_collection_status\tfailed\n'
+  printf 'asm_collection_error\tasmcmd_failed\n'
+  printf 'asm_status\tfailed\n'
 fi
+printf '===END_SECTION:asm_status===\n'
 fi
-'''
+"""
 
     def parse(self, host: HostConfig, sections: dict[str, list[list[str]]]) -> CollectionResult:
         status = "failed"
@@ -124,11 +102,11 @@ fi
                 continue
             if not header:
                 continue
-            values = dict(zip(header, parts))
-            diskgroup_name = values.get("Name", "").rstrip("/")
-            total_mb = self._to_int(values.get("Total_MB", "0"))
-            free_mb = self._to_int(values.get("Free_MB", "0"))
-            usable_file_mb = self._to_int(values.get("Usable_file_MB", "0"))
+            values = self._asmcmd_values_from_columns(header, parts)
+            diskgroup_name = str(values["name"])
+            total_mb = int(values["total_mb"])
+            free_mb = int(values["free_mb"])
+            usable_file_mb = int(values["usable_file_mb"])
             if not diskgroup_name or total_mb <= 0:
                 continue
             used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2)
@@ -143,8 +121,8 @@ fi
                     "host": host.name,
                     "address": host.address,
                     "diskgroup_name": diskgroup_name,
-                    "state": values.get("State", ""),
-                    "type": values.get("Type", ""),
+                    "state": values["state"],
+                    "type": values["type"],
                     "total_mb": total_mb,
                     "free_mb": free_mb,
                     "usable_file_mb": usable_file_mb,
@@ -154,6 +132,27 @@ fi
                 }
             )
         return rows
+
+    def _asmcmd_values_from_columns(self, header: list[str], parts: list[str]) -> dict[str, object]:
+        header_lookup = {name.lower(): index for index, name in enumerate(header)}
+        au_index = header_lookup.get("au")
+        req_index = header_lookup.get("req_mir_free_mb")
+        return {
+            "name": parts[-1].rstrip("/") if parts else "",
+            "state": parts[0] if len(parts) > 0 else "",
+            "type": parts[1] if len(parts) > 1 else "",
+            "total_mb": self._to_int(self._part_after(parts, au_index, 1)),
+            "free_mb": self._to_int(self._part_after(parts, au_index, 2)),
+            "usable_file_mb": self._to_int(self._part_after(parts, req_index, 1)),
+        }
+
+    def _part_after(self, parts: list[str], index: int | None, offset: int) -> str:
+        if index is None:
+            return "0"
+        target = index + offset
+        if target >= len(parts):
+            return "0"
+        return parts[target]
 
     def _get_env_value(self, sections: dict[str, list[list[str]]], key: str) -> str:
         for record in sections.get("asm_env", []):
