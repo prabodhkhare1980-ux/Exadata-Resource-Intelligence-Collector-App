@@ -79,17 +79,14 @@ def test_parse_exact_captured_asm_stdout() -> None:
     assert result.rows[1]["used_pct"] == 42.34
 
 
-def test_shell_supports_dynamic_grid_owner_and_sqlplus_fallback() -> None:
+def test_shell_uses_direct_asmcmd_without_sqlplus_fallback() -> None:
     shell = AsmDiskgroupCollector().shell()
     assert "awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab" in shell
     assert "ps -eo user,args" in shell
-    assert "/[a]sm_pmon/" in shell
-    assert "/[o]hasd/" in shell
+    assert "/[p]mon_\\+ASM/" in shell
     assert "stat -c '%U'" not in shell
-    assert "sudo -n -u \"$grid_owner\" env ORACLE_HOME=\"$asm_grid_home\" ORACLE_SID=\"$asm_sid\"" in shell
-    assert "sqlplus -s / as sysasm <<'SQL'" in shell
-
-
-def test_shell_has_missing_asmcmd_validation() -> None:
-    shell = AsmDiskgroupCollector().shell()
-    assert "[ ! -f \"$asmcmd_path\" ]" in shell
+    assert "sudo -n -u \"$grid_owner\" env ORACLE_HOME=\"$asm_grid_home\" ORACLE_SID=\"$asm_sid\" PATH=\"$asm_grid_home/bin:/usr/bin:/bin\"" in shell
+    assert "sqlplus" not in shell
+    assert "<<" not in shell
+    assert "mktemp" not in shell
+    assert "trap" not in shell

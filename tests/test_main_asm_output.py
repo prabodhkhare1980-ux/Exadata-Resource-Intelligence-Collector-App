@@ -51,8 +51,8 @@ def test_run_writes_asm_outputs(monkeypatch, tmp_path: Path) -> None:
     assert (tmp_path / "asm_diskgroups.json").exists()
 
 
-def test_asm_script_template_has_no_format_placeholders() -> None:
+def test_asm_script_template_is_deprecated_for_direct_commands() -> None:
     from collectors.asm_diskgroups_collector import ASM_COLLECTION_SCRIPT
 
-    assert "{print $2; exit}" in ASM_COLLECTION_SCRIPT
-    assert "__ASM_TIMEOUT_SECONDS__" in ASM_COLLECTION_SCRIPT
+    assert "direct SSH commands" in ASM_COLLECTION_SCRIPT
+    assert "__ASM_TIMEOUT_SECONDS__" not in ASM_COLLECTION_SCRIPT
