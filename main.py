@@ -32,6 +32,10 @@ from reports.writers import (
     write_os_json,
     write_hugepages_csv,
     write_hugepages_json,
+    build_health_summary_rows,
+    health_summary_counts,
+    write_health_summary_csv,
+    write_health_summary_json,
 )
 from ssh_runner import SSHRunner
 
@@ -231,6 +235,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_asm_summary_json(asm_records, inventory.output_dir)
     write_hugepages_csv(hugepages_records, inventory.output_dir)
     write_hugepages_json(hugepages_records, inventory.output_dir)
+    health_rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    write_health_summary_csv(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
+    write_health_summary_json(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
+    _print_health_summary(health_rows)
     duration_seconds = round(time.perf_counter() - start_time, 2)
     LOGGER.info(
         "Summary: clusters_total=%s hosts_total=%s hosts_success=%s hosts_failed=%s duration_seconds=%s",
@@ -242,6 +250,14 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     failures = [record for record in os_records if record.status != "ok"] + [record for record in db_records if record.status != "ok"]
     return 2 if failures else 0
+
+
+def _print_health_summary(rows: list[dict[str, object]]) -> None:
+    counts = health_summary_counts(rows)
+    print("Health Summary")
+    print(f"CRITICAL count: {counts['CRITICAL']}")
+    print(f"WARNING count: {counts['WARNING']}")
+    print(f"OK count: {counts['OK']}")
 
 
 def run_asm_only(inventory: Inventory, debug_ssh: bool = False, host_filter: str | None = None) -> int:
