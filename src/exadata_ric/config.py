@@ -56,6 +56,9 @@ class CollectionConfig:
     asm_enabled: bool = True
     asm_timeout_seconds: int = 30
     asm_fail_host_on_error: bool = False
+    asm_include_debug: bool = False
+    hugepages_enabled: bool = True
+    hugepages_timeout_seconds: int = 15
 
 
 def load_config(path: str | Path) -> CollectionConfig:
@@ -147,6 +150,10 @@ def load_config(path: str | Path) -> CollectionConfig:
     asm_enabled = bool(asm_collection.get("enabled", True)) if isinstance(asm_collection, dict) else True
     asm_timeout_seconds = int(asm_collection.get("timeout_seconds", 30)) if isinstance(asm_collection, dict) else 30
     asm_fail_host_on_error = bool(asm_collection.get("fail_host_on_error", False)) if isinstance(asm_collection, dict) else False
+    asm_include_debug = bool(asm_collection.get("include_debug", False)) if isinstance(asm_collection, dict) else False
+    hugepages_collection = collection.get("hugepages", {}) if isinstance(collection, dict) else {}
+    hugepages_enabled = bool(hugepages_collection.get("enabled", True)) if isinstance(hugepages_collection, dict) else True
+    hugepages_timeout_seconds = int(hugepages_collection.get("timeout_seconds", 15)) if isinstance(hugepages_collection, dict) else 15
     oracle_inventory = raw.get("oracle_inventory", {})
     allow_fallback = bool(oracle_inventory.get("allow_pmon_sid_fallback", False)) if isinstance(oracle_inventory, dict) else False
     return CollectionConfig(
@@ -156,6 +163,9 @@ def load_config(path: str | Path) -> CollectionConfig:
         asm_enabled=asm_enabled,
         asm_timeout_seconds=asm_timeout_seconds,
         asm_fail_host_on_error=asm_fail_host_on_error,
+        asm_include_debug=asm_include_debug,
+        hugepages_enabled=hugepages_enabled,
+        hugepages_timeout_seconds=hugepages_timeout_seconds,
     )
 
 

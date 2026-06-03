@@ -44,6 +44,9 @@ class Inventory:
     asm_enabled: bool = True
     asm_timeout_seconds: int = 30
     asm_fail_host_on_error: bool = False
+    asm_include_debug: bool = False
+    hugepages_enabled: bool = True
+    hugepages_timeout_seconds: int = 15
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -127,6 +130,9 @@ def load_inventory(path: str | Path) -> Inventory:
     asm_cfg = collection.get("asm") or {}
     if not isinstance(asm_cfg, dict):
         raise ValueError("'collection.asm' must be a mapping.")
+    hugepages_cfg = collection.get("hugepages") or {}
+    if not isinstance(hugepages_cfg, dict):
+        raise ValueError("'collection.hugepages' must be a mapping.")
     return Inventory(
         clusters=clusters,
         output_dir=output_dir,
@@ -137,6 +143,9 @@ def load_inventory(path: str | Path) -> Inventory:
         asm_enabled=bool(asm_cfg.get("enabled", True)),
         asm_timeout_seconds=int(asm_cfg.get("timeout_seconds", 30)),
         asm_fail_host_on_error=bool(asm_cfg.get("fail_host_on_error", False)),
+        asm_include_debug=bool(asm_cfg.get("include_debug", False)),
+        hugepages_enabled=bool(hugepages_cfg.get("enabled", True)),
+        hugepages_timeout_seconds=int(hugepages_cfg.get("timeout_seconds", 15)),
     )
 
 

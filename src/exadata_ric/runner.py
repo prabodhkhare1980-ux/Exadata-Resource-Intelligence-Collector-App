@@ -33,6 +33,8 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
                 try:
                     if collector.name == "asm_diskgroups":
                         LOGGER.info("Starting ASM diskgroup collection for %s", host.name)
+                    if collector.name == "hugepages":
+                        LOGGER.info("Starting HugePages collection for %s", host.name)
                     parsed = collector.parse(host, sections)
                     all_results.append(parsed)
                     if collector.name == "asm_diskgroups":
@@ -41,10 +43,20 @@ def collect(config: CollectionConfig, credential_provider: CredentialProvider | 
                             LOGGER.info("Completed ASM diskgroup collection for %s", host.name)
                         else:
                             LOGGER.warning("ASM collection skipped/failed for %s", host.name)
+                    if collector.name == "hugepages":
+                        hp_status = str(parsed.rows[0].get("collection_status", "failed")).lower() if parsed.rows else "failed"
+                        if hp_status == "success":
+                            LOGGER.info("Completed HugePages collection for %s", host.name)
+                        else:
+                            LOGGER.warning("HugePages collection skipped/failed for %s", host.name)
                 except Exception as exc:  # noqa: BLE001
                     if collector.name == "asm_diskgroups" and not config.asm_fail_host_on_error:
                         LOGGER.warning("ASM collection skipped/failed for %s", host.name)
                         all_results.append(CollectionResult("asm_diskgroups", [{"cluster": host.cluster, "host": host.name, "address": host.address, "asm_collection_status": "failed", "warning_level": "ERROR", "error": str(exc)}]))
+                        continue
+                    if collector.name == "hugepages":
+                        LOGGER.warning("HugePages collection skipped/failed for %s", host.name)
+                        all_results.append(CollectionResult("hugepages", [{"cluster": host.cluster, "host": host.name, "address": host.address, "collection_status": "failed", "warning_level": "ERROR", "collection_error": str(exc)}]))
                         continue
                     raise
         except (RemoteExecutionError, OSError, ValueError) as exc:
@@ -66,6 +78,8 @@ def build_phase1_script(collectors: tuple[Collector, ...], config: CollectionCon
         "stty -echo 2>/dev/null || true",
         f"export ASM_ENABLED={'true' if config.asm_enabled else 'false'}",
         f"export ASM_TIMEOUT_SECONDS={config.asm_timeout_seconds}",
+        f"export HUGEPAGES_ENABLED={'true' if config.hugepages_enabled else 'false'}",
+        f"export HUGEPAGES_TIMEOUT_SECONDS={config.hugepages_timeout_seconds}",
     ]
     body.extend(collector.shell() for collector in collectors)
     return "\n".join(body) + "\n"

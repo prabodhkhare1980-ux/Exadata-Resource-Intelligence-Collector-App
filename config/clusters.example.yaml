@@ -43,6 +43,10 @@ collection:
   asm:
     enabled: true
     timeout_seconds: 30
+    include_debug: false
+  hugepages:
+    enabled: true
+    timeout_seconds: 15
   ssh:
     port: 22
     timeout_seconds: 120
