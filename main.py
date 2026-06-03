@@ -231,9 +231,6 @@ def run_asm_only(inventory: Inventory, debug_ssh: bool = False, host_filter: str
                     print(f"[ASM-DEBUG] asm_stderr={summary.asm_stderr}")
                 if summary.sqlplus_stderr:
                     print(f"[ASM-DEBUG] sqlplus_stderr={summary.sqlplus_stderr}")
-            asm_records.extend(
-                asm_collector.collect_host(cluster.name, host, logger, enabled=inventory.asm_enabled, timeout_seconds=inventory.asm_timeout_seconds)
-            )
     write_asm_diskgroups_csv(asm_records, inventory.output_dir)
     write_asm_diskgroups_json(asm_records, inventory.output_dir)
     return 0

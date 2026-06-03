@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from .auth import RuntimeCredentials
 from .config import HostConfig
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RemoteExecutionError(RuntimeError):
@@ -25,14 +28,17 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
     the streamed script body.
     """
 
+    normalized_script = _normalize_remote_script(script)
     command = _ssh_command(host)
     if host.privilege.enabled and host.privilege.method == "sudo":
         remote = "sudo -n bash --noprofile --norc -s"
-        stdin_text = script
+        stdin_text = normalized_script
     else:
         remote = "bash --noprofile --norc -s"
-        stdin_text = script
+        stdin_text = normalized_script
     command.append(remote)
+    is_asm_script = "asmcmd lsdg" in normalized_script or "asm_sqlplus_lsdg" in normalized_script
+    ssh_mode = "-tt" if host.privilege.force_tty else "-T"
 
     env = os.environ.copy()
     pass_fds: tuple[int, ...] = ()
@@ -57,16 +63,30 @@ def run_remote_script(host: HostConfig, script: str, credentials: RuntimeCredent
             )
             pass_fds = (read_fd,)
 
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
-            input=stdin_text,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            capture_output=True,
-            timeout=host.timeout_seconds,
             env=env,
             pass_fds=pass_fds,
-            check=False,
         )
+        try:
+            stdout, stderr = process.communicate(input=stdin_text, timeout=host.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        stdin_closed = process.stdin is None or process.stdin.closed
+        if is_asm_script:
+            LOGGER.debug(
+                "ASM ssh mode=%s stdin_length=%s stdin_closed_after_communicate=%s",
+                ssh_mode,
+                len(stdin_text),
+                stdin_closed,
+            )
+        completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     except subprocess.TimeoutExpired as exc:
         raise RemoteExecutionError(f"timed out after {host.timeout_seconds} seconds") from exc
     finally:
@@ -141,6 +161,10 @@ def _prepare_askpass(password: str) -> tuple[Path, tuple[int, int]]:
     )
     askpass.chmod(0o700)
     return askpass, (read_fd, write_fd)
+
+
+def _normalize_remote_script(script: str) -> str:
+    return script.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _redact(text: str, *secrets: str | None) -> str:

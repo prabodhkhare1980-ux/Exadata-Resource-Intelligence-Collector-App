@@ -65,23 +65,37 @@ class SSHRunner:
             self.logger.debug("SSH command: %s", _sanitize_command(command))
 
         try:
-            completed = subprocess.run(
+            stdin_bytes = script.encode("utf-8") if script is not None else None
+            process = subprocess.Popen(
                 command,
-                input=script.encode("utf-8") if script is not None else None,
+                stdin=subprocess.PIPE if script is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=False,
-                capture_output=True,
-                timeout=host.timeout_seconds,
-                check=False,
             )
+            try:
+                stdout, stderr = process.communicate(input=stdin_bytes, timeout=host.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise
+            stdin_closed = process.stdin is None or process.stdin.closed
+            if script is not None and _is_asm_script(script):
+                self.logger.debug(
+                    "ASM ssh mode=%s stdin_length=%s stdin_closed_after_communicate=%s",
+                    _ssh_tty_mode(command),
+                    len(script),
+                    stdin_closed,
+                )
             if self.debug_ssh:
-                self.logger.debug("SSH stdout (first 500 chars): %s", _clip(completed.stdout))
-                self.logger.debug("SSH stderr (first 500 chars): %s", _clip(completed.stderr))
+                self.logger.debug("SSH stdout (first 500 chars): %s", _clip(stdout))
+                self.logger.debug("SSH stderr (first 500 chars): %s", _clip(stderr))
             return CommandResult(
                 host,
                 command,
-                _coerce_text(completed.stdout),
-                _coerce_text(completed.stderr),
-                completed.returncode,
+                _coerce_text(stdout),
+                _coerce_text(stderr),
+                process.returncode,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = _coerce_text(exc.stdout)
@@ -116,6 +130,18 @@ class SSHRunner:
         command.append("-tt" if allocate_tty else "-T")
         command.append(destination)
         return command
+
+
+def _is_asm_script(script: str) -> bool:
+    return "asmcmd lsdg" in script or "asm_sqlplus_lsdg" in script or "asmcmd_stdout" in script
+
+
+def _ssh_tty_mode(command: list[str]) -> str:
+    if "-tt" in command:
+        return "-tt"
+    if "-T" in command:
+        return "-T"
+    return "unknown"
 
 
 def _coerce_text(value: str | bytes | None) -> str:

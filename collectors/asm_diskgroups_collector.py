@@ -235,7 +235,7 @@ def _parse_sections(output: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: str | None = None
     for raw_line in output.splitlines():
-        line = raw_line.rstrip("\n")
+        line = _strip_shell_prompt(raw_line.rstrip("\n"))
         if line.startswith(BEGIN_PREFIX) and line.endswith("==="):
             current = line[len(BEGIN_PREFIX) : -3]
             sections.setdefault(current, [])
@@ -251,6 +251,13 @@ def _parse_sections(output: str) -> dict[str, str]:
         if current is not None:
             sections.setdefault(current, []).append(line)
     return {name: "\n".join(lines).strip("\n") for name, lines in sections.items()}
+
+
+def _strip_shell_prompt(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("bash-") and "#" in stripped:
+        return stripped.split("#", 1)[1].lstrip()
+    return line
 
 
 def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str]) -> list[ASMDiskgroupRecord]:
@@ -293,7 +300,7 @@ def _parse_asmcmd_rows(cluster: str, host: str, address: str, output: str, conte
         if (
             not stripped
             or lower.startswith(("asm", "ora-", "sp2-"))
-            or stripped.startswith(("$", "SQL>"))
+            or stripped.startswith(("$", "SQL>", "bash-"))
             or set(stripped) <= {"-", " "}
         ):
             continue

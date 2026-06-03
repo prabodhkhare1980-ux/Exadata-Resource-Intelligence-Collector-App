@@ -35,3 +35,21 @@ def test_parse_sections_marker_format():
 
     assert "hostname" in sections
     assert sections["hostname"][0] == ["hostname", "db01"]
+
+
+def test_parse_sections_strips_bash_prompt_and_ignores_outside_markers():
+    sections = parse_sections(
+        "bash-4.4# echoed script text should be ignored\n"
+        "bash-4.4# ===BEGIN_SECTION:asm_lsdg===\n"
+        "bash-4.4# State Type Total_MB Free_MB Usable_file_MB Name\n"
+        "MOUNTED EXTERN 100 10 10 DATA/\n"
+        "bash-4.4# ===END_SECTION:asm_lsdg===\n"
+        "outside\tignored\n"
+    )
+
+    assert sections == {
+        "asm_lsdg": [
+            ["State Type Total_MB Free_MB Usable_file_MB Name"],
+            ["MOUNTED EXTERN 100 10 10 DATA/"],
+        ]
+    }
