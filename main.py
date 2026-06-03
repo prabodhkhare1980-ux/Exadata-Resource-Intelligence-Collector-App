@@ -35,6 +35,7 @@ from reports.writers import (
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
+    write_health_summary_html,
     write_health_summary_json,
 )
 from ssh_runner import SSHRunner
@@ -238,6 +239,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     health_rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
     write_health_summary_csv(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
     write_health_summary_json(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
+    write_health_summary_html(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
     _print_health_summary(health_rows)
     duration_seconds = round(time.perf_counter() - start_time, 2)
     LOGGER.info(
