@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 from pathlib import Path
 from typing import Iterable
@@ -107,7 +108,7 @@ HUGEPAGES_FIELDS = [
 
 HEALTH_SUMMARY_FIELDS = [
     "cluster", "host", "category", "object_name", "metric", "value", "warning_level",
-    "details", "collected_at",
+    "recommendation", "details", "collected_at",
 ]
 
 def write_asm_diskgroups_csv(records: Iterable[ASMDiskgroupRecord], output_dir: Path, *, include_debug: bool = False) -> Path:
@@ -203,6 +204,22 @@ def write_health_summary_csv(
         writer.writeheader()
         writer.writerows(rows)
     return csv_path
+
+
+def write_health_summary_html(
+    os_records: Iterable[OSCollectionRecord],
+    asm_records: Iterable[ASMDiskgroupRecord],
+    hugepages_records: Iterable[HugePagesRecord],
+    db_records: Iterable[DBInventoryRecord],
+    output_dir: Path,
+) -> Path:
+    """Write a simple color-coded health summary table to output/health_summary.html."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    html_path = output_dir / "health_summary.html"
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    html_path.write_text(_health_summary_html(rows), encoding="utf-8")
+    return html_path
 
 
 def write_health_summary_json(
@@ -432,17 +449,97 @@ def _health_row(
         "metric": metric,
         "value": value,
         "warning_level": _normalize_health_level(warning_level),
+        "recommendation": _health_recommendation(category, warning_level, metric, value),
         "details": details if isinstance(details, str) else json.dumps(details, sort_keys=True),
         "collected_at": collected_at,
     }
 
 
 def _filesystem_warning_level(use_pct: float) -> str:
-    if use_pct > 95:
+    if use_pct >= 95:
         return "CRITICAL"
-    if use_pct > 85:
+    if use_pct >= 85:
         return "WARNING"
     return "OK"
+
+
+
+def _health_recommendation(category: str, warning_level: str, metric: str, value: object) -> str:
+    level = _normalize_health_level(warning_level)
+    if level not in {"CRITICAL", "WARNING"}:
+        return ""
+
+    if category == "FILESYSTEM" and metric == "use_pct":
+        use_pct = _numeric_value(value)
+        if level == "CRITICAL" and use_pct >= 95:
+            return "Immediate cleanup or expansion required."
+        if level == "WARNING" and use_pct >= 85:
+            return "Review growth and cleanup candidates."
+
+    if category == "HUGEPAGES" and metric == "free_pct":
+        free_pct = _numeric_value(value)
+        if level == "CRITICAL" and free_pct <= 5:
+            return "Review DB SGA/HugePages allocation; risk of HugePages exhaustion."
+        if level == "WARNING" and free_pct <= 10:
+            return "Monitor HugePages free count."
+
+    return ""
+
+
+def _health_summary_html(rows: list[dict[str, object]]) -> str:
+    columns = [
+        "cluster",
+        "host",
+        "category",
+        "object_name",
+        "metric",
+        "value",
+        "warning_level",
+        "recommendation",
+    ]
+    table_rows = []
+    for row in rows:
+        level = _normalize_health_level(row.get("warning_level"))
+        cells = "".join(f"<td>{html.escape(str(row.get(column, '')))}</td>" for column in columns)
+        table_rows.append(f'<tr class="{level.lower()}">{cells}</tr>')
+    if not table_rows:
+        table_rows.append(f'<tr class="ok"><td colspan="{len(columns)}">No health records collected.</td></tr>')
+
+    header = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+    body = "\n".join(table_rows)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Exadata Health Summary</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 1rem; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #ddd; padding: 0.5rem; text-align: left; }}
+    th {{ background: #f2f2f2; }}
+    tr.critical {{ background: #f8d7da; color: #842029; }}
+    tr.warning {{ background: #fff3cd; color: #664d03; }}
+    tr.ok {{ background: #d1e7dd; color: #0f5132; }}
+  </style>
+</head>
+<body>
+  <h1>Exadata Health Summary</h1>
+  <table>
+    <thead><tr>{header}</tr></thead>
+    <tbody>
+{body}
+    </tbody>
+  </table>
+</body>
+</html>
+"""
+
+
+def _numeric_value(value: object) -> float:
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _db_warning_level(status_text: str) -> str:

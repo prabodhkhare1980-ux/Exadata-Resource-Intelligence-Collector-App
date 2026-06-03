@@ -24,9 +24,9 @@ printf '===END_SECTION:df===\n'
             pct = str(record[5]).rstrip("%")
             use_pct = _int(pct)
             risk = "OK"
-            if isinstance(use_pct, int) and use_pct > 95:
+            if isinstance(use_pct, int) and use_pct >= 95:
                 risk = "CRITICAL"
-            elif isinstance(use_pct, int) and use_pct > 85:
+            elif isinstance(use_pct, int) and use_pct >= 85:
                 risk = "WARNING"
             rows.append({"environment": host.environment,"cluster": host.cluster,"host": host.name,"address": host.address,"ssh_user": host.ssh_user,"filesystem": record[0],"fstype": record[1],"size_bytes": _int(record[2]),"used_bytes": _int(record[3]),"available_bytes": _int(record[4]),"use_percent": record[5],"mountpoint": record[6],"risk_flag": risk})
         return CollectionResult(self.name, rows)
