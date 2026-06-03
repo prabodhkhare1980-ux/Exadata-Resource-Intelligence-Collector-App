@@ -37,11 +37,9 @@ ASM_SID="$(ps -ef | awk '/[p]mon_\+ASM/ {sub(/^.*pmon_/,"",$NF); print $NF; exit
 GRID_HOME="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null || true)"
 GRID_OWNER=""
 
-if [ -n "$GRID_HOME" ] && [ -e "$GRID_HOME/bin/crsctl" ]; then
-  GRID_OWNER="$(stat -c '%U' "$GRID_HOME/bin/crsctl" 2>/dev/null || true)"
-fi
-if [ -z "$GRID_OWNER" ] && [ -n "$GRID_HOME" ] && [ -e "$GRID_HOME/bin/asmcmd" ]; then
-  GRID_OWNER="$(stat -c '%U' "$GRID_HOME/bin/asmcmd" 2>/dev/null || true)"
+GRID_OWNER="$(ps -eo user,args 2>/dev/null | awk '/[a]sm_pmon/ {print $1; exit}' || true)"
+if [ -z "$GRID_OWNER" ]; then
+  GRID_OWNER="$(ps -eo user,args 2>/dev/null | awk '/[o]hasd/ {print $1; exit}' || true)"
 fi
 
 current_user="$(id -un 2>/dev/null || whoami 2>/dev/null || true)"
@@ -82,7 +80,7 @@ if [ -z "$ASM_SID" ] || [ -z "$GRID_HOME" ] || [ -z "$GRID_OWNER" ]; then
   asm_collection_error="missing_required_asm_environment"
   if [ -z "$ASM_SID" ]; then asm_error="missing ASM_SID from PMON"; fi
   if [ -z "$GRID_HOME" ]; then asm_error="${asm_error}${asm_error:+; }missing GRID_HOME from /etc/oratab"; fi
-  if [ -z "$GRID_OWNER" ]; then asm_error="${asm_error}${asm_error:+; }missing GRID_OWNER from GRID_HOME binaries"; fi
+  if [ -z "$GRID_OWNER" ]; then asm_error="${asm_error}${asm_error:+; }missing GRID_OWNER from ASM PMON/OHASD processes"; fi
 else
   if [ "$current_user" = "$GRID_OWNER" ]; then
     asm_command="env ORACLE_HOME=\"$GRID_HOME\" ORACLE_SID=\"$ASM_SID\" PATH=\"$GRID_HOME/bin:/usr/bin:/bin\" timeout ${asm_timeout}s asmcmd lsdg"
@@ -222,14 +220,14 @@ class ASMDiskgroupCollector:
 
         sections = _parse_sections(result.stdout)
         rows = _parse_lsdg(cluster_name, host.name, host.address, sections)
-        dg_rows = [row for row in rows if row.diskgroup_name and row.total_mb > 0]
-        summary = rows[-1]
-        if summary.asm_collection_status == "success" and dg_rows:
-            logger.info("Completed ASM diskgroup collection: status=success rows=%s", len(dg_rows))
-        elif summary.asm_collection_status == "success":
+        status = _section_text(sections, "asm_collection_status") or "failed"
+        if status == "success" and rows:
+            logger.info("Completed ASM diskgroup collection: status=success rows=%s", len(rows))
+        elif status == "success":
             logger.warning("ASM diskgroup collection succeeded but no diskgroup rows were parsed")
         else:
-            logger.warning("ASM diskgroup collection failed: error=%s", summary.asm_collection_error or summary.asm_error or "unknown")
+            error = _section_text(sections, "asm_collection_error") or _section_text(sections, "asm_error") or "unknown"
+            logger.warning("ASM diskgroup collection failed: error=%s", error)
         return rows
 
 
@@ -260,79 +258,70 @@ def _parse_lsdg(cluster: str, host: str, address: str, sections: dict[str, str])
     status = _section_text(sections, "asm_collection_status") or "failed"
     asmcmd_stdout = _section_text(sections, "asmcmd_stdout") or _section_text(sections, "asm_lsdg")
     sqlplus_stdout = _section_text(sections, "sqlplus_stdout") or _section_text(sections, "asm_sqlplus_lsdg")
+    context = {
+        "asm_collection_status": status,
+        "asm_collection_error": _section_text(sections, "asm_collection_error") or _section_text(sections, "asm_error"),
+        "asm_error": _section_text(sections, "asm_error"),
+        "grid_home": env.get("grid_home", ""),
+        "grid_owner": env.get("grid_owner", ""),
+        "asm_sid": env.get("asm_sid", ""),
+        "asmcmd_path": env.get("asmcmd_path", ""),
+        "asm_command": _section_text(sections, "asm_command"),
+        "asm_env_stdout": sections.get("asm_env", "").strip(),
+        "asm_stdout": asmcmd_stdout,
+        "asm_stderr": _section_text(sections, "asmcmd_stderr"),
+        "asm_returncode": _section_text(sections, "asm_returncode"),
+        "asmcmd_stdout": asmcmd_stdout,
+        "asmcmd_stderr": _section_text(sections, "asmcmd_stderr"),
+        "sqlplus_stdout": sqlplus_stdout,
+        "sqlplus_stderr": _section_text(sections, "sqlplus_stderr"),
+        "sqlplus_returncode": _section_text(sections, "sqlplus_returncode"),
+    }
 
-    rows = _parse_asmcmd_rows(cluster, host, address, asmcmd_stdout, status)
+    rows = _parse_asmcmd_rows(cluster, host, address, asmcmd_stdout, context)
     if not rows:
-        rows = _parse_sqlplus_rows(cluster, host, address, sqlplus_stdout, status)
-
-    asm_error = _section_text(sections, "asm_error")
-    asm_collection_error = _section_text(sections, "asm_collection_error") or asm_error
-    if status == "success" and not rows:
-        status = "failed_parse"
-        asm_collection_error = asm_collection_error or "failed_parse_no_valid_diskgroup_rows"
-
-    rows.append(
-        ASMDiskgroupRecord(
-            cluster=cluster,
-            host=host,
-            address=address,
-            warning_level="ERROR" if status.startswith("failed") else "",
-            asm_collection_status=status,
-            asm_collection_error=asm_collection_error,
-            asm_error=asm_error,
-            grid_home=env.get("grid_home", ""),
-            grid_owner=env.get("grid_owner", ""),
-            asm_sid=env.get("asm_sid", ""),
-            asmcmd_path=env.get("asmcmd_path", ""),
-            asm_command=_section_text(sections, "asm_command"),
-            asm_env_stdout=sections.get("asm_env", "").strip(),
-            asm_stdout=asmcmd_stdout,
-            asm_stderr=_section_text(sections, "asmcmd_stderr"),
-            asm_returncode=_section_text(sections, "asm_returncode"),
-            asmcmd_stdout=asmcmd_stdout,
-            asmcmd_stderr=_section_text(sections, "asmcmd_stderr"),
-            sqlplus_stdout=sqlplus_stdout,
-            sqlplus_stderr=_section_text(sections, "sqlplus_stderr"),
-            sqlplus_returncode=_section_text(sections, "sqlplus_returncode"),
-        )
-    )
+        rows = _parse_sqlplus_rows(cluster, host, address, sqlplus_stdout, context)
     return rows
 
 
-def _parse_asmcmd_rows(cluster: str, host: str, address: str, output: str, status: str) -> list[ASMDiskgroupRecord]:
+def _parse_asmcmd_rows(cluster: str, host: str, address: str, output: str, context: dict[str, str]) -> list[ASMDiskgroupRecord]:
     rows: list[ASMDiskgroupRecord] = []
+    header: list[str] | None = None
     for line in output.splitlines():
         stripped = line.strip()
         lower = stripped.lower()
         if (
             not stripped
-            or lower.startswith("state")
             or lower.startswith(("asm", "ora-", "sp2-"))
             or stripped.startswith(("$", "SQL>"))
             or set(stripped) <= {"-", " "}
         ):
             continue
         parts = stripped.split()
-        if len(parts) < 13:
+        if parts and parts[0].lower() == "state":
+            header = parts
             continue
+        if not header:
+            continue
+        values = dict(zip(header, parts))
         row = _build_diskgroup_record(
             cluster,
             host,
             address,
-            parts[12].rstrip("/"),
-            parts[0],
-            parts[1],
-            _to_int(parts[6]),
-            _to_int(parts[7]),
-            _to_int(parts[9]),
-            status,
+            values.get("Name", "").rstrip("/"),
+            values.get("State", ""),
+            values.get("Type", ""),
+            _to_int(values.get("Total_MB", "0")),
+            _to_int(values.get("Free_MB", "0")),
+            _to_int(values.get("Usable_file_MB", "0")),
+            context,
         )
         if row is not None:
             rows.append(row)
     return rows
 
 
-def _parse_sqlplus_rows(cluster: str, host: str, address: str, output: str, status: str) -> list[ASMDiskgroupRecord]:
+def _parse_sqlplus_rows(cluster: str, host: str, address: str, output: str, context: dict[str, str]) -> list[ASMDiskgroupRecord]:
     rows: list[ASMDiskgroupRecord] = []
     for line in output.splitlines():
         stripped = line.strip()
@@ -352,7 +341,7 @@ def _parse_sqlplus_rows(cluster: str, host: str, address: str, output: str, stat
             _to_int(parts[3]),
             _to_int(parts[4]),
             _to_int(parts[5]),
-            status,
+            context,
         )
         if row is not None:
             rows.append(row)
@@ -369,7 +358,7 @@ def _build_diskgroup_record(
     total_mb: int,
     free_mb: int,
     usable_file_mb: int,
-    status: str,
+    context: dict[str, str],
 ) -> ASMDiskgroupRecord | None:
     if not diskgroup_name or total_mb <= 0:
         return None
@@ -391,9 +380,24 @@ def _build_diskgroup_record(
         usable_file_mb=usable_file_mb,
         used_pct=used_pct,
         warning_level=warning_level,
-        asm_collection_status=status,
+        asm_collection_status=context.get("asm_collection_status", ""),
+        asm_collection_error=context.get("asm_collection_error", ""),
+        asm_error=context.get("asm_error", ""),
+        grid_home=context.get("grid_home", ""),
+        grid_owner=context.get("grid_owner", ""),
+        asm_sid=context.get("asm_sid", ""),
+        asmcmd_path=context.get("asmcmd_path", ""),
+        asm_command=context.get("asm_command", ""),
+        asm_env_stdout=context.get("asm_env_stdout", ""),
+        asm_stdout=context.get("asm_stdout", ""),
+        asm_stderr=context.get("asm_stderr", ""),
+        asm_returncode=context.get("asm_returncode", ""),
+        asmcmd_stdout=context.get("asmcmd_stdout", ""),
+        asmcmd_stderr=context.get("asmcmd_stderr", ""),
+        sqlplus_stdout=context.get("sqlplus_stdout", ""),
+        sqlplus_stderr=context.get("sqlplus_stderr", ""),
+        sqlplus_returncode=context.get("sqlplus_returncode", ""),
     )
-
 
 def _parse_key_value_section(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
