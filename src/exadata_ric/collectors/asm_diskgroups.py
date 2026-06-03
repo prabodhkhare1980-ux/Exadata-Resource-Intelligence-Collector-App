@@ -130,6 +130,9 @@ fi
             usable_file_mb = int(values["usable_file_mb"])
             if not diskgroup_name or total_mb <= 0:
                 continue
+            total_tb = round(total_mb / 1024 / 1024, 2)
+            free_tb = round(free_mb / 1024 / 1024, 2)
+            usable_tb = round(usable_file_mb / 1024 / 1024, 2)
             free_pct = round((free_mb / total_mb) * 100, 2)
             usable_pct = round((usable_file_mb / total_mb) * 100, 2)
             used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2)
@@ -149,6 +152,9 @@ fi
                     "total_mb": total_mb,
                     "free_mb": free_mb,
                     "usable_file_mb": usable_file_mb,
+                    "total_tb": total_tb,
+                    "free_tb": free_tb,
+                    "usable_tb": usable_tb,
                     "free_pct": free_pct,
                     "usable_pct": usable_pct,
                     "used_pct": used_pct,
