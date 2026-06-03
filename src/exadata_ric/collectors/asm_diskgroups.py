@@ -24,12 +24,9 @@ if [ "$asm_identity" = "$asm_grid_home" ]; then
   asm_sid=""
 fi
 asmcmd_path="${asm_grid_home}/bin/asmcmd"
-grid_owner=""
-if [ -n "$asm_grid_home" ] && [ -f "$asm_grid_home/bin/crsctl" ]; then
-  grid_owner="$(stat -c '%U' "$asm_grid_home/bin/crsctl" 2>/dev/null)"
-fi
-if [ -z "$grid_owner" ] && [ -n "$asm_grid_home" ] && [ -f "$asmcmd_path" ]; then
-  grid_owner="$(stat -c '%U' "$asmcmd_path" 2>/dev/null)"
+grid_owner="$(ps -eo user,args 2>/dev/null | awk '/[a]sm_pmon/ {print $1; exit}')"
+if [ -z "$grid_owner" ]; then
+  grid_owner="$(ps -eo user,args 2>/dev/null | awk '/[o]hasd/ {print $1; exit}')"
 fi
 
 printf '===BEGIN_SECTION:asm_env===\n'
@@ -87,12 +84,28 @@ fi
 '''
 
     def parse(self, host: HostConfig, sections: dict[str, list[list[str]]]) -> CollectionResult:
-        rows: list[dict[str, object]] = []
         status = "failed"
         for record in sections.get("asm_status", []):
             if len(record) >= 2 and record[0] == "asm_collection_status":
                 status = record[1].strip() or "failed"
-        for record in sections.get("asm_lsdg", []):
+
+        env = {
+            "asm_collection_status": status,
+            "asm_collection_error": self._get_status_value(sections, "asm_collection_error"),
+            "grid_home": self._get_env_value(sections, "grid_home"),
+            "grid_owner": self._get_env_value(sections, "grid_owner"),
+            "asm_sid": self._get_env_value(sections, "asm_sid"),
+            "asmcmd_path": self._get_env_value(sections, "asmcmd_path"),
+        }
+        rows = self._parse_asmcmd_rows(host, sections.get("asm_lsdg", []), env)
+        return CollectionResult(self.name, rows)
+
+    def _parse_asmcmd_rows(
+        self, host: HostConfig, records: list[list[str]], env: dict[str, str]
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        header: list[str] | None = None
+        for record in records:
             line = "\t".join(record).strip()
             lower_line = line.lower()
             if (
@@ -100,22 +113,25 @@ fi
                 or line.startswith("ASM")
                 or line.startswith("grid@")
                 or line.startswith("$")
-                or lower_line.startswith("state")
                 or lower_line.startswith("asm_warning")
                 or lower_line.startswith("asm_command_")
                 or set(line) <= {"-", " "}
             ):
                 continue
             parts = line.split()
-            if len(parts) < 13:
+            if parts and parts[0].lower() == "state":
+                header = parts
                 continue
-            state = parts[0]
-            dg_type = parts[1]
-            total_mb = self._to_int(parts[6])
-            free_mb = self._to_int(parts[7])
-            usable_file_mb = self._to_int(parts[9])
-            diskgroup_name = parts[12].rstrip("/")
-            used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2) if total_mb > 0 else 0.0
+            if not header:
+                continue
+            values = dict(zip(header, parts))
+            diskgroup_name = values.get("Name", "").rstrip("/")
+            total_mb = self._to_int(values.get("Total_MB", "0"))
+            free_mb = self._to_int(values.get("Free_MB", "0"))
+            usable_file_mb = self._to_int(values.get("Usable_file_MB", "0"))
+            if not diskgroup_name or total_mb <= 0:
+                continue
+            used_pct = round(((total_mb - free_mb) / total_mb) * 100, 2)
             warning_level = "OK"
             if used_pct >= 95:
                 warning_level = "CRITICAL"
@@ -127,29 +143,17 @@ fi
                     "host": host.name,
                     "address": host.address,
                     "diskgroup_name": diskgroup_name,
-                    "state": state,
-                    "type": dg_type,
+                    "state": values.get("State", ""),
+                    "type": values.get("Type", ""),
                     "total_mb": total_mb,
                     "free_mb": free_mb,
                     "usable_file_mb": usable_file_mb,
                     "used_pct": used_pct,
                     "warning_level": warning_level,
+                    **env,
                 }
             )
-        rows.append(
-            {
-                "cluster": host.cluster,
-                "host": host.name,
-                "address": host.address,
-                "asm_collection_status": status,
-                "grid_home": self._get_env_value(sections, "grid_home"),
-                "grid_owner": self._get_env_value(sections, "grid_owner"),
-                "asm_sid": self._get_env_value(sections, "asm_sid"),
-                "asmcmd_path": self._get_env_value(sections, "asmcmd_path"),
-                "asm_collection_error": self._get_status_value(sections, "asm_collection_error"),
-            }
-        )
-        return CollectionResult(self.name, rows)
+        return rows
 
     def _get_env_value(self, sections: dict[str, list[list[str]]], key: str) -> str:
         for record in sections.get("asm_env", []):
