@@ -106,6 +106,12 @@ class ASMDiskgroupCollector:
 
         owner_command = _with_timeout("ps -eo user,args | awk '/[p]mon_\\+ASM/ {print $1 \"|\" $NF; exit}'", timeout)
         owner_result = self._run_host_command(host, "asm_grid_owner", owner_command)
+        env_command = _with_timeout("awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab", timeout)
+        env_result = self.runner.run_command(host, env_command)
+        asm_sid, grid_home = _parse_asm_identity(env_result.stdout)
+
+        owner_command = _with_timeout("ps -eo user,args | awk '/[p]mon_\\+ASM/ {print $1 \"|\" $NF; exit}'", timeout)
+        owner_result = self.runner.run_command(host, owner_command)
         grid_owner, owner_asm_process = _parse_grid_owner_identity(owner_result.stdout)
 
         asmcmd_path = f"{grid_home}/bin/asmcmd" if grid_home else ""
@@ -130,6 +136,8 @@ class ASMDiskgroupCollector:
             "asmcmd_path": asmcmd_path,
             "asm_command": "",
             "asm_env_stdout": asm_env_stdout,
+            "asm_stdout": "",
+            "asm_stderr": "",
             "asm_returncode": "",
             "asmcmd_stdout": "",
             "asmcmd_stderr": "",
@@ -166,6 +174,8 @@ class ASMDiskgroupCollector:
                     asm_env_stdout=asm_env_stdout,
                     asmcmd_stdout=env_result.stdout,
                     asmcmd_stderr="\n".join(filter(None, [env_result.stderr.strip(), owner_result.stderr.strip()])),
+                    asm_stdout=env_result.stdout,
+                    asm_stderr="\n".join(filter(None, [env_result.stderr.strip(), owner_result.stderr.strip()])),
                     asm_returncode=str(env_result.returncode if not env_result.ok else owner_result.returncode),
                 )
             ]
@@ -178,6 +188,11 @@ class ASMDiskgroupCollector:
                 "asm_returncode": str(asm_result.returncode),
                 "asmcmd_stdout": "",
                 "asmcmd_stderr": "",
+                "asm_stdout": asm_result.stdout,
+                "asm_stderr": asm_result.stderr,
+                "asm_returncode": str(asm_result.returncode),
+                "asmcmd_stdout": asm_result.stdout,
+                "asmcmd_stderr": asm_result.stderr,
                 "asm_collection_status": "success" if asm_result.ok else "failed",
             }
         )
@@ -202,6 +217,8 @@ class ASMDiskgroupCollector:
                     asmcmd_path=asmcmd_path,
                     asm_command=asm_command,
                     asm_env_stdout=asm_env_stdout,
+                    asm_stdout=asm_result.stdout,
+                    asm_stderr=asm_result.stderr,
                     asm_returncode=str(asm_result.returncode),
                     asmcmd_stdout=asm_result.stdout,
                     asmcmd_stderr=asm_result.stderr,
@@ -307,6 +324,62 @@ def _build_host_metadata_record(
         asmcmd_stdout=asmcmd_stdout,
         asmcmd_stderr=asmcmd_stderr,
     )
+        return rows
+
+
+def _with_timeout(remote_command: str, timeout_seconds: int) -> str:
+    return f"timeout {max(1, int(timeout_seconds))}s sh -c {shlex.quote(remote_command)}"
+
+
+def _parse_asm_identity(output: str) -> tuple[str, str]:
+    line = _first_nonempty_line(output)
+    if not line or "|" not in line:
+        return "", ""
+    asm_sid, grid_home = (part.strip() for part in line.split("|", 1))
+    return asm_sid, grid_home
+
+
+def _parse_grid_owner_identity(output: str) -> tuple[str, str]:
+    line = _first_nonempty_line(output)
+    if not line or "|" not in line:
+        return "", ""
+    grid_owner, asm_process = (part.strip() for part in line.split("|", 1))
+    return grid_owner, asm_process
+
+
+def _first_nonempty_line(output: str) -> str:
+    for line in output.splitlines():
+        stripped = _strip_shell_prompt(line).strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _build_asmcmd_command(grid_owner: str, grid_home: str, asm_sid: str, timeout_seconds: int) -> str:
+    path = f"{grid_home}/bin:/usr/bin:/bin"
+    return " ".join(
+        [
+            "sudo",
+            "-n",
+            "-u",
+            shlex.quote(grid_owner),
+            "env",
+            f"ORACLE_HOME={shlex.quote(grid_home)}",
+            f"ORACLE_SID={shlex.quote(asm_sid)}",
+            f"PATH={shlex.quote(path)}",
+            "timeout",
+            f"{max(1, int(timeout_seconds))}s",
+            "asmcmd",
+            "lsdg",
+        ]
+    )
+
+
+def _asm_failure_reason(stderr: str, returncode: int) -> str:
+    detail = stderr.strip() or f"asmcmd exited with {returncode}"
+    if "sudo" in detail.lower() and ("password" in detail.lower() or "not allowed" in detail.lower() or "a password is required" in detail.lower()):
+        return f"{detail}; configure NOPASSWD sudo for the service account"
+    return detail
 
 
 def _parse_sections(output: str) -> dict[str, str]:
