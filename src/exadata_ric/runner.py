@@ -77,6 +77,7 @@ def parse_sections(output: str) -> dict[str, list[list[str]]]:
     sections: dict[str, list[list[str]]] = {}
     current: str | None = None
     for raw_line in output.splitlines():
+        raw_line = _strip_shell_prompt(raw_line)
         line = raw_line.strip()
         if line.startswith("===BEGIN_SECTION:") and line.endswith("==="):
             current = line[len("===BEGIN_SECTION:") : -3]
@@ -89,6 +90,13 @@ def parse_sections(output: str) -> dict[str, list[list[str]]]:
             parts = raw_line.split("\t")
             sections.setdefault(current, []).append(parts)
     return sections
+
+
+def _strip_shell_prompt(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("bash-") and "#" in stripped:
+        return stripped.split("#", 1)[1].lstrip()
+    return line
 
 
 def _error_row(host: HostConfig, exc: BaseException) -> dict[str, Any]:

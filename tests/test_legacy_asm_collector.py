@@ -143,3 +143,23 @@ def test_current_user_differs_from_grid_owner_branch_uses_sudo_n() -> None:
     assert "/[o]hasd/" in ASM_COLLECTION_SCRIPT
     assert "stat -c '%U'" not in ASM_COLLECTION_SCRIPT
     assert 'asm_command="sudo -n -u \\"$GRID_OWNER\\" env ORACLE_HOME=\\"$GRID_HOME\\"' in ASM_COLLECTION_SCRIPT
+
+
+def test_parse_sections_strips_bash_prompt_and_ignores_unmarked_echo():
+    from collectors.asm_diskgroups_collector import _parse_sections
+
+    output = (
+        "bash-4.4# set -euo pipefail\n"
+        "bash-4.4# ===BEGIN_SECTION:asmcmd_stdout===\n"
+        "bash-4.4# State Type Rebal Sector Block AU Total_MB Free_MB Req_mir_free_MB Usable_file_MB Offline_disks Voting_files Name\n"
+        "MOUNTED EXTERN N 512 4096 4194304 1000000 120000 0 120000 0 N DATA/\n"
+        "bash-4.4# ===END_SECTION:asmcmd_stdout===\n"
+        "bash-4.4# outside ignored\n"
+    )
+
+    sections = _parse_sections(output)
+
+    assert sections["asmcmd_stdout"].splitlines() == [
+        "State Type Rebal Sector Block AU Total_MB Free_MB Req_mir_free_MB Usable_file_MB Offline_disks Voting_files Name",
+        "MOUNTED EXTERN N 512 4096 4194304 1000000 120000 0 120000 0 N DATA/",
+    ]

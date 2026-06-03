@@ -41,8 +41,6 @@ def test_password_prompt_once_per_environment_and_ssh_user(monkeypatch):
 
 
 def test_remote_error_redacts_runtime_password(monkeypatch):
-    from subprocess import CompletedProcess
-
     from exadata_ric.auth import RuntimeCredentials
     from exadata_ric.ssh import RemoteExecutionError, run_remote_script
 
@@ -56,12 +54,18 @@ def test_remote_error_redacts_runtime_password(monkeypatch):
     def fake_close(fd: int) -> None:
         return None
 
-    def fake_run(*args, **kwargs):
-        return CompletedProcess(args=args[0], returncode=1, stdout="", stderr="bad swordfish sudo swordfish")
+    class FakePopen:
+        def __init__(self, args, **kwargs):  # noqa: ANN001
+            self.args = args
+            self.returncode = 1
+            self.stdin = type("FakeStdin", (), {"closed": True})()
+
+        def communicate(self, input=None, timeout=None):  # noqa: ANN001
+            return "", "bad swordfish sudo swordfish"
 
     monkeypatch.setattr("exadata_ric.ssh._prepare_askpass", fake_prepare_askpass)
     monkeypatch.setattr("exadata_ric.ssh.os.close", fake_close)
-    monkeypatch.setattr("exadata_ric.ssh.subprocess.run", fake_run)
+    monkeypatch.setattr("exadata_ric.ssh.subprocess.Popen", FakePopen)
 
     try:
         run_remote_script(host, "echo ok\n", RuntimeCredentials(ssh_password="swordfish", sudo_password="swordfish"))
