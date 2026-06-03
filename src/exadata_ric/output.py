@@ -72,11 +72,19 @@ def write_results(output_dir: Path, results: dict[str, list[dict[str, Any]]], er
     _write_csv(csv_dir / "hugepages.csv", [])
 
     asm_rows = results.get("asm_diskgroups", [])
+    asm_diskgroups = [row for row in asm_rows if row.get("record_type") != "host_metadata"]
+    asm_metadata = [row for row in asm_rows if row.get("record_type") == "host_metadata"]
     (output_dir / "asm_diskgroups.json").write_text(
-        json.dumps(asm_rows, indent=2, sort_keys=True) + "\n",
+        json.dumps(asm_diskgroups, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    _write_csv(output_dir / "asm_diskgroups.csv", asm_rows)
+    _write_csv(output_dir / "asm_diskgroups.csv", asm_diskgroups)
+    (output_dir / "asm_metadata.json").write_text(
+        json.dumps(asm_metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _write_csv(output_dir / "asm_metadata.csv", asm_metadata)
+    _write_csv(output_dir / "asm_summary.csv", _asm_summary_rows(asm_diskgroups))
 
 
 def merge_results(results: list[CollectionResult]) -> dict[str, list[dict[str, Any]]]:
@@ -116,3 +124,33 @@ def _build_normalized(results: dict[str, list[dict[str, Any]]]) -> list[dict[str
         key = (str(row.get("cluster", "")), str(row.get("host", "")))
         by_host.setdefault(key, {"cluster": key[0], "host": key[1], "os": {}, "filesystem": [], "memory": {}, "cpu": {}, "hugepages": {}, "oracle_inventory": {}, "raw": {}})["oracle_inventory"] = row
     return list(by_host.values())
+
+
+def _asm_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_diskgroup: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        diskgroup = str(row.get("diskgroup_name") or "")
+        total_mb = _to_int(row.get("total_mb"))
+        if not diskgroup or total_mb <= 0:
+            continue
+        by_diskgroup.setdefault((str(row.get("cluster") or ""), diskgroup), row)
+    summary = []
+    for (cluster, diskgroup), row in sorted(by_diskgroup.items()):
+        summary.append(
+            {
+                "cluster": cluster,
+                "diskgroup": diskgroup,
+                "total_gb": round(_to_int(row.get("total_mb")) / 1024, 2),
+                "free_gb": round(_to_int(row.get("free_mb")) / 1024, 2),
+                "used_pct": row.get("used_pct"),
+                "warning_level": row.get("warning_level"),
+            }
+        )
+    return summary
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
