@@ -56,7 +56,7 @@ def write_os_json(records: Iterable[OSCollectionRecord], output_dir: Path) -> Pa
 
 
 DB_CSV_FIELDS = [
-    "cluster","host","address","collected_at","status","error","ssh_returncode","hostname","date","gi_version","oratab","pmon_processes_json","databases_json","srvctl_config_json","srvctl_status_json","crsctl_stat_res_t","oracle_home_candidates_json","db_resource_details_json",
+    "cluster","host","address","collected_at","status","error","ssh_returncode","hostname","date","gi_version","oratab","pmon_processes_json","databases_json","srvctl_config_json","srvctl_status_json","crsctl_stat_res_t","oracle_home_candidates_json","db_resource_details_json","grid_home","grid_owner","srvctl_database_list_returncode","srvctl_database_list_stderr","db_resource_details_count","collection_status","collection_error",
 ]
 
 def write_db_inventory_csv(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
