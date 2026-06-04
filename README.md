@@ -100,9 +100,36 @@ Available dashboard tabs:
 4. HugePages
 5. DB Inventory
 6. Version Inventory
-7. Raw Data Explorer
+7. DB Performance
+8. DB Memory History
+9. Raw Data Explorer
 
-Generate collector output first with `python main.py` so the dashboard can load files such as `health_summary.json`, `asm_diskgroups.json`, `hugepages.json`, `os_inventory.json`, `db_inventory.json`, and `version_inventory.json` from `output/`.
+Generate collector output first with `python main.py` so the dashboard can load files such as `health_summary.json`, `asm_diskgroups.json`, `hugepages.json`, `os_inventory.json`, `db_inventory.json`, `version_inventory.json`, `db_performance.json`, and `db_memory_history.json` from `output/`.
+
+
+## DB Performance and Memory History outputs
+
+The DB performance collector uses AWR views (`DBA_HIST_SYSMETRIC_SUMMARY`, `DBA_HIST_SNAPSHOT`, `DBA_HIST_PARAMETER`, `DBA_HIST_SGASTAT`, and `DBA_HIST_PGASTAT`). Enabling this collector requires Oracle Diagnostics Pack/AWR licensing for the databases being queried. Review licensing before setting `collection.db_performance.enabled: true` and `collection.db_performance.use_awr: true`.
+
+Example configuration:
+
+```yaml
+collection:
+  db_performance:
+    enabled: true
+    use_awr: true
+    days_back: 7
+    timeout_seconds: 90
+    collect_cpu_iops: true
+    collect_memory_history: true
+```
+
+Outputs:
+
+- `output/db_performance.csv` and `output/db_performance.json` contain AWR CPU, IOPS, and throughput history.
+- `output/db_memory_history.csv` and `output/db_memory_history.json` contain AWR SGA/PGA memory history.
+
+SQL is streamed inline through the existing SSH runner to `sqlplus -s / as sysdba`; no SQL files are copied and no remote temp SQL files are created. The collector reuses DB inventory/resource-detail discovery to select each local running `oracle_sid` and `oracle_home`.
 
 ## DB Resource Details output
 
