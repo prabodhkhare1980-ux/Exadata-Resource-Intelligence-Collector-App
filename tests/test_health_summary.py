@@ -171,3 +171,42 @@ def test_health_summary_recommendation_boundary_levels() -> None:
         and row["recommendation"] == "Monitor HugePages free count."
         for row in rows
     )
+
+
+def test_health_summary_includes_db_resource_status_rows() -> None:
+    db_record = DBInventoryRecord(
+        cluster="c1",
+        host="h1",
+        address="10.0.0.1",
+        collected_at="2026-06-03T00:00:03+00:00",
+        status="ok",
+        databases=["DB1", "DB2", "DB3"],
+        srvctl_status={
+            "DB1": "Instance DB1 is running on node h1",
+            "DB2": "Instance DB2 is not running",
+            "DB3": "Instance DB3 is running on node h1",
+        },
+        db_resource_details=[
+            {"DB_NAME": "DB1", "db_unique_name": "DB1", "collection_status": "success", "Collected_At": "now"},
+            {"DB_NAME": "", "db_unique_name": "DB2", "collection_status": "skipped", "collection_error": "no_local_running_instance", "Collected_At": "now"},
+            {"DB_NAME": "DB3", "db_unique_name": "DB3", "collection_status": "failed", "collection_error": "ORA-01031", "Collected_At": "now"},
+        ],
+    )
+
+    rows = build_health_summary_rows([], [], [], [db_record])
+
+    assert any(row["category"] == "DB_RESOURCE" and row["object_name"] == "DB1" and row["warning_level"] == "OK" for row in rows)
+    assert any(
+        row["category"] == "DB_RESOURCE"
+        and row["object_name"] == "DB2"
+        and row["warning_level"] == "WARNING"
+        and row["recommendation"] == "No local running instance on this host."
+        for row in rows
+    )
+    assert any(
+        row["category"] == "DB_RESOURCE"
+        and row["object_name"] == "DB3"
+        and row["warning_level"] == "CRITICAL"
+        and row["recommendation"] == "Review local SYSDBA connectivity and database open state."
+        for row in rows
+    )
