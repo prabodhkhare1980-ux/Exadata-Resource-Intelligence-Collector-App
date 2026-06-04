@@ -188,3 +188,102 @@ def test_build_db_resource_sql_uses_dba_views_for_11g() -> None:
     sql = _build_db_resource_sql("11.2.0.4.0", use_cdb_views=True)
     assert "dba_data_files" in sql
     assert "cdb_data_files" not in sql
+
+from collectors.db_inventory_collector import (
+    DB_INVENTORY_SCRIPT,
+    DBInventoryCollector,
+    _build_gi_command,
+    _collect_pmon_oratab_fallback_details,
+)
+
+
+class FakeRunner:
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+
+    def run_script(self, host: FakeHost, script: str) -> CommandResult:
+        return CommandResult(host, [], self.stdout, "", 0)
+
+
+class FakeLogger:
+    def info(self, *args, **kwargs) -> None:
+        pass
+
+    def debug(self, *args, **kwargs) -> None:
+        pass
+
+    def warning(self, *args, **kwargs) -> None:
+        pass
+
+    def error(self, *args, **kwargs) -> None:
+        pass
+
+    def exception(self, *args, **kwargs) -> None:
+        pass
+
+
+def _section(name: str, value: str) -> str:
+    return f"\n__ERIC_SECTION__:{name}\n{value}\n"
+
+
+def test_srvctl_gi_command_runs_as_oracle_on_on_prem() -> None:
+    command = _build_gi_command("oracle", "/u01/app/19.0.0.0/grid", "srvctl config database")
+    assert command == "sudo -n -u oracle env ORACLE_HOME=/u01/app/19.0.0.0/grid PATH=/u01/app/19.0.0.0/grid/bin:/usr/bin:/bin srvctl config database"
+
+
+def test_srvctl_gi_command_runs_as_grid_on_oci() -> None:
+    command = _build_gi_command("grid", "/u01/app/23.0.0.0/grid", "crsctl stat res -t")
+    assert command == "sudo -n -u grid env ORACLE_HOME=/u01/app/23.0.0.0/grid PATH=/u01/app/23.0.0.0/grid/bin:/usr/bin:/bin crsctl stat res -t"
+
+
+def test_db_inventory_script_discovers_grid_env_and_uses_sudo_gi_owner() -> None:
+    assert "awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab" in DB_INVENTORY_SCRIPT
+    assert "stat -c '%U' \"$grid_home/bin/crsctl\"" in DB_INVENTORY_SCRIPT
+    assert 'sudo -n -u "$grid_owner" env ORACLE_HOME="$grid_home" PATH="$grid_home/bin:/usr/bin:/bin" "$@"' in DB_INVENTORY_SCRIPT
+
+
+def test_empty_srvctl_list_marks_partial_and_includes_stderr() -> None:
+    stdout = "".join(
+        [
+            _section("hostname", "node1.example.com"),
+            _section("grid_home", "/u01/app/19.0.0.0/grid"),
+            _section("grid_owner", "oracle"),
+            _section("srvctl_database_list_returncode", "0"),
+            _section("srvctl_database_list_stderr", "DIA-49802 missing permission on ADR home directory"),
+            _section("database_list", ""),
+            _section("pmon", ""),
+            _section("oratab", "+ASM1:/u01/app/19.0.0.0/grid:N"),
+        ]
+    )
+    record = DBInventoryCollector(FakeRunner(stdout)).collect_host("c1", FakeHost(), FakeLogger())
+    assert record.status == "partial"
+    assert record.collection_status == "partial"
+    assert record.collection_error == "srvctl database list empty"
+    assert record.srvctl_database_list_stderr == "DIA-49802 missing permission on ADR home directory"
+    assert record.db_resource_details_count == 0
+
+
+def test_pmon_oratab_fallback_collects_local_sql_details() -> None:
+    calls: list[tuple[str, str, bool]] = []
+
+    def executor(oracle_home: str, sid: str, sql: str, use_cdb_views: bool) -> CommandResult:
+        calls.append((oracle_home, sid, use_cdb_views))
+        return _result(stdout="node1|DB1|PRIMARY|READ WRITE|19.0.0.0.0|true|1|1|2|3|4|300|8|10|5\n")
+
+    rows = _collect_pmon_oratab_fallback_details(
+        None,
+        FakeHost(),
+        "c1",
+        "node1",
+        "10.0.0.1",
+        "now",
+        ["DB1_1"],
+        "DB1:/u01/app/oracle/product/19/dbhome_1:Y\n",
+        "node1.example.com",
+        sql_executor=executor,
+    )
+    assert calls == [("/u01/app/oracle/product/19/dbhome_1", "DB1_1", True)]
+    assert rows[0]["source"] == "pmon_oratab_fallback"
+    assert rows[0]["mapping_source"] == "pmon_oratab_fallback"
+    assert rows[0]["collection_status"] == "success"
+    assert rows[0]["DB_NAME"] == "DB1"

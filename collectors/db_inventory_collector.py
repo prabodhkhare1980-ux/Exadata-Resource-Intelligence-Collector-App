@@ -39,6 +39,13 @@ class DBInventoryRecord:
     crsctl_stat_res_t: str = ""
     oracle_home_candidates: list[str] = field(default_factory=list)
     db_resource_details: list[dict[str, object]] = field(default_factory=list)
+    grid_home: str = ""
+    grid_owner: str = ""
+    srvctl_database_list_returncode: int | None = None
+    srvctl_database_list_stderr: str = ""
+    db_resource_details_count: int = 0
+    collection_status: str = ""
+    collection_error: str = ""
     raw: dict[str, str] = field(default_factory=dict)
 
     def to_csv_row(self) -> dict[str, str]:
@@ -61,6 +68,13 @@ class DBInventoryRecord:
             "crsctl_stat_res_t": self.crsctl_stat_res_t,
             "oracle_home_candidates_json": json.dumps(self.oracle_home_candidates),
             "db_resource_details_json": json.dumps(self.db_resource_details),
+            "grid_home": self.grid_home,
+            "grid_owner": self.grid_owner,
+            "srvctl_database_list_returncode": "" if self.srvctl_database_list_returncode is None else str(self.srvctl_database_list_returncode),
+            "srvctl_database_list_stderr": self.srvctl_database_list_stderr,
+            "db_resource_details_count": str(self.db_resource_details_count),
+            "collection_status": self.collection_status,
+            "collection_error": self.collection_error,
         }
 
     def to_json_dict(self) -> dict[str, object]:
@@ -102,6 +116,12 @@ class DBInventoryCollector:
 
         databases = _parse_database_list(sections.get("database_list", ""))
         pmon_sids = _parse_pmon_sids(sections.get("pmon", ""))
+        srvctl_list_rc = _parse_optional_int(sections.get("srvctl_database_list_returncode", ""))
+        srvctl_list_stderr = sections.get("srvctl_database_list_stderr", "").strip()
+        grid_home = sections.get("grid_home", "").strip()
+        grid_owner = sections.get("grid_owner", "").strip()
+        logger.info("DB inventory resolved GI env: host=%s grid_home=%s grid_owner=%s", host.name, grid_home, grid_owner)
+        logger.info("DB inventory database list count=%s", len(databases))
         logger.debug("Authoritative srvctl DB list: %s", databases)
         logger.debug("PMON SID list: %s", pmon_sids)
         logger.debug("srvctl loop source=srvctl_config_database")
@@ -109,27 +129,52 @@ class DBInventoryCollector:
         srvctl_status = {db: sections.get(f"srvctl_status_{db}", "") for db in databases}
 
         oracle_home_candidates = [line.strip() for line in sections.get("oracle_home_candidates", "").splitlines() if line.strip()]
-        db_resource_details = _collect_db_resource_details(
-            self.runner,
-            host,
-            cluster_name,
-            host.name,
-            host.address,
-            collected_at,
-            databases,
-            srvctl_config,
-            srvctl_status,
-            oracle_home_candidates,
-            sections.get("hostname", ""),
-            logger,
-        )
+        if srvctl_list_rc not in (None, 0):
+            db_resource_details = _collect_pmon_oratab_fallback_details(
+                self.runner,
+                host,
+                cluster_name,
+                host.name,
+                host.address,
+                collected_at,
+                pmon_sids,
+                sections.get("oratab", ""),
+                sections.get("hostname", ""),
+                logger,
+            )
+        else:
+            db_resource_details = _collect_db_resource_details(
+                self.runner,
+                host,
+                cluster_name,
+                host.name,
+                host.address,
+                collected_at,
+                databases,
+                srvctl_config,
+                srvctl_status,
+                oracle_home_candidates,
+                sections.get("hostname", ""),
+                logger,
+            )
+        logger.info("DB resource details rows=%s", len(db_resource_details))
+
+        collection_status = "success"
+        collection_error = ""
+        if not databases:
+            collection_status = "partial"
+            collection_error = "srvctl database list empty"
+        elif srvctl_list_rc not in (None, 0):
+            collection_status = "partial"
+            collection_error = "srvctl config database failed"
 
         record = DBInventoryRecord(
             cluster=cluster_name,
             host=host.name,
             address=host.address,
             collected_at=collected_at,
-            status="ok",
+            status="ok" if collection_status == "success" else "partial",
+            error=collection_error if collection_status != "success" else "",
             ssh_returncode=result.returncode,
             hostname=sections.get("hostname", "").strip().splitlines()[0:1][0] if sections.get("hostname", "").strip() else "",
             date=sections.get("date", "").strip(),
@@ -142,6 +187,13 @@ class DBInventoryCollector:
             crsctl_stat_res_t=sections.get("crsctl_stat_res_t", "").strip(),
             oracle_home_candidates=oracle_home_candidates,
             db_resource_details=db_resource_details,
+            grid_home=grid_home,
+            grid_owner=grid_owner,
+            srvctl_database_list_returncode=srvctl_list_rc,
+            srvctl_database_list_stderr=srvctl_list_stderr,
+            db_resource_details_count=len(db_resource_details),
+            collection_status=collection_status,
+            collection_error=collection_error,
             raw=sections,
         )
         logger.info("Completed DB inventory collection for %s", host.name)
@@ -153,6 +205,26 @@ set -o pipefail
 emit_section() {
   printf '\n__ERIC_SECTION__:%s\n' "$1"
 }
+
+grid_oratab="$(awk -F: '/^\+ASM/ {print $1 "|" $2; exit}' /etc/oratab 2>/dev/null || true)"
+grid_home=""
+grid_owner=""
+if [[ "$grid_oratab" == *"|"* ]]; then
+  grid_home="${grid_oratab#*|}"
+fi
+if [ -n "$grid_home" ]; then
+  grid_owner="$(stat -c '%U' "$grid_home/bin/crsctl" 2>/dev/null || true)"
+fi
+
+run_gi() {
+  sudo -n -u "$grid_owner" env ORACLE_HOME="$grid_home" PATH="$grid_home/bin:/usr/bin:/bin" "$@"
+}
+
+emit_section grid_home
+printf '%s\n' "$grid_home"
+
+emit_section grid_owner
+printf '%s\n' "$grid_owner"
 
 emit_section hostname
 (hostname -f 2>/dev/null || hostname 2>/dev/null) || true
@@ -166,32 +238,56 @@ emit_section oratab
 emit_section pmon
 (ps -ef 2>/dev/null | grep -E '[o]ra_pmon_' || true)
 
-emit_section database_list
-(srvctl config database 2>/dev/null | awk '{print $1}' | sed '/^$/d' | sort -u || true)
-
-grid_home="$(awk -F: '/^\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"
-if [ -n "$grid_home" ]; then
-  export ORACLE_HOME="$grid_home"
-  export PATH="$ORACLE_HOME/bin:$PATH"
+if [ -n "$grid_home" ] && [ -n "$grid_owner" ]; then
+  stdout_file="$(mktemp)"
+  stderr_file="$(mktemp)"
+  set +e
+  run_gi srvctl config database >"$stdout_file" 2>"$stderr_file"
+  srvctl_rc=$?
+  set -e
+  database_list_text="$(cat "$stdout_file" 2>/dev/null || true)"
+  srvctl_stderr_text="$(cat "$stderr_file" 2>/dev/null || true)"
+  rm -f "$stdout_file" "$stderr_file"
+else
+  srvctl_rc=1
+  database_list_text=""
+  srvctl_stderr_text="missing GRID_HOME or GRID_OWNER"
 fi
 
+emit_section srvctl_database_list_returncode
+printf '%s\n' "$srvctl_rc"
+
+emit_section srvctl_database_list_stderr
+printf '%s\n' "$srvctl_stderr_text"
+
+emit_section database_list
+printf '%s\n' "$database_list_text" | awk '{print $1}' | sed '/^$/d' | sort -u || true
+
 emit_section gi_version
-(crsctl query crs activeversion 2>&1 || true)
+if [ -n "$grid_home" ] && [ -n "$grid_owner" ]; then
+  (run_gi crsctl query crs activeversion 2>&1 || true)
+fi
 
 emit_section crsctl_stat_res_t
-(crsctl stat res -t 2>&1 || true)
+if [ -n "$grid_home" ] && [ -n "$grid_owner" ]; then
+  (run_gi crsctl stat res -t 2>&1 || true)
+fi
 
-for db in $(srvctl config database 2>/dev/null | awk '{print $1}' | sed '/^$/d' | sort -u); do
+for db in $(printf '%s\n' "$database_list_text" | awk '{print $1}' | sed '/^$/d' | sort -u); do
   emit_section "srvctl_config_${db}"
-  (srvctl config database -d "$db" 2>&1 || true)
+  (run_gi srvctl config database -d "$db" 2>&1 || true)
   emit_section "srvctl_status_${db}"
-  (srvctl status database -d "$db" 2>&1 || true)
+  (run_gi srvctl status database -d "$db" 2>&1 || true)
 done
 
 emit_section oracle_home_candidates
 (
   (ps -ef 2>/dev/null | awk '/ora_pmon_/ {for(i=1;i<=NF;i++) if($i ~ /^ORACLE_HOME=/) {sub(/^ORACLE_HOME=/,"",$i); print $i}}' || true)
-  (srvctl config database 2>/dev/null | awk -F: '/Oracle home/ {gsub(/^[[:space:]]+/,"",$2); print $2}' || true)
+  if [ -n "$grid_home" ] && [ -n "$grid_owner" ]; then
+    for db in $(printf '%s\n' "$database_list_text" | awk '{print $1}' | sed '/^$/d' | sort -u); do
+      run_gi srvctl config database -d "$db" 2>/dev/null | awk -F: '/Oracle home/ {gsub(/^[[:space:]]+/,"",$2); print $2}' || true
+    done
+  fi
   (cat /etc/oratab 2>/dev/null | awk -F: '!/^#/ && NF>=2 {print $2}' || true)
 ) | sed '/^$/d' | sort -u
 '''.lstrip()
@@ -203,21 +299,35 @@ def _collect_with_context(context: SharedHostContext, host: "HostConfig") -> dic
     sections["date"] = context.run_cached(host, "date", "date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true").stdout
     sections["oratab"] = context.run_cached(host, "oratab", "cat /etc/oratab 2>/dev/null || true").stdout
     sections["pmon"] = context.run_cached(host, "pmon", "ps -ef 2>/dev/null | grep -E '[o]ra_pmon_' || true").stdout
-    db_list = context.run_cached(host, "srvctl_config_database", "srvctl config database 2>/dev/null | awk '{print $1}' | sed '/^$/d' | sort -u || true").stdout
-    sections["database_list"] = db_list
-    gi_cmd = """grid_home="$(awk -F: '/^\\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"; if [ -n "$grid_home" ]; then export ORACLE_HOME="$grid_home"; export PATH="$ORACLE_HOME/bin:$PATH"; fi; crsctl query crs activeversion 2>&1 || true"""
-    crs_cmd = """grid_home="$(awk -F: '/^\\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null)"; if [ -n "$grid_home" ]; then export ORACLE_HOME="$grid_home"; export PATH="$ORACLE_HOME/bin:$PATH"; fi; crsctl stat res -t 2>&1 || true"""
+    gi_env_cmd = (
+        "grid_oratab=$(awk -F: '/^\\+ASM/ {print $1 \"|\" $2; exit}' /etc/oratab 2>/dev/null || true); "
+        "grid_home=; grid_owner=; "
+        "if [[ \"$grid_oratab\" == *\"|\"* ]]; then grid_home=${grid_oratab#*|}; fi; "
+        "if [ -n \"$grid_home\" ]; then grid_owner=$(stat -c '%U' \"$grid_home/bin/crsctl\" 2>/dev/null || true); fi; "
+        "printf '%s|%s\\n' \"$grid_home\" \"$grid_owner\""
+    )
+    gi_env = context.run_cached(host, "db_inventory_gi_env", gi_env_cmd).stdout.strip()
+    grid_home, _, grid_owner = gi_env.partition("|")
+    sections["grid_home"] = grid_home
+    sections["grid_owner"] = grid_owner
+    db_cmd = _build_gi_command(grid_owner, grid_home, "srvctl config database") if grid_home and grid_owner else "printf '%s\\n' 'missing GRID_HOME or GRID_OWNER' >&2; exit 1"
+    db_result = context.run_cached(host, "srvctl_config_database", db_cmd)
+    sections["database_list"] = db_result.stdout
+    sections["srvctl_database_list_returncode"] = str(db_result.returncode)
+    sections["srvctl_database_list_stderr"] = db_result.stderr
+    gi_cmd = _build_gi_command(grid_owner, grid_home, "crsctl query crs activeversion") if grid_home and grid_owner else "true"
+    crs_cmd = _build_gi_command(grid_owner, grid_home, "crsctl stat res -t") if grid_home and grid_owner else "true"
     sections["gi_version"] = context.run_cached(host, "crsctl_activeversion", gi_cmd).stdout
     sections["crsctl_stat_res_t"] = context.run_cached(host, "crsctl_stat_res_t", crs_cmd).stdout
-    databases = _parse_database_list(db_list)
+    databases = _parse_database_list(db_result.stdout)
     for db in databases:
-        sections[f"srvctl_config_{db}"] = context.run_cached(host, f"srvctl_config_database_{db}", f"srvctl config database -d '{db}' 2>&1 || true").stdout
-        sections[f"srvctl_status_{db}"] = context.run_cached(host, f"srvctl_status_database_{db}", f"srvctl status database -d '{db}' 2>&1 || true").stdout
-    gi_home = context.run_cached(host, "gi_home_discovery", """awk -F: '/^\\+ASM/ {print $2; exit}' /etc/oratab 2>/dev/null || true""").stdout.strip()
-    oh_cmd = """(ps -ef 2>/dev/null | awk '/ora_pmon_/ {for(i=1;i<=NF;i++) if($i ~ /^ORACLE_HOME=/) {sub(/^ORACLE_HOME=/,"",$i); print $i}}' || true; cat /etc/oratab 2>/dev/null | awk -F: '!/^#/ && NF>=2 {print $2}' || true) | sed '/^$/d' | sort -u"""
+        db_arg = shlex.quote(db)
+        sections[f"srvctl_config_{db}"] = context.run_cached(host, f"srvctl_config_database_{db}", _build_gi_command(grid_owner, grid_home, f"srvctl config database -d {db_arg}")).stdout
+        sections[f"srvctl_status_{db}"] = context.run_cached(host, f"srvctl_status_database_{db}", _build_gi_command(grid_owner, grid_home, f"srvctl status database -d {db_arg}")).stdout
+    oh_cmd = "(ps -ef 2>/dev/null | awk '/ora_pmon_/ {for(i=1;i<=NF;i++) if($i ~ /^ORACLE_HOME=/) {sub(/^ORACLE_HOME=/,\"\",$i); print $i}}' || true; cat /etc/oratab 2>/dev/null | awk -F: '!/^#/ && NF>=2 {print $2}' || true) | sed '/^$/d' | sort -u"
     sections["oracle_home_candidates"] = context.run_cached(host, "oracle_home_candidates", oh_cmd).stdout
-    if gi_home:
-        sections["oracle_home_candidates"] = (sections["oracle_home_candidates"] + "\n" + gi_home).strip()
+    if grid_home:
+        sections["oracle_home_candidates"] = (sections["oracle_home_candidates"] + "\n" + grid_home).strip()
     return {k: v.strip() for k, v in sections.items()}
 
 
@@ -242,6 +352,32 @@ def _is_prompt_line(line: str) -> bool:
         return True
     return stripped.startswith("bash-") and stripped.endswith("#")
 
+
+
+def _parse_optional_int(value: str) -> int | None:
+    stripped = (value or "").strip().splitlines()[0:1]
+    if not stripped or not stripped[0]:
+        return None
+    try:
+        return int(stripped[0])
+    except ValueError:
+        return None
+
+
+def _build_gi_command(grid_owner: str, grid_home: str, command: str) -> str:
+    path = f"{grid_home}/bin:/usr/bin:/bin"
+    return " ".join(
+        [
+            "sudo",
+            "-n",
+            "-u",
+            shlex.quote(grid_owner),
+            "env",
+            f"ORACLE_HOME={shlex.quote(grid_home)}",
+            f"PATH={shlex.quote(path)}",
+            command,
+        ]
+    )
 
 def _parse_database_list(output: str) -> list[str]:
     databases: list[str] = []
@@ -415,6 +551,83 @@ def _parse_db_resource_sql_output(text: str) -> dict[str, str]:
         return row
     raise ValueError("Expected 15 pipe-delimited DB resource values")
 
+
+
+def _collect_pmon_oratab_fallback_details(
+    runner: SSHRunner | None,
+    host,
+    cluster: str,
+    host_name: str,
+    address: str,
+    collected_at: str,
+    pmon_sids: list[str],
+    oratab: str,
+    remote_hostname: str = "",
+    logger: logging.Logger | None = None,
+    sql_executor=None,
+) -> list[dict[str, object]]:
+    """Collect DB resource rows for local PMON instances when srvctl database listing fails."""
+
+    details: list[dict[str, object]] = []
+    sid_home_map = _parse_oratab_sid_home_map(oratab)
+    for sid in pmon_sids:
+        oracle_home = _lookup_oratab_home_for_sid(sid, sid_home_map)
+        db_unique_name = _db_unique_from_sid(sid)
+        base = _db_resource_base_record(cluster, host_name, address, collected_at, db_unique_name, oracle_home)
+        base.update({"oracle_sid": sid, "mapping_source": "pmon_oratab_fallback", "source": "pmon_oratab_fallback"})
+        if not oracle_home:
+            base.update({"collection_status": "failed", "collection_error": "oracle_home_not_found"})
+            details.append(base)
+            continue
+        result = _execute_db_resource_sql(runner, host, oracle_home, sid, "", True, sql_executor)
+        size_source = "cdb"
+        if (not result.ok) and _should_fallback_to_dba(result.stderr + "\n" + result.stdout):
+            result = _execute_db_resource_sql(runner, host, oracle_home, sid, "", False, sql_executor)
+            size_source = "dba_fallback"
+        base.update({"sql_returncode": result.returncode, "sql_stderr": result.stderr.strip(), "size_source": size_source})
+        if not result.ok:
+            base.update({"collection_status": "failed", "collection_error": _sql_failure_error(result)})
+            details.append(base)
+            if logger:
+                logger.warning("DB resource SQL fallback failed for %s/%s: %s", db_unique_name, sid, base["collection_error"])
+            continue
+        try:
+            parsed = _parse_db_resource_sql_output(result.stdout)
+        except ValueError as exc:
+            base.update({"collection_status": "failed", "collection_error": str(exc)})
+            details.append(base)
+            continue
+        base.update(parsed)
+        base.update({"collection_status": "success", "collection_error": ""})
+        details.append(base)
+    return details
+
+
+def _parse_oratab_sid_home_map(oratab: str) -> dict[str, str]:
+    sid_home: dict[str, str] = {}
+    for line in oratab.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split(":")
+        if len(parts) < 2:
+            continue
+        sid, home = parts[0].strip(), parts[1].strip()
+        if sid and home:
+            sid_home[sid] = home
+    return sid_home
+
+
+def _lookup_oratab_home_for_sid(sid: str, sid_home_map: dict[str, str]) -> str:
+    candidates = [sid, _db_unique_from_sid(sid)]
+    for candidate in candidates:
+        if candidate in sid_home_map:
+            return sid_home_map[candidate]
+    return ""
+
+
+def _db_unique_from_sid(sid: str) -> str:
+    return re.sub(r"(?:_?\d+)$", "", sid)
 
 def _collect_db_resource_details(
     runner: SSHRunner | None,
