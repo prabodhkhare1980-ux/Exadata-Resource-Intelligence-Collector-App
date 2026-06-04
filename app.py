@@ -34,6 +34,8 @@ NAVIGATION = [
     "Host Inventory",
     "Version Inventory",
     "DB Inventory",
+    "DB Performance",
+    "DB Memory History",
     "Raw Data Explorer",
 ]
 
@@ -406,6 +408,49 @@ def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
     return table.sort_values(["severity_rank", "used_pct"], ascending=[True, False], na_position="last")
 
 
+
+def normalize_db_performance(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare DB CPU/IOPS AWR history rows for charts."""
+
+    rename_map = {
+        "Cluster": "cluster", "HOST_NAME": "host_name", "DB_NAME": "db_name",
+        "INSTANCE_NAME": "instance_name", "END_TIME": "end_time",
+        "TOTAL_IOPS_AVG": "total_iops_avg", "TOTAL_IOPS_MAX": "total_iops_max",
+        "TOTAL_MBPS_AVG": "total_mbps_avg", "TOTAL_MBPS_MAX": "total_mbps_max",
+        "CPU_USAGE_PER_SEC_AVG": "cpu_usage_per_sec_avg",
+        "CPU_USAGE_PER_SEC_MAX": "cpu_usage_per_sec_max",
+        "HOST_CPU_UTIL_PCT_AVG": "host_cpu_util_pct_avg",
+        "HOST_CPU_UTIL_PCT_MAX": "host_cpu_util_pct_max",
+    }
+    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns}).copy()
+    columns = ["cluster", "host_name", "db_name", "instance_name", "end_time", "total_iops_avg", "total_iops_max", "total_mbps_avg", "total_mbps_max", "cpu_usage_per_sec_avg", "cpu_usage_per_sec_max", "host_cpu_util_pct_avg", "host_cpu_util_pct_max"]
+    table = ensure_columns(table, columns)[columns].copy()
+    table["end_time"] = pd.to_datetime(table["end_time"], errors="coerce")
+    for column in columns[5:]:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+    return table
+
+
+def normalize_db_memory_history(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare DB SGA/PGA AWR history rows for charts."""
+
+    rename_map = {
+        "Cluster": "cluster", "HOST_NAME": "host_name", "DB_NAME": "db_name",
+        "INSTANCE_NAME": "instance_name", "END_TIME": "end_time",
+        "SGA_TARGET_GB": "sga_target_gb", "SGA_MAX_SIZE_GB": "sga_max_size_gb",
+        "SGA_USED_GB": "sga_used_gb", "PGA_AGGREGATE_TARGET_GB": "pga_aggregate_target_gb",
+        "PGA_AGGREGATE_LIMIT_GB": "pga_aggregate_limit_gb", "PGA_ALLOCATED_GB": "pga_allocated_gb",
+        "PGA_USED_GB": "pga_used_gb", "PGA_FREEABLE_GB": "pga_freeable_gb",
+        "PGA_MAX_ALLOCATED_GB": "pga_max_allocated_gb",
+    }
+    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns}).copy()
+    columns = ["cluster", "host_name", "db_name", "instance_name", "end_time", "sga_target_gb", "sga_max_size_gb", "sga_used_gb", "pga_aggregate_target_gb", "pga_aggregate_limit_gb", "pga_allocated_gb", "pga_used_gb", "pga_freeable_gb", "pga_max_allocated_gb"]
+    table = ensure_columns(table, columns)[columns].copy()
+    table["end_time"] = pd.to_datetime(table["end_time"], errors="coerce")
+    for column in columns[5:]:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+    return table
+
 def build_global_filters() -> tuple[str, dict[str, list[str]]]:
     """Render sidebar navigation, refresh, and global filters."""
 
@@ -423,6 +468,8 @@ def build_global_filters() -> tuple[str, dict[str, list[str]]]:
         normalize_asm(read_output("asm_diskgroups")[0]),
         normalize_hugepages(read_output("hugepages")[0]),
         normalize_db_resources(read_output("db_resource_details")[0]),
+        normalize_db_performance(read_output("db_performance")[0]).rename(columns={"host_name": "host"}),
+        normalize_db_memory_history(read_output("db_memory_history")[0]).rename(columns={"host_name": "host"}),
         ensure_columns(read_output("os_inventory")[0], ["cluster", "host"]),
         normalize_health(ensure_columns(read_output("version_inventory")[0], ["cluster", "host", "warning_level"])),
     ]
@@ -932,6 +979,81 @@ def render_version_inventory_page(filters: dict[str, list[str]]) -> None:
         st.dataframe(table[columns + ["missing_imageinfo"]].style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
 
 
+
+def _render_date_filter(table: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    if table.empty or table["end_time"].dropna().empty:
+        return table
+    min_date = table["end_time"].min().date()
+    max_date = table["end_time"].max().date()
+    start_date, end_date = st.date_input("Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date, key=f"{key_prefix}_date_range")
+    return table[(table["end_time"].dt.date >= start_date) & (table["end_time"].dt.date <= end_date)]
+
+
+def _render_db_perf_filters(table: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    filtered = table.copy()
+    col1, col2, col3 = st.columns(3)
+    for column, label, container in [("cluster", "Cluster", col1), ("db_name", "DB name", col2), ("instance_name", "Instance", col3)]:
+        values = sorted({str(v) for v in filtered[column].dropna() if str(v).strip()}) if column in filtered.columns else []
+        selected = container.multiselect(label, values, default=[], key=f"{key_prefix}_{column}")
+        if selected:
+            filtered = filtered[filtered[column].astype(str).isin(selected)]
+    return _render_date_filter(filtered, key_prefix)
+
+
+def render_db_performance_page(filters: dict[str, list[str]]) -> None:
+    st.title("DB Performance")
+    st.caption("Uses DBA_HIST_SYSMETRIC_SUMMARY AWR data; ensure Oracle Diagnostics Pack licensing before enabling collection.")
+    df, path = read_output("db_performance")
+    show_source(path)
+    table = apply_global_filters(normalize_db_performance(df), filters)
+    if table.empty:
+        st.warning("No db_performance output found in output/.")
+        return
+    table = _render_db_perf_filters(table, "db_perf")
+    chart1, chart2 = st.columns(2)
+    with chart1:
+        st.plotly_chart(px.line(table, x="end_time", y="total_iops_avg", color="db_name", line_dash="instance_name", title="Total IOPS over time"), use_container_width=True)
+    with chart2:
+        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_avg", color="db_name", line_dash="instance_name", title="Total MBPS over time"), use_container_width=True)
+    chart3, chart4 = st.columns(2)
+    with chart3:
+        st.plotly_chart(px.line(table, x="end_time", y="cpu_usage_per_sec_avg", color="db_name", line_dash="instance_name", title="CPU Usage Per Sec over time"), use_container_width=True)
+    with chart4:
+        st.plotly_chart(px.line(table, x="end_time", y="host_cpu_util_pct_avg", color="db_name", line_dash="instance_name", title="Host CPU Utilization % over time"), use_container_width=True)
+    top = table.groupby(["cluster", "db_name"], dropna=False).agg(avg_iops=("total_iops_avg", "mean"), max_iops=("total_iops_max", "max")).reset_index()
+    chart5, chart6 = st.columns(2)
+    with chart5:
+        st.plotly_chart(px.bar(top.nlargest(15, "avg_iops"), x="db_name", y="avg_iops", color="cluster", title="Top DBs by avg IOPS"), use_container_width=True)
+    with chart6:
+        st.plotly_chart(px.bar(top.nlargest(15, "max_iops"), x="db_name", y="max_iops", color="cluster", title="Top DBs by max IOPS"), use_container_width=True)
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
+
+def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
+    st.title("DB Memory History")
+    st.caption("Uses DBA_HIST_* AWR memory views; ensure Oracle Diagnostics Pack licensing before enabling collection.")
+    df, path = read_output("db_memory_history")
+    show_source(path)
+    table = apply_global_filters(normalize_db_memory_history(df), filters)
+    if table.empty:
+        st.warning("No db_memory_history output found in output/.")
+        return
+    table = _render_db_perf_filters(table, "db_mem")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(px.line(table, x="end_time", y="sga_used_gb", color="db_name", line_dash="instance_name", title="SGA_USED_GB over time"), use_container_width=True)
+    with c2:
+        st.plotly_chart(px.line(table, x="end_time", y="pga_allocated_gb", color="db_name", line_dash="instance_name", title="PGA_ALLOCATED_GB over time"), use_container_width=True)
+    c3, c4 = st.columns(2)
+    with c3:
+        st.plotly_chart(px.line(table, x="end_time", y="pga_used_gb", color="db_name", line_dash="instance_name", title="PGA_USED_GB over time"), use_container_width=True)
+    with c4:
+        sga_long = table.melt(id_vars=["end_time", "db_name", "instance_name"], value_vars=["sga_target_gb", "sga_used_gb"], var_name="metric", value_name="gb")
+        st.plotly_chart(px.line(sga_long, x="end_time", y="gb", color="db_name", line_dash="metric", title="SGA_TARGET_GB vs SGA_USED_GB"), use_container_width=True)
+    pga_long = table.melt(id_vars=["end_time", "db_name", "instance_name"], value_vars=["pga_aggregate_target_gb", "pga_allocated_gb"], var_name="metric", value_name="gb")
+    st.plotly_chart(px.line(pga_long, x="end_time", y="gb", color="db_name", line_dash="metric", title="PGA_AGGREGATE_TARGET_GB vs PGA_ALLOCATED_GB"), use_container_width=True)
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
 def render_raw_data_page() -> None:
     st.title("Raw Data Explorer")
     files = sorted(path for path in OUTPUT_DIR.glob("*") if path.is_file() and path.suffix.lower() in {".json", ".csv"})
@@ -973,6 +1095,10 @@ def main() -> None:
         render_version_inventory_page(filters)
     elif page == "DB Inventory":
         render_db_inventory_page(filters)
+    elif page == "DB Performance":
+        render_db_performance_page(filters)
+    elif page == "DB Memory History":
+        render_db_memory_history_page(filters)
     elif page == "Raw Data Explorer":
         render_raw_data_page()
 

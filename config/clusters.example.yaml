@@ -47,6 +47,14 @@ collection:
   hugepages:
     enabled: true
     timeout_seconds: 15
+  # Uses DBA_HIST_* AWR views and requires Oracle Diagnostics Pack licensing.
+  db_performance:
+    enabled: true
+    use_awr: true
+    days_back: 7
+    timeout_seconds: 90
+    collect_cpu_iops: true
+    collect_memory_history: true
   debug:
     enabled: false
   ssh:

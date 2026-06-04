@@ -13,6 +13,12 @@ from collectors.os_collector import OSCollectionRecord
 from collectors.asm_diskgroups_collector import ASMDiskgroupRecord
 from collectors.hugepages_collector import HugePagesRecord
 from collectors.version_inventory_collector import VersionInventoryRecord
+from collectors.db_performance_collector import (
+    DBMemoryHistoryRecord,
+    DBPerformanceRecord,
+    DB_MEMORY_COLUMNS,
+    DB_PERFORMANCE_COLUMNS,
+)
 
 CSV_FIELDS = [
     "cluster",
@@ -474,6 +480,54 @@ def _version_summary_row(record: VersionInventoryRecord) -> dict[str, object]:
     return {field: getattr(record, field) for field in VERSION_SUMMARY_FIELDS}
 
 
+def write_db_performance_csv(records: Iterable[DBPerformanceRecord], output_dir: Path) -> Path:
+    """Write DB CPU/IOPS AWR history to output/db_performance.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_performance.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=DB_PERFORMANCE_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_db_performance_json(records: Iterable[DBPerformanceRecord], output_dir: Path) -> Path:
+    """Write DB CPU/IOPS AWR history to output/db_performance.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_performance.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def write_db_memory_history_csv(records: Iterable[DBMemoryHistoryRecord], output_dir: Path) -> Path:
+    """Write DB SGA/PGA AWR history to output/db_memory_history.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_memory_history.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=DB_MEMORY_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_db_memory_history_json(records: Iterable[DBMemoryHistoryRecord], output_dir: Path) -> Path:
+    """Write DB SGA/PGA AWR history to output/db_memory_history.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_memory_history.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
 def write_health_summary_csv(
     os_records: Iterable[OSCollectionRecord],
     asm_records: Iterable[ASMDiskgroupRecord],
@@ -481,12 +535,14 @@ def write_health_summary_csv(
     db_records: Iterable[DBInventoryRecord],
     output_dir: Path,
     version_records: Iterable[VersionInventoryRecord] | None = None,
+    db_performance_records: Iterable[DBPerformanceRecord] | None = None,
+    db_memory_records: Iterable[DBMemoryHistoryRecord] | None = None,
 ) -> Path:
     """Write the combined dashboard-ready health feed to output/health_summary.csv."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "health_summary.csv"
-    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records, db_performance_records, db_memory_records)
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=HEALTH_SUMMARY_FIELDS)
         writer.writeheader()
@@ -501,12 +557,14 @@ def write_health_summary_html(
     db_records: Iterable[DBInventoryRecord],
     output_dir: Path,
     version_records: Iterable[VersionInventoryRecord] | None = None,
+    db_performance_records: Iterable[DBPerformanceRecord] | None = None,
+    db_memory_records: Iterable[DBMemoryHistoryRecord] | None = None,
 ) -> Path:
     """Write a simple color-coded health summary table to output/health_summary.html."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     html_path = output_dir / "health_summary.html"
-    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records, db_performance_records, db_memory_records)
     html_path.write_text(_health_summary_html(rows), encoding="utf-8")
     return html_path
 
@@ -518,12 +576,14 @@ def write_health_summary_json(
     db_records: Iterable[DBInventoryRecord],
     output_dir: Path,
     version_records: Iterable[VersionInventoryRecord] | None = None,
+    db_performance_records: Iterable[DBPerformanceRecord] | None = None,
+    db_memory_records: Iterable[DBMemoryHistoryRecord] | None = None,
 ) -> Path:
     """Write the combined dashboard-ready health feed to output/health_summary.json."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "health_summary.json"
-    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records, db_performance_records, db_memory_records)
     with json_path.open("w", encoding="utf-8") as json_file:
         json.dump(rows, json_file, indent=2)
         json_file.write("\n")
@@ -536,6 +596,8 @@ def build_health_summary_rows(
     hugepages_records: Iterable[HugePagesRecord],
     db_records: Iterable[DBInventoryRecord],
     version_records: Iterable[VersionInventoryRecord] | None = None,
+    db_performance_records: Iterable[DBPerformanceRecord] | None = None,
+    db_memory_records: Iterable[DBMemoryHistoryRecord] | None = None,
 ) -> list[dict[str, object]]:
     """Merge collector health signals into a single normalized row set."""
 
@@ -545,6 +607,8 @@ def build_health_summary_rows(
     rows.extend(_hugepages_health_rows(hugepages_records))
     rows.extend(_db_inventory_health_rows(db_records))
     rows.extend(_version_inventory_health_rows(version_records or []))
+    rows.extend(_db_performance_health_rows(db_performance_records or []))
+    rows.extend(_db_memory_health_rows(db_memory_records or []))
     return rows
 
 
@@ -849,6 +913,43 @@ def _db_inventory_health_rows(records: Iterable[DBInventoryRecord]) -> list[dict
     return rows
 
 
+
+def _db_performance_health_rows(records: Iterable[DBPerformanceRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        if record.collection_status == "failed":
+            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_PERFORMANCE", record.db_unique_name or record.DB_NAME or "DB_PERFORMANCE", "collection_status", "failed", "WARNING", _details(collection_error=record.collection_error, error_category=record.error_category), record.Collected_At))
+            continue
+        if record.collection_status == "skipped":
+            continue
+        avg = _numeric_value(record.HOST_CPU_UTIL_PCT_AVG)
+        level = "CRITICAL" if avg >= 95 else "WARNING" if avg >= 85 else "OK"
+        rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_PERFORMANCE", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "host_cpu_util_pct_avg", avg, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, total_iops_avg=record.TOTAL_IOPS_AVG), record.Collected_At))
+    return rows
+
+
+def _db_memory_health_rows(records: Iterable[DBMemoryHistoryRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        if record.collection_status == "failed":
+            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_MEMORY", record.db_unique_name or record.DB_NAME or "DB_MEMORY", "collection_status", "failed", "WARNING", _details(collection_error=record.collection_error, error_category=record.error_category), record.Collected_At))
+            continue
+        if record.collection_status == "skipped":
+            continue
+        sga_used = _numeric_value(record.SGA_USED_GB)
+        sga_target = _numeric_value(record.SGA_TARGET_GB)
+        if sga_target > 0:
+            pct = round((sga_used / sga_target) * 100, 2)
+            level = "CRITICAL" if pct >= 98 else "WARNING" if pct >= 90 else "OK"
+            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_MEMORY", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "sga_used_pct_of_target", pct, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, sga_used_gb=record.SGA_USED_GB, sga_target_gb=record.SGA_TARGET_GB), record.Collected_At))
+        pga_alloc = _numeric_value(record.PGA_ALLOCATED_GB)
+        pga_limit = _numeric_value(record.PGA_AGGREGATE_LIMIT_GB)
+        if pga_limit > 0:
+            pct = round((pga_alloc / pga_limit) * 100, 2)
+            level = "CRITICAL" if pct >= 98 else "WARNING" if pct >= 90 else "OK"
+            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_MEMORY", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "pga_allocated_pct_of_limit", pct, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, pga_allocated_gb=record.PGA_ALLOCATED_GB, pga_limit_gb=record.PGA_AGGREGATE_LIMIT_GB), record.Collected_At))
+    return rows
+
 def _health_row(
     cluster: str,
     host: str,
@@ -928,6 +1029,18 @@ def _health_recommendation(category: str, warning_level: str, metric: str, value
 
     if category == "DB_RESOURCE" and metric == "collection_status" and str(value) == "failed":
         return "Review SYSDBA connectivity, database state, and SQL error details."
+
+    if category == "DB_PERFORMANCE":
+        if metric == "host_cpu_util_pct_avg":
+            return "Review DB workload and host CPU pressure for the affected AWR interval."
+        if metric == "collection_status":
+            return "Verify Diagnostics Pack/AWR licensing, DBA_HIST view access, and SYSDBA connectivity."
+
+    if category == "DB_MEMORY":
+        if metric in {"sga_used_pct_of_target", "pga_allocated_pct_of_limit"}:
+            return "Review SGA/PGA sizing and recent memory pressure for the affected AWR interval."
+        if metric == "collection_status":
+            return "Verify Diagnostics Pack/AWR licensing, DBA_HIST memory view access, and SYSDBA connectivity."
 
     if category == "VERSION_INVENTORY":
         if metric == "imageinfo_available":

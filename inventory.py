@@ -48,6 +48,12 @@ class Inventory:
     hugepages_enabled: bool = True
     hugepages_timeout_seconds: int = 15
     debug_enabled: bool = False
+    db_performance_enabled: bool = True
+    db_performance_use_awr: bool = True
+    db_performance_days_back: int = 7
+    db_performance_timeout_seconds: int = 90
+    db_performance_collect_cpu_iops: bool = True
+    db_performance_collect_memory_history: bool = True
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -137,6 +143,9 @@ def load_inventory(path: str | Path) -> Inventory:
     debug_cfg = collection.get("debug") or {}
     if not isinstance(debug_cfg, dict):
         raise ValueError("'collection.debug' must be a mapping.")
+    db_perf_cfg = collection.get("db_performance") or {}
+    if not isinstance(db_perf_cfg, dict):
+        raise ValueError("'collection.db_performance' must be a mapping.")
     return Inventory(
         clusters=clusters,
         output_dir=output_dir,
@@ -151,6 +160,12 @@ def load_inventory(path: str | Path) -> Inventory:
         hugepages_enabled=bool(hugepages_cfg.get("enabled", True)),
         hugepages_timeout_seconds=int(hugepages_cfg.get("timeout_seconds", 15)),
         debug_enabled=bool(debug_cfg.get("enabled", False)),
+        db_performance_enabled=bool(db_perf_cfg.get("enabled", True)),
+        db_performance_use_awr=bool(db_perf_cfg.get("use_awr", True)),
+        db_performance_days_back=int(db_perf_cfg.get("days_back", 7)),
+        db_performance_timeout_seconds=int(db_perf_cfg.get("timeout_seconds", 90)),
+        db_performance_collect_cpu_iops=bool(db_perf_cfg.get("collect_cpu_iops", True)),
+        db_performance_collect_memory_history=bool(db_perf_cfg.get("collect_memory_history", True)),
     )
 
 
