@@ -12,6 +12,7 @@ from collectors.db_inventory_collector import DBInventoryRecord
 from collectors.os_collector import OSCollectionRecord
 from collectors.asm_diskgroups_collector import ASMDiskgroupRecord
 from collectors.hugepages_collector import HugePagesRecord
+from collectors.version_inventory_collector import VersionInventoryRecord
 
 CSV_FIELDS = [
     "cluster",
@@ -106,6 +107,14 @@ HUGEPAGES_FIELDS = [
     "collection_error",
 ]
 
+VERSION_INVENTORY_FIELDS = [
+    "cluster", "host", "address", "collected_at", "collection_status", "collection_error",
+    "ssh_returncode", "image_version", "exadata_software_version", "image_activated",
+    "image_status", "gi_active_version", "gi_software_patch_level", "gi_release_version",
+    "gi_release_patch_level", "gi_release_patch_string", "gi_release_patch_list",
+    "imageinfo_json",
+]
+
 HEALTH_SUMMARY_FIELDS = [
     "cluster", "host", "category", "object_name", "metric", "value", "warning_level",
     "recommendation", "details", "collected_at",
@@ -187,18 +196,39 @@ def write_hugepages_json(records: Iterable[HugePagesRecord], output_dir: Path) -
     return json_path
 
 
+def write_version_inventory_csv(records: Iterable[VersionInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "version_inventory.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=VERSION_INVENTORY_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_version_inventory_json(records: Iterable[VersionInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "version_inventory.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
 def write_health_summary_csv(
     os_records: Iterable[OSCollectionRecord],
     asm_records: Iterable[ASMDiskgroupRecord],
     hugepages_records: Iterable[HugePagesRecord],
     db_records: Iterable[DBInventoryRecord],
     output_dir: Path,
+    version_records: Iterable[VersionInventoryRecord] | None = None,
 ) -> Path:
     """Write the combined dashboard-ready health feed to output/health_summary.csv."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "health_summary.csv"
-    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=HEALTH_SUMMARY_FIELDS)
         writer.writeheader()
@@ -212,12 +242,13 @@ def write_health_summary_html(
     hugepages_records: Iterable[HugePagesRecord],
     db_records: Iterable[DBInventoryRecord],
     output_dir: Path,
+    version_records: Iterable[VersionInventoryRecord] | None = None,
 ) -> Path:
     """Write a simple color-coded health summary table to output/health_summary.html."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     html_path = output_dir / "health_summary.html"
-    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
     html_path.write_text(_health_summary_html(rows), encoding="utf-8")
     return html_path
 
@@ -228,12 +259,13 @@ def write_health_summary_json(
     hugepages_records: Iterable[HugePagesRecord],
     db_records: Iterable[DBInventoryRecord],
     output_dir: Path,
+    version_records: Iterable[VersionInventoryRecord] | None = None,
 ) -> Path:
     """Write the combined dashboard-ready health feed to output/health_summary.json."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "health_summary.json"
-    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
+    rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
     with json_path.open("w", encoding="utf-8") as json_file:
         json.dump(rows, json_file, indent=2)
         json_file.write("\n")
@@ -245,6 +277,7 @@ def build_health_summary_rows(
     asm_records: Iterable[ASMDiskgroupRecord],
     hugepages_records: Iterable[HugePagesRecord],
     db_records: Iterable[DBInventoryRecord],
+    version_records: Iterable[VersionInventoryRecord] | None = None,
 ) -> list[dict[str, object]]:
     """Merge collector health signals into a single normalized row set."""
 
@@ -253,6 +286,7 @@ def build_health_summary_rows(
     rows.extend(_asm_health_rows(asm_records))
     rows.extend(_hugepages_health_rows(hugepages_records))
     rows.extend(_db_inventory_health_rows(db_records))
+    rows.extend(_version_inventory_health_rows(version_records or []))
     return rows
 
 
@@ -379,6 +413,74 @@ def _hugepages_health_rows(records: Iterable[HugePagesRecord]) -> list[dict[str,
     return rows
 
 
+def _version_inventory_health_rows(records: Iterable[VersionInventoryRecord]) -> list[dict[str, object]]:
+    records = list(records)
+    rows: list[dict[str, object]] = []
+    for record in records:
+        if record.collection_status != "success":
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "VERSION_INVENTORY",
+                    "host",
+                    "collection_status",
+                    record.collection_status,
+                    "CRITICAL",
+                    record.collection_error,
+                    record.collected_at,
+                )
+            )
+            continue
+        if record.image_status.strip().lower() != "success":
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "VERSION_INVENTORY",
+                    "image_status",
+                    "image_status",
+                    record.image_status or "unknown",
+                    "WARNING",
+                    _details(image_version=record.image_version, exadata_software_version=record.exadata_software_version),
+                    record.collected_at,
+                )
+            )
+
+    rows.extend(_cluster_version_drift_rows(records, "image_version", "image_version"))
+    rows.extend(_cluster_version_drift_rows(records, "gi_release_patch_string", "gi_release_patch_string"))
+    return rows
+
+
+def _cluster_version_drift_rows(records: list[VersionInventoryRecord], attribute: str, metric: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    by_cluster: dict[str, list[VersionInventoryRecord]] = {}
+    for record in records:
+        if record.collection_status == "success":
+            by_cluster.setdefault(record.cluster, []).append(record)
+
+    for cluster, cluster_records in by_cluster.items():
+        values_by_host = {record.host: str(getattr(record, attribute) or "") for record in cluster_records}
+        distinct_values = {value for value in values_by_host.values() if value}
+        if len(distinct_values) <= 1:
+            continue
+        collected_at = max((record.collected_at for record in cluster_records), default="")
+        rows.append(
+            _health_row(
+                cluster,
+                "cluster",
+                "VERSION_INVENTORY",
+                cluster,
+                metric,
+                "mismatch",
+                "WARNING",
+                {"values_by_host": values_by_host},
+                collected_at,
+            )
+        )
+    return rows
+
+
 def _db_inventory_health_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for record in records:
@@ -482,6 +584,14 @@ def _health_recommendation(category: str, warning_level: str, metric: str, value
             return "Review DB SGA/HugePages allocation; risk of HugePages exhaustion."
         if level == "WARNING" and free_pct <= 10:
             return "Monitor HugePages free count."
+
+    if category == "VERSION_INVENTORY":
+        if metric == "image_status":
+            return "Review imageinfo output; image status is not success."
+        if metric == "image_version":
+            return "Align Exadata image versions across nodes in the cluster."
+        if metric == "gi_release_patch_string":
+            return "Align GI release patch string across nodes in the cluster."
 
     return ""
 
