@@ -75,3 +75,31 @@ No scripts are copied to targets and no remote temp files are created.
 - Use PMON only as runtime instance evidence from `ps -eo user,pid,ppid,lstart,cmd | awk '/[o]ra_pmon_/ {print $0}'`.
 - Never pass raw PMON SID values directly to `srvctl ... -d`.
 - Optional fallback is controlled by `oracle_inventory.allow_pmon_sid_fallback`.
+
+## Dashboard usage
+
+The Phase 1 dashboard is a local-only Streamlit app that reads existing collector output files from `output/`. It does not connect to Exadata hosts, run SSH commands, or change collector behavior.
+
+Install the dashboard dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the dashboard from the repository root:
+
+```bash
+streamlit run app.py
+```
+
+Available dashboard tabs:
+
+1. Executive Health
+2. Host Inventory
+3. ASM Capacity
+4. HugePages
+5. DB Inventory
+6. Version Inventory
+7. Raw Data Explorer
+
+Generate collector output first with `python main.py` so the dashboard can load files such as `health_summary.json`, `asm_diskgroups.json`, `hugepages.json`, `os_inventory.json`, `db_inventory.json`, and `version_inventory.json` from `output/`.
