@@ -19,8 +19,12 @@ from collectors.db_performance_collector import (
 from reports.writers import (
     build_health_summary_rows,
     write_db_memory_history_csv,
+    write_db_memory_history_errors_csv,
+    write_db_memory_history_errors_json,
     write_db_memory_history_json,
     write_db_performance_csv,
+    write_db_performance_errors_csv,
+    write_db_performance_errors_json,
     write_db_performance_json,
 )
 from ssh_runner import CommandResult
@@ -71,8 +75,24 @@ def test_parse_pipe_delimited_db_performance_sql_output() -> None:
     assert row["HOST_CPU_UTIL_PCT_MAX"] == "90.1"
 
 
+def test_parse_ignores_echoed_sql_and_uses_valid_rows() -> None:
+    stdout = """
+SQL> set echo off
+WITH data1 AS (
+SELECT database_name || '|' || instance_name FROM somewhere
+DB1|DB11|node1|2026-06-01 00:00:00|10|2|12|20|5|25|100|50|150|200|100|300|3.5|7.5|84.9|90.1
+exit
+"""
+    rows = parse_db_performance_output(stdout)
+    assert len(rows) == 1
+    assert rows[0]["DB_NAME"] == "DB1"
+
+
 def test_write_thrpt_mapping_uses_physical_write_bytes_for_write_thrpt() -> None:
     sql = _build_db_performance_sql(7)
+    assert "sqlplus" not in sql
+    assert "set echo off" in sql
+    assert "set termout off" in sql
     assert "'Physical Read Total Bytes Per Sec' AS read_thrpt" in sql
     assert "'Physical Write Total Bytes Per Sec' AS write_thrpt" in sql
     assert "'Physical Read Total Bytes Per Sec' AS write_thrpt" not in sql
@@ -89,23 +109,41 @@ def test_ora_00942_handling_marks_awr_unavailable() -> None:
     assert _db_perf_error_category("ORA-01031: insufficient privileges", "") == AWR_ERROR_CATEGORY
 
 
-def test_csv_json_output_generation(tmp_path: Path) -> None:
-    perf = [DBPerformanceRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="2026-06-01 00:00:00", TOTAL_IOPS_AVG="12", Collected_At="now")]
-    mem = [DBMemoryHistoryRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="2026-06-01 00:00:00", SGA_USED_GB="9", Collected_At="now")]
+def test_csv_json_output_generation_filters_errors_and_deduplicates(tmp_path: Path) -> None:
+    perf = [
+        DBPerformanceRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="2026-06-01 00:00:00", TOTAL_IOPS_AVG="12", Collected_At="now", db_unique_name="DB1_UNQ", source_host="node1", source_address="10.0.0.1", source_oracle_sid="DB11"),
+        DBPerformanceRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="2026-06-01 00:00:00", TOTAL_IOPS_AVG="12", Collected_At="now", db_unique_name="DB1_UNQ", source_host="node2", source_address="10.0.0.2", source_oracle_sid="DB12"),
+        DBPerformanceRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="", Collected_At="now", collection_status="failed", collection_error="bad parse", sql_stdout="select x from y"),
+    ]
+    mem = [
+        DBMemoryHistoryRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="2026-06-01 00:00:00", SGA_USED_GB="9", Collected_At="now", db_unique_name="DB1_UNQ"),
+        DBMemoryHistoryRecord(Cluster="c1", HOST_NAME="node1", DB_NAME="DB1", INSTANCE_NAME="DB11", END_TIME="", Collected_At="now", collection_status="failed", sql_stdout="ORA-00942"),
+    ]
 
     write_db_performance_csv(perf, tmp_path)
     write_db_performance_json(perf, tmp_path)
+    write_db_performance_errors_csv(perf, tmp_path)
+    write_db_performance_errors_json(perf, tmp_path)
     write_db_memory_history_csv(mem, tmp_path)
     write_db_memory_history_json(mem, tmp_path)
+    write_db_memory_history_errors_csv(mem, tmp_path)
+    write_db_memory_history_errors_json(mem, tmp_path)
 
     with (tmp_path / "db_performance.csv").open(encoding="utf-8") as csv_file:
         rows = list(csv.DictReader(csv_file))
+    assert len(rows) == 1
     assert rows[0]["TOTAL_IOPS_AVG"] == "12"
-    assert json.loads((tmp_path / "db_performance.json").read_text(encoding="utf-8"))[0]["DB_NAME"] == "DB1"
+    assert rows[0]["duplicate_count"] == "2"
+    perf_json = json.loads((tmp_path / "db_performance.json").read_text(encoding="utf-8"))
+    assert perf_json[0]["DB_NAME"] == "DB1"
+    assert "sql_stdout" not in perf_json[0]
+    perf_errors = json.loads((tmp_path / "db_performance_errors.json").read_text(encoding="utf-8"))
+    assert perf_errors[0]["sql_stdout"] == "select x from y"
     with (tmp_path / "db_memory_history.csv").open(encoding="utf-8") as csv_file:
         mem_rows = list(csv.DictReader(csv_file))
     assert mem_rows[0]["SGA_USED_GB"] == "9"
     assert json.loads((tmp_path / "db_memory_history.json").read_text(encoding="utf-8"))[0]["SGA_USED_GB"] == "9"
+    assert json.loads((tmp_path / "db_memory_history_errors.json").read_text(encoding="utf-8"))[0]["sql_stdout"] == "ORA-00942"
 
 
 def test_parse_memory_sql_output() -> None:

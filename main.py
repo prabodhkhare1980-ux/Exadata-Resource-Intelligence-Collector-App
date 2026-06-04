@@ -31,8 +31,12 @@ from reports.writers import (
     write_db_inventory_csv,
     write_db_inventory_json,
     write_db_memory_history_csv,
+    write_db_memory_history_errors_csv,
+    write_db_memory_history_errors_json,
     write_db_memory_history_json,
     write_db_performance_csv,
+    write_db_performance_errors_csv,
+    write_db_performance_errors_json,
     write_db_performance_json,
     write_db_resource_details_csv,
     write_db_resource_details_errors_csv,
@@ -311,8 +315,12 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_version_summary_json(version_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
+    write_db_performance_errors_csv(db_performance_records, inventory.output_dir)
+    write_db_performance_errors_json(db_performance_records, inventory.output_dir)
     write_db_memory_history_csv(db_memory_records, inventory.output_dir)
     write_db_memory_history_json(db_memory_records, inventory.output_dir)
+    write_db_memory_history_errors_csv(db_memory_records, inventory.output_dir)
+    write_db_memory_history_errors_json(db_memory_records, inventory.output_dir)
     health_rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records, db_performance_records, db_memory_records)
     write_health_summary_csv(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records, db_performance_records, db_memory_records)
     write_health_summary_json(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records, db_performance_records, db_memory_records)
