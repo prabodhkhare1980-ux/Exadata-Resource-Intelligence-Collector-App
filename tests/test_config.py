@@ -13,6 +13,7 @@ def test_load_sample_config_resolves_users():
     assert by_name["dc04dx26db02"].ssh_user == "srcordma"
     assert by_name["iad3dx02v1-6rdqa1"].ssh_user == "srcordma"
     assert by_name["dc04dx26db01"].auth.method == "key"
+    assert config.debug_enabled is False
 
 
 def test_duplicate_address_same_cluster_fails(tmp_path: Path):

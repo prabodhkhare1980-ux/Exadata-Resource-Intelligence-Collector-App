@@ -47,6 +47,8 @@ collection:
   hugepages:
     enabled: true
     timeout_seconds: 15
+  debug:
+    enabled: false
   ssh:
     port: 22
     timeout_seconds: 120

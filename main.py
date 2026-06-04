@@ -35,6 +35,8 @@ from reports.writers import (
     write_hugepages_json,
     write_version_inventory_csv,
     write_version_inventory_json,
+    write_version_summary_csv,
+    write_version_summary_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -267,7 +269,9 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_hugepages_csv(hugepages_records, inventory.output_dir)
     write_hugepages_json(hugepages_records, inventory.output_dir)
     write_version_inventory_csv(version_records, inventory.output_dir)
-    write_version_inventory_json(version_records, inventory.output_dir)
+    write_version_inventory_json(version_records, inventory.output_dir, include_debug=inventory.debug_enabled)
+    write_version_summary_csv(version_records, inventory.output_dir)
+    write_version_summary_json(version_records, inventory.output_dir)
     health_rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
     write_health_summary_csv(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records)
     write_health_summary_json(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records)
@@ -412,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
                 asm_include_debug=inventory.asm_include_debug,
                 hugepages_enabled=inventory.hugepages_enabled,
                 hugepages_timeout_seconds=inventory.hugepages_timeout_seconds,
+                debug_enabled=inventory.debug_enabled,
             )
         if args.max_hosts_per_cluster is not None:
             if args.max_hosts_per_cluster < 1:
@@ -429,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
                 asm_include_debug=inventory.asm_include_debug,
                 hugepages_enabled=inventory.hugepages_enabled,
                 hugepages_timeout_seconds=inventory.hugepages_timeout_seconds,
+                debug_enabled=inventory.debug_enabled,
             )
         configure_logging(inventory.logs_dir, args.verbose)
         if args.show_inventory:

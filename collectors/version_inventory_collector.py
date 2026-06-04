@@ -27,10 +27,16 @@ class VersionInventoryRecord:
     collection_status: str = "failed"
     collection_error: str = ""
     ssh_returncode: int | None = None
+    kernel_version: str = ""
+    uptrack_kernel_version: str = ""
+    image_kernel_version: str = ""
     image_version: str = ""
     exadata_software_version: str = ""
     image_activated: str = ""
     image_status: str = ""
+    node_type: str = ""
+    system_partition_device: str = ""
+    imageinfo_path: str = ""
     gi_active_version: str = ""
     gi_software_patch_level: str = ""
     gi_release_version: str = ""
@@ -49,10 +55,16 @@ class VersionInventoryRecord:
             "collection_status": self.collection_status,
             "collection_error": self.collection_error,
             "ssh_returncode": "" if self.ssh_returncode is None else str(self.ssh_returncode),
+            "kernel_version": self.kernel_version,
+            "uptrack_kernel_version": self.uptrack_kernel_version,
+            "image_kernel_version": self.image_kernel_version,
             "image_version": self.image_version,
             "exadata_software_version": self.exadata_software_version,
             "image_activated": self.image_activated,
             "image_status": self.image_status,
+            "node_type": self.node_type,
+            "system_partition_device": self.system_partition_device,
+            "imageinfo_path": self.imageinfo_path,
             "gi_active_version": self.gi_active_version,
             "gi_software_patch_level": self.gi_software_patch_level,
             "gi_release_version": self.gi_release_version,
@@ -62,8 +74,11 @@ class VersionInventoryRecord:
             "imageinfo_json": json.dumps(self.imageinfo, sort_keys=True),
         }
 
-    def to_json_dict(self) -> dict[str, object]:
-        return asdict(self)
+    def to_json_dict(self, *, include_debug: bool = False) -> dict[str, object]:
+        data = asdict(self)
+        if not include_debug:
+            data.pop("raw", None)
+        return data
 
 
 class VersionInventoryCollector:
@@ -121,10 +136,36 @@ setup_grid_env() {
   fi
 }
 
+discover_imageinfo() {
+  found="$(command -v imageinfo 2>/dev/null || true)"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+
+  for candidate in /usr/sbin/imageinfo /opt/oracle.cellos/imageinfo; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  find / -name imageinfo 2>/dev/null | head -1
+}
+
 setup_grid_env
 
+imageinfo_path="$(discover_imageinfo)"
+
+emit_section imageinfo_path
+printf '%s\n' "$imageinfo_path"
+
 emit_section imageinfo
-(imageinfo 2>&1 || true)
+if [ -n "$imageinfo_path" ]; then
+  ("$imageinfo_path" 2>&1 || true)
+else
+  printf '%s\n' "imageinfo unavailable"
+fi
 
 emit_section gi_active_version
 (crsctl query crs activeversion 2>&1 || true)
@@ -158,10 +199,16 @@ def parse_version_inventory_sections(
         collected_at=collected_at,
         collection_status="success",
         ssh_returncode=ssh_returncode,
+        kernel_version=imageinfo.get("kernel_version", ""),
+        uptrack_kernel_version=imageinfo.get("uptrack_kernel_version", ""),
+        image_kernel_version=imageinfo.get("image_kernel_version", ""),
         image_version=imageinfo.get("image_version", ""),
         exadata_software_version=imageinfo.get("exadata_software_version", ""),
         image_activated=imageinfo.get("image_activated", ""),
         image_status=imageinfo.get("image_status", ""),
+        node_type=imageinfo.get("node_type", ""),
+        system_partition_device=imageinfo.get("system_partition_device", imageinfo.get("system_partition_on_device", "")),
+        imageinfo_path=sections.get("imageinfo_path", "").splitlines()[0].strip() if sections.get("imageinfo_path", "").strip() else "",
         gi_active_version=_first_bracket_value(sections.get("gi_active_version", "")),
         gi_software_patch_level=_first_bracket_value(sections.get("gi_software_patch", "")),
         gi_release_version=_first_bracket_value(sections.get("gi_release_version", "")),
