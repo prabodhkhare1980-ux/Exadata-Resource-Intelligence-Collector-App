@@ -17,16 +17,78 @@ import streamlit as st
 OUTPUT_DIR = Path("output")
 HEALTH_LEVELS = ["CRITICAL", "WARNING", "OK"]
 LEVEL_COLORS = {
-    "CRITICAL": "#ffebee",
-    "WARNING": "#fff8e1",
-    "OK": "#e8f5e9",
+    "CRITICAL": "#d92d20",
+    "WARNING": "#f59e0b",
+    "OK": "#16a34a",
 }
+LEVEL_BACKGROUNDS = {
+    "CRITICAL": "#fff1f0",
+    "WARNING": "#fffbeb",
+    "OK": "#f0fdf4",
+}
+LEVEL_ORDER = {level: index for index, level in enumerate(HEALTH_LEVELS)}
+NAVIGATION = [
+    "Executive Cockpit",
+    "ASM Capacity",
+    "HugePages",
+    "Host Inventory",
+    "Version Inventory",
+    "DB Inventory",
+    "Raw Data Explorer",
+]
 
 
 st.set_page_config(
-    page_title="Exadata Resource Intelligence Collector",
-    page_icon="📊",
+    page_title="Exadata Resource Cockpit",
+    page_icon="🛰️",
     layout="wide",
+)
+
+
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 1.4rem;}
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 16px;
+        padding: 14px 16px;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+    }
+    .cockpit-card {
+        border-radius: 18px;
+        color: #ffffff;
+        min-height: 116px;
+        padding: 18px;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+    }
+    .cockpit-card .label {
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: .05em;
+        opacity: .92;
+        text-transform: uppercase;
+    }
+    .cockpit-card .value {
+        font-size: 2rem;
+        font-weight: 800;
+        margin-top: .45rem;
+    }
+    .critical-card {background: linear-gradient(135deg, #b42318, #f04438);}
+    .warning-card {background: linear-gradient(135deg, #b54708, #f59e0b);}
+    .ok-card {background: linear-gradient(135deg, #087443, #22c55e);}
+    .neutral-card {background: linear-gradient(135deg, #1e3a8a, #2563eb);}
+    .section-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 1rem;
+        background: #ffffff;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -104,8 +166,21 @@ def normalize_warning_level(value: Any) -> str:
     return level if level in HEALTH_LEVELS else "OK"
 
 
+def warning_from_pct(value: Any, critical: float = 90.0, warning: float = 80.0) -> str:
+    """Derive a warning level from a used percentage value."""
+
+    pct = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(pct):
+        return "OK"
+    if float(pct) >= critical:
+        return "CRITICAL"
+    if float(pct) >= warning:
+        return "WARNING"
+    return "OK"
+
+
 def apply_warning_style(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a simple dataframe style map for warning levels."""
+    """Return a dataframe style map for warning levels."""
 
     if "warning_level" not in df.columns:
         return pd.DataFrame("", index=df.index, columns=df.columns)
@@ -113,8 +188,14 @@ def apply_warning_style(df: pd.DataFrame) -> pd.DataFrame:
     styles = []
     for _, row in df.iterrows():
         level = normalize_warning_level(row.get("warning_level"))
-        color = LEVEL_COLORS.get(level, "")
-        styles.append([f"background-color: {color}" if color else "" for _ in df.columns])
+        background = LEVEL_BACKGROUNDS.get(level, "")
+        border = LEVEL_COLORS.get(level, "")
+        styles.append(
+            [
+                f"background-color: {background}; border-left: 4px solid {border}" if background and column == df.columns[0] else f"background-color: {background}" if background else ""
+                for column in df.columns
+            ]
+        )
     return pd.DataFrame(styles, index=df.index, columns=df.columns)
 
 
@@ -127,104 +208,57 @@ def show_source(path: Path | None) -> None:
         st.caption(f"Source: {path}")
 
 
-def select_filter(df: pd.DataFrame, column: str, label: str) -> list[Any]:
-    """Render a multiselect filter if a column exists."""
+def card(label: str, value: Any, state: str = "neutral") -> None:
+    """Render a color-coded KPI card."""
 
-    if column not in df.columns or df.empty:
-        return []
-    values = sorted(v for v in df[column].dropna().unique().tolist() if str(v) != "")
-    return st.multiselect(label, values, default=values)
+    css_class = {
+        "CRITICAL": "critical-card",
+        "WARNING": "warning-card",
+        "OK": "ok-card",
+    }.get(state, "neutral-card")
+    st.markdown(
+        f"""
+        <div class="cockpit-card {css_class}">
+          <div class="label">{label}</div>
+          <div class="value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-def filtered_dataframe(df: pd.DataFrame, filters: dict[str, list[Any]]) -> pd.DataFrame:
-    """Apply dashboard multiselect filters."""
+def apply_global_filters(df: pd.DataFrame, filters: dict[str, list[str]]) -> pd.DataFrame:
+    """Apply global sidebar filters where the target columns exist."""
 
     filtered = df.copy()
     for column, selected in filters.items():
         if selected and column in filtered.columns:
-            filtered = filtered[filtered[column].isin(selected)]
+            filtered = filtered[filtered[column].astype(str).isin(selected)]
     return filtered
 
 
-def render_health_tab() -> None:
-    st.subheader("Executive Health")
-    df, path = read_output("health_summary")
-    show_source(path)
+def normalize_health(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare health summary rows for cockpit views."""
 
-    if df.empty:
-        st.warning("Run the collector first to generate output/health_summary.json or output/health_summary.csv.")
-        return
-
-    df = ensure_columns(df, ["cluster", "host", "warning_level", "category"])
-    df["warning_level"] = df["warning_level"].map(normalize_warning_level)
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total clusters", int(df["cluster"].dropna().nunique()))
-    col2.metric("Total hosts", int(df["host"].dropna().nunique()))
-    col3.metric("CRITICAL", int((df["warning_level"] == "CRITICAL").sum()))
-    col4.metric("WARNING", int((df["warning_level"] == "WARNING").sum()))
-    col5.metric("OK", int((df["warning_level"] == "OK").sum()))
-
-    with st.expander("Filters", expanded=True):
-        fc1, fc2, fc3, fc4 = st.columns(4)
-        with fc1:
-            clusters = select_filter(df, "cluster", "Cluster")
-        with fc2:
-            hosts = select_filter(df, "host", "Host")
-        with fc3:
-            levels = select_filter(df, "warning_level", "Warning level")
-        with fc4:
-            categories = select_filter(df, "category", "Category")
-
-    filtered = filtered_dataframe(
-        df,
-        {
-            "cluster": clusters,
-            "host": hosts,
-            "warning_level": levels,
-            "category": categories,
-        },
-    )
-    st.dataframe(filtered.style.apply(apply_warning_style, axis=None), use_container_width=True)
+    table = ensure_columns(df, ["cluster", "host", "warning_level", "category", "message", "recommendation"])
+    table["warning_level"] = table["warning_level"].map(normalize_warning_level)
+    table["severity_rank"] = table["warning_level"].map(LEVEL_ORDER).fillna(99)
+    return table.sort_values(["severity_rank", "cluster", "host"], na_position="last")
 
 
-def render_asm_tab() -> None:
-    st.subheader("ASM Capacity")
-    df, path = read_output("asm_diskgroups")
-    show_source(path)
+def normalize_asm(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare ASM rows for summaries, charts, and filters."""
 
     columns = ["cluster", "host", "diskgroup_name", "total_tb", "free_tb", "usable_tb", "used_pct", "warning_level"]
-    if df.empty:
-        st.warning("No asm_diskgroups output found in output/.")
-        return
-
     table = ensure_columns(df, columns)[columns].copy()
-    table["warning_level"] = table["warning_level"].map(normalize_warning_level)
     for column in ["total_tb", "free_tb", "usable_tb", "used_pct"]:
         table[column] = pd.to_numeric(table[column], errors="coerce")
-
-    st.dataframe(table.style.apply(apply_warning_style, axis=None), use_container_width=True)
-
-    chart_data = table.dropna(subset=["cluster", "diskgroup_name", "used_pct"]).copy()
-    if not chart_data.empty:
-        chart_data["cluster_diskgroup"] = chart_data["cluster"].astype(str) + " / " + chart_data["diskgroup_name"].astype(str)
-        fig = px.bar(
-            chart_data,
-            x="cluster_diskgroup",
-            y="used_pct",
-            color="warning_level",
-            hover_data=["cluster", "host", "diskgroup_name", "free_tb", "usable_tb"],
-            title="ASM used percentage by cluster/diskgroup",
-            labels={"cluster_diskgroup": "Cluster / Diskgroup", "used_pct": "Used %"},
-        )
-        fig.update_yaxes(range=[0, max(100, float(chart_data["used_pct"].max()))])
-        st.plotly_chart(fig, use_container_width=True)
+    table["warning_level"] = table["warning_level"].map(normalize_warning_level)
+    return table
 
 
-def render_hugepages_tab() -> None:
-    st.subheader("HugePages")
-    df, path = read_output("hugepages")
-    show_source(path)
+def normalize_hugepages(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare HugePages rows and a consistent free percentage column."""
 
     columns = [
         "cluster",
@@ -235,13 +269,11 @@ def render_hugepages_tab() -> None:
         "hugepages_used_pct",
         "warning_level",
     ]
-    if df.empty:
-        st.warning("No hugepages output found in output/.")
-        return
-
     table = ensure_columns(df, columns)[columns].copy()
+    for column in ["hugepages_total", "hugepages_free", "hugepages_free_pct", "hugepages_used_pct"]:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
     table["warning_level"] = table["warning_level"].map(normalize_warning_level)
-    st.dataframe(table.style.apply(apply_warning_style, axis=None), use_container_width=True)
+    return table
 
 
 def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
@@ -261,28 +293,300 @@ def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
                     **filesystem,
                 }
                 rows.append(row)
-    return pd.DataFrame(rows)
+    table = pd.DataFrame(rows)
+    if table.empty:
+        return table
+
+    table = ensure_columns(table, ["cluster", "host", "filesystem", "mount", "mounted_on", "used_pct", "use_pct", "warning_level"])
+    if table["used_pct"].isna().all() and not table["use_pct"].isna().all():
+        table["used_pct"] = table["use_pct"]
+    table["used_pct"] = pd.to_numeric(table["used_pct"].astype(str).str.rstrip("%"), errors="coerce")
+    table["mount"] = table["mount"].fillna(table["mounted_on"])
+    if table["warning_level"].isna().all():
+        table["warning_level"] = table["used_pct"].map(warning_from_pct)
+    else:
+        table["warning_level"] = table["warning_level"].map(normalize_warning_level)
+    table["severity_rank"] = table["warning_level"].map(LEVEL_ORDER).fillna(99)
+    return table.sort_values(["severity_rank", "used_pct"], ascending=[True, False], na_position="last")
 
 
-def render_host_inventory_tab() -> None:
-    st.subheader("Host Inventory")
+def build_global_filters() -> tuple[str, dict[str, list[str]]]:
+    """Render sidebar navigation, refresh, and global filters."""
+
+    st.sidebar.title("🛰️ Exadata Cockpit")
+    if st.sidebar.button("🔄 Refresh local output"):
+        st.cache_data.clear()
+        st.rerun()
+
+    page = st.sidebar.radio("Navigation", NAVIGATION, index=0)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Global filters")
+
+    datasets = [
+        normalize_health(read_output("health_summary")[0]),
+        normalize_asm(read_output("asm_diskgroups")[0]),
+        normalize_hugepages(read_output("hugepages")[0]),
+        ensure_columns(read_output("os_inventory")[0], ["cluster", "host"]),
+        normalize_health(ensure_columns(read_output("version_inventory")[0], ["cluster", "host", "warning_level"])),
+    ]
+    combined = pd.concat(datasets, ignore_index=True, sort=False) if datasets else pd.DataFrame()
+
+    filters: dict[str, list[str]] = {}
+    for column, label in [("cluster", "Cluster"), ("host", "Host"), ("warning_level", "Warning level")]:
+        if column in combined.columns and not combined.empty:
+            values = sorted({str(value) for value in combined[column].dropna().tolist() if str(value).strip()})
+        else:
+            values = []
+        filters[column] = st.sidebar.multiselect(label, values, default=[])
+
+    st.sidebar.caption("Local mode only: dashboard reads output/ JSON and CSV files and never opens SSH connections.")
+    return page, filters
+
+
+def render_kpis(health: pd.DataFrame, asm: pd.DataFrame, hugepages: pd.DataFrame) -> None:
+    """Render top executive KPI cards."""
+
+    total_clusters = len({str(value) for value in pd.concat([health.get("cluster", pd.Series(dtype=object)), asm.get("cluster", pd.Series(dtype=object)), hugepages.get("cluster", pd.Series(dtype=object))]).dropna()})
+    total_hosts = len({str(value) for value in pd.concat([health.get("host", pd.Series(dtype=object)), asm.get("host", pd.Series(dtype=object)), hugepages.get("host", pd.Series(dtype=object))]).dropna()})
+    critical_issues = int((health["warning_level"] == "CRITICAL").sum()) if "warning_level" in health.columns else 0
+    warning_issues = int((health["warning_level"] == "WARNING").sum()) if "warning_level" in health.columns else 0
+    asm_total_tb = asm["total_tb"].sum(skipna=True) if "total_tb" in asm.columns else 0
+    asm_free_tb = asm["free_tb"].sum(skipna=True) if "free_tb" in asm.columns else 0
+    hp_critical = int((hugepages["warning_level"] == "CRITICAL").sum()) if "warning_level" in hugepages.columns else 0
+
+    cols = st.columns(7)
+    with cols[0]:
+        card("Total clusters", total_clusters, "neutral")
+    with cols[1]:
+        card("Total hosts", total_hosts, "neutral")
+    with cols[2]:
+        card("Critical issues", critical_issues, "CRITICAL" if critical_issues else "OK")
+    with cols[3]:
+        card("Warning issues", warning_issues, "WARNING" if warning_issues else "OK")
+    with cols[4]:
+        card("ASM total TB", f"{asm_total_tb:,.1f}", "neutral")
+    with cols[5]:
+        card("ASM free TB", f"{asm_free_tb:,.1f}", "OK")
+    with cols[6]:
+        card("HugePages critical hosts", hp_critical, "CRITICAL" if hp_critical else "OK")
+
+
+def render_action_required(health: pd.DataFrame) -> None:
+    """Show health recommendations that need executive action."""
+
+    st.markdown("### Action Required")
+    action_columns = ["cluster", "host", "warning_level", "category", "recommendation"]
+    action = ensure_columns(health, action_columns)[action_columns].copy()
+    action = action[(action["warning_level"].isin(["CRITICAL", "WARNING"])) & action["recommendation"].notna()]
+    action = action[action["recommendation"].astype(str).str.strip() != ""]
+    if action.empty:
+        st.success("No CRITICAL or WARNING recommendations found in health_summary.")
+    else:
+        st.dataframe(action.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+
+def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
+    """Render the default executive cockpit page."""
+
+    health_df, health_path = read_output("health_summary")
+    asm_df, asm_path = read_output("asm_diskgroups")
+    huge_df, huge_path = read_output("hugepages")
+    os_df, os_path = read_output("os_inventory")
+
+    health = apply_global_filters(normalize_health(health_df), filters)
+    asm = apply_global_filters(normalize_asm(asm_df), filters)
+    hugepages = apply_global_filters(normalize_hugepages(huge_df), filters)
+    filesystems = apply_global_filters(explode_filesystems(os_df), filters)
+
+    st.title("Executive Exadata Resource Cockpit")
+    st.caption("Executive risk, capacity, and action view from local collector output only.")
+    render_kpis(health, asm, hugepages)
+
+    st.markdown("### Critical Issues")
+    show_source(health_path)
+    critical = ensure_columns(health, ["cluster", "host", "warning_level", "category", "message", "recommendation"])
+    critical = critical[critical["warning_level"] == "CRITICAL"]
+    if critical.empty:
+        st.success("No CRITICAL issues found in health_summary.")
+    else:
+        st.dataframe(critical.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+    render_action_required(health)
+
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        st.markdown("### ASM Capacity")
+        show_source(asm_path)
+        if asm.empty or asm["used_pct"].dropna().empty:
+            st.info("No ASM capacity percentages available.")
+        else:
+            asm_chart = asm.dropna(subset=["cluster", "diskgroup_name", "used_pct"]).copy()
+            asm_chart["cluster_diskgroup"] = asm_chart["cluster"].astype(str) + " / " + asm_chart["diskgroup_name"].astype(str)
+            fig = px.bar(
+                asm_chart,
+                x="cluster_diskgroup",
+                y="used_pct",
+                color="warning_level",
+                color_discrete_map=LEVEL_COLORS,
+                title="ASM diskgroup used %",
+                labels={"cluster_diskgroup": "Cluster / Diskgroup", "used_pct": "Used %"},
+            )
+            fig.update_yaxes(range=[0, max(100, float(asm_chart["used_pct"].max()))])
+            st.plotly_chart(fig, use_container_width=True)
+
+    with chart_col2:
+        st.markdown("### HugePages Risk")
+        show_source(huge_path)
+        if hugepages.empty or hugepages["hugepages_free_pct"].dropna().empty:
+            st.info("No HugePages free percentage data available.")
+        else:
+            fig = px.bar(
+                hugepages.dropna(subset=["host", "hugepages_free_pct"]),
+                x="host",
+                y="hugepages_free_pct",
+                color="warning_level",
+                color_discrete_map=LEVEL_COLORS,
+                title="HugePages free % by host",
+                labels={"hugepages_free_pct": "Free %"},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Filesystem Critical/Warning Exposure")
+    show_source(os_path)
+    risky_fs = filesystems[filesystems["warning_level"].isin(["CRITICAL", "WARNING"])] if not filesystems.empty else pd.DataFrame()
+    if risky_fs.empty:
+        st.success("No filesystem CRITICAL or WARNING risks found.")
+    else:
+        counts = risky_fs.groupby(["cluster", "warning_level"], dropna=False).size().reset_index(name="filesystems")
+        fig = px.bar(
+            counts,
+            x="cluster",
+            y="filesystems",
+            color="warning_level",
+            color_discrete_map=LEVEL_COLORS,
+            barmode="group",
+            title="Filesystem risk count by cluster",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("Lower section: filtered health_summary raw table"):
+        st.dataframe(health.drop(columns=["severity_rank"], errors="ignore").style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+    with st.expander("Lower section: filtered ASM raw table"):
+        st.dataframe(asm.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+    with st.expander("Lower section: filtered HugePages raw table"):
+        st.dataframe(hugepages.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+
+def render_asm_page(filters: dict[str, list[str]]) -> None:
+    st.title("ASM Capacity")
+    df, path = read_output("asm_diskgroups")
+    show_source(path)
+    if df.empty:
+        st.warning("No asm_diskgroups output found in output/.")
+        return
+
+    table = apply_global_filters(normalize_asm(df), filters)
+    st.markdown("### Cluster-level Summary")
+    summary = table.groupby("cluster", dropna=False).agg(
+        diskgroups=("diskgroup_name", "nunique"),
+        hosts=("host", "nunique"),
+        total_tb=("total_tb", "sum"),
+        free_tb=("free_tb", "sum"),
+        usable_tb=("usable_tb", "sum"),
+        max_used_pct=("used_pct", "max"),
+    ).reset_index()
+    summary["warning_level"] = summary["max_used_pct"].map(warning_from_pct)
+    st.dataframe(summary.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+    st.markdown("### Diskgroup Used %")
+    chart = table.dropna(subset=["diskgroup_name", "used_pct"])
+    if chart.empty:
+        st.info("No diskgroup used_pct values available.")
+    else:
+        fig = px.bar(
+            chart,
+            x="diskgroup_name",
+            y="used_pct",
+            color="warning_level",
+            facet_col="cluster" if chart["cluster"].nunique(dropna=True) > 1 else None,
+            color_discrete_map=LEVEL_COLORS,
+            hover_data=["host", "total_tb", "free_tb", "usable_tb"],
+            title="ASM diskgroup used_pct",
+        )
+        fig.update_yaxes(range=[0, max(100, float(chart["used_pct"].max()))])
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Host-level Detail")
+    st.dataframe(table.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+
+def render_hugepages_page(filters: dict[str, list[str]]) -> None:
+    st.title("HugePages Risk")
+    df, path = read_output("hugepages")
+    show_source(path)
+    if df.empty:
+        st.warning("No hugepages output found in output/.")
+        return
+
+    table = apply_global_filters(normalize_hugepages(df), filters)
+    st.markdown("### Free % by Host")
+    if table["hugepages_free_pct"].dropna().empty:
+        st.info("No hugepages_free_pct values available.")
+    else:
+        fig = px.bar(
+            table.dropna(subset=["host", "hugepages_free_pct"]),
+            x="host",
+            y="hugepages_free_pct",
+            color="warning_level",
+            color_discrete_map=LEVEL_COLORS,
+            hover_data=["cluster", "hugepages_total", "hugepages_free"],
+            title="HugePages free_pct by host",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### CRITICAL Hosts")
+    critical = table[table["warning_level"] == "CRITICAL"]
+    if critical.empty:
+        st.success("No HugePages CRITICAL hosts found.")
+    else:
+        st.dataframe(critical.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+    with st.expander("Raw HugePages detail", expanded=False):
+        st.dataframe(table.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+
+def render_host_inventory_page(filters: dict[str, list[str]]) -> None:
+    st.title("Host Inventory")
     df, path = read_output("os_inventory")
     show_source(path)
-
     if df.empty:
         st.warning("No os_inventory output found in output/.")
         return
 
-    summary_columns = ["cluster", "host", "hostname", "status", "uptime", "cpu_json", "meminfo_json", "cpu", "meminfo"]
-    st.markdown("#### CPU and memory summary")
-    st.dataframe(ensure_columns(df, summary_columns)[summary_columns], use_container_width=True)
+    host_df = apply_global_filters(ensure_columns(df, ["cluster", "host", "hostname", "status", "uptime", "cpu_json", "meminfo_json", "cpu", "meminfo"]), filters)
+    filesystems = apply_global_filters(explode_filesystems(df), filters)
 
-    st.markdown("#### Filesystem usage")
-    filesystems = explode_filesystems(df)
-    if filesystems.empty:
-        st.info("No filesystem details were available in os_inventory.")
+    st.markdown("### Filesystem Risks")
+    risky = filesystems[filesystems["warning_level"].isin(["CRITICAL", "WARNING"])] if not filesystems.empty else pd.DataFrame()
+    if risky.empty:
+        st.success("No filesystem CRITICAL or WARNING risks found.")
     else:
-        st.dataframe(filesystems, use_container_width=True)
+        display_columns = ["cluster", "host", "filesystem", "mount", "used_pct", "warning_level"]
+        st.dataframe(ensure_columns(risky, display_columns)[display_columns].style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+    st.markdown("### CPU and Memory Summary")
+    hidden_raw = ["cpu_json", "meminfo_json"]
+    summary = host_df.drop(columns=hidden_raw, errors="ignore")
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    with st.expander("Show raw cpu_json and meminfo_json", expanded=False):
+        st.dataframe(host_df, use_container_width=True, hide_index=True)
+
+    with st.expander("All filesystem details", expanded=False):
+        if filesystems.empty:
+            st.info("No filesystem details were available in os_inventory.")
+        else:
+            st.dataframe(filesystems.drop(columns=["severity_rank"], errors="ignore").style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
 
 
 def summarize_db_inventory(df: pd.DataFrame) -> pd.DataFrame:
@@ -330,23 +634,21 @@ def summarize_db_inventory(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def render_db_inventory_tab() -> None:
-    st.subheader("DB Inventory")
+def render_db_inventory_page(filters: dict[str, list[str]]) -> None:
+    st.title("DB Inventory")
     df, path = read_output("db_inventory")
     show_source(path)
-
     if df.empty:
         st.warning("No db_inventory output found in output/.")
         return
 
-    st.dataframe(summarize_db_inventory(df), use_container_width=True)
+    st.dataframe(apply_global_filters(summarize_db_inventory(df), filters), use_container_width=True, hide_index=True)
 
 
-def render_version_inventory_tab() -> None:
-    st.subheader("Version Inventory")
+def render_version_inventory_page(filters: dict[str, list[str]]) -> None:
+    st.title("Version Inventory")
     df, path = read_output("version_inventory")
     show_source(path)
-
     columns = [
         "cluster",
         "host",
@@ -362,15 +664,39 @@ def render_version_inventory_tab() -> None:
 
     table = ensure_columns(df, columns + ["imageinfo_path", "imageinfo_json"])[columns + ["imageinfo_path", "imageinfo_json"]].copy()
     imageinfo_values = table[["imageinfo_path", "imageinfo_json"]].fillna("").astype(str)
-    missing_imageinfo = imageinfo_values.apply(lambda row: all(value.strip() in {"", "{}", "[]"} for value in row), axis=1)
+    missing_imageinfo = imageinfo_values.apply(lambda row: all(value.strip() in {"", "{}", "[]", "<NA>", "nan"} for value in row), axis=1)
+    table["missing_imageinfo"] = missing_imageinfo
     table["warning_level"] = table["warning_level"].where(~missing_imageinfo, "WARNING")
     table["warning_level"] = table["warning_level"].map(normalize_warning_level)
-    table = table[columns]
-    st.dataframe(table.style.apply(apply_warning_style, axis=None), use_container_width=True)
+    table = apply_global_filters(table, filters)
+
+    st.markdown("### GI Patch Compliance by Cluster")
+    compliance = table.groupby("cluster", dropna=False).agg(
+        hosts=("host", "nunique"),
+        gi_patch_variants=("gi_release_patch_string", lambda values: values.dropna().astype(str).str.strip().replace("", pd.NA).dropna().nunique()),
+        missing_imageinfo_hosts=("missing_imageinfo", "sum"),
+        gi_release_patch_string=("gi_release_patch_string", lambda values: "; ".join(sorted({str(value) for value in values.dropna() if str(value).strip()}))),
+    ).reset_index()
+    compliance["compliance"] = compliance.apply(
+        lambda row: "WARNING" if row["missing_imageinfo_hosts"] or row["gi_patch_variants"] > 1 else "OK",
+        axis=1,
+    )
+    compliance = compliance.rename(columns={"compliance": "warning_level"})
+    st.dataframe(compliance.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+    st.markdown("### Missing imageinfo Warnings")
+    missing = table[table["missing_imageinfo"]]
+    if missing.empty:
+        st.success("No missing imageinfo records found.")
+    else:
+        st.dataframe(missing[columns + ["missing_imageinfo"]].style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+
+    with st.expander("Raw version inventory detail", expanded=False):
+        st.dataframe(table[columns + ["missing_imageinfo"]].style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
 
 
-def render_raw_data_tab() -> None:
-    st.subheader("Raw Data Explorer")
+def render_raw_data_page() -> None:
+    st.title("Raw Data Explorer")
     files = sorted(path for path in OUTPUT_DIR.glob("*") if path.is_file() and path.suffix.lower() in {".json", ".csv"})
     if not files:
         st.warning("No JSON or CSV files found in output/.")
@@ -396,35 +722,22 @@ def render_raw_data_tab() -> None:
 
 
 def main() -> None:
-    st.title("Exadata Resource Intelligence Collector")
-    st.caption("Phase 1 local dashboard. Reads JSON/CSV files from output/ only; no server connections are made.")
+    page, filters = build_global_filters()
 
-    tabs = st.tabs(
-        [
-            "Executive Health",
-            "Host Inventory",
-            "ASM Capacity",
-            "HugePages",
-            "DB Inventory",
-            "Version Inventory",
-            "Raw Data Explorer",
-        ]
-    )
-
-    with tabs[0]:
-        render_health_tab()
-    with tabs[1]:
-        render_host_inventory_tab()
-    with tabs[2]:
-        render_asm_tab()
-    with tabs[3]:
-        render_hugepages_tab()
-    with tabs[4]:
-        render_db_inventory_tab()
-    with tabs[5]:
-        render_version_inventory_tab()
-    with tabs[6]:
-        render_raw_data_tab()
+    if page == "Executive Cockpit":
+        render_executive_cockpit(filters)
+    elif page == "ASM Capacity":
+        render_asm_page(filters)
+    elif page == "HugePages":
+        render_hugepages_page(filters)
+    elif page == "Host Inventory":
+        render_host_inventory_page(filters)
+    elif page == "Version Inventory":
+        render_version_inventory_page(filters)
+    elif page == "DB Inventory":
+        render_db_inventory_page(filters)
+    elif page == "Raw Data Explorer":
+        render_raw_data_page()
 
 
 if __name__ == "__main__":
