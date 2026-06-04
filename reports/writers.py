@@ -109,10 +109,16 @@ HUGEPAGES_FIELDS = [
 
 VERSION_INVENTORY_FIELDS = [
     "cluster", "host", "address", "collected_at", "collection_status", "collection_error",
-    "ssh_returncode", "image_version", "exadata_software_version", "image_activated",
-    "image_status", "gi_active_version", "gi_software_patch_level", "gi_release_version",
-    "gi_release_patch_level", "gi_release_patch_string", "gi_release_patch_list",
-    "imageinfo_json",
+    "ssh_returncode", "kernel_version", "uptrack_kernel_version", "image_kernel_version",
+    "image_version", "exadata_software_version", "image_activated", "image_status",
+    "node_type", "system_partition_device", "imageinfo_path", "gi_active_version",
+    "gi_software_patch_level", "gi_release_version", "gi_release_patch_level",
+    "gi_release_patch_string", "gi_release_patch_list", "imageinfo_json",
+]
+
+VERSION_SUMMARY_FIELDS = [
+    "cluster", "host", "image_version", "exadata_software_version",
+    "gi_release_patch_string", "gi_release_version", "image_status",
 ]
 
 HEALTH_SUMMARY_FIELDS = [
@@ -207,13 +213,42 @@ def write_version_inventory_csv(records: Iterable[VersionInventoryRecord], outpu
     return csv_path
 
 
-def write_version_inventory_json(records: Iterable[VersionInventoryRecord], output_dir: Path) -> Path:
+def write_version_inventory_json(
+    records: Iterable[VersionInventoryRecord],
+    output_dir: Path,
+    *,
+    include_debug: bool = False,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "version_inventory.json"
     with json_path.open("w", encoding="utf-8") as json_file:
-        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json.dump([record.to_json_dict(include_debug=include_debug) for record in records], json_file, indent=2)
         json_file.write("\n")
     return json_path
+
+
+def write_version_summary_csv(records: Iterable[VersionInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "version_summary.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=VERSION_SUMMARY_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for record in records:
+            writer.writerow(_version_summary_row(record))
+    return csv_path
+
+
+def write_version_summary_json(records: Iterable[VersionInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "version_summary.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([_version_summary_row(record) for record in records], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def _version_summary_row(record: VersionInventoryRecord) -> dict[str, object]:
+    return {field: getattr(record, field) for field in VERSION_SUMMARY_FIELDS}
 
 
 def write_health_summary_csv(
@@ -432,7 +467,21 @@ def _version_inventory_health_rows(records: Iterable[VersionInventoryRecord]) ->
                 )
             )
             continue
-        if record.image_status.strip().lower() != "success":
+        if not record.imageinfo_path:
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "VERSION_INVENTORY",
+                    "imageinfo",
+                    "imageinfo_available",
+                    "unavailable",
+                    "WARNING",
+                    "imageinfo command was not found on this host",
+                    record.collected_at,
+                )
+            )
+        elif record.image_status.strip().lower() != "success":
             rows.append(
                 _health_row(
                     record.cluster,
@@ -473,7 +522,7 @@ def _cluster_version_drift_rows(records: list[VersionInventoryRecord], attribute
                 cluster,
                 metric,
                 "mismatch",
-                "WARNING",
+                "CRITICAL",
                 {"values_by_host": values_by_host},
                 collected_at,
             )
@@ -586,6 +635,8 @@ def _health_recommendation(category: str, warning_level: str, metric: str, value
             return "Monitor HugePages free count."
 
     if category == "VERSION_INVENTORY":
+        if metric == "imageinfo_available":
+            return "Install or expose imageinfo on the host, or verify Exadata tooling is available."
         if metric == "image_status":
             return "Review imageinfo output; image status is not success."
         if metric == "image_version":

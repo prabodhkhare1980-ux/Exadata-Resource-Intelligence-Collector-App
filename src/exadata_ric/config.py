@@ -59,6 +59,7 @@ class CollectionConfig:
     asm_include_debug: bool = False
     hugepages_enabled: bool = True
     hugepages_timeout_seconds: int = 15
+    debug_enabled: bool = False
 
 
 def load_config(path: str | Path) -> CollectionConfig:
@@ -154,6 +155,8 @@ def load_config(path: str | Path) -> CollectionConfig:
     hugepages_collection = collection.get("hugepages", {}) if isinstance(collection, dict) else {}
     hugepages_enabled = bool(hugepages_collection.get("enabled", True)) if isinstance(hugepages_collection, dict) else True
     hugepages_timeout_seconds = int(hugepages_collection.get("timeout_seconds", 15)) if isinstance(hugepages_collection, dict) else 15
+    debug_collection = collection.get("debug", {}) if isinstance(collection, dict) else {}
+    debug_enabled = bool(debug_collection.get("enabled", False)) if isinstance(debug_collection, dict) else False
     oracle_inventory = raw.get("oracle_inventory", {})
     allow_fallback = bool(oracle_inventory.get("allow_pmon_sid_fallback", False)) if isinstance(oracle_inventory, dict) else False
     return CollectionConfig(
@@ -166,6 +169,7 @@ def load_config(path: str | Path) -> CollectionConfig:
         asm_include_debug=asm_include_debug,
         hugepages_enabled=hugepages_enabled,
         hugepages_timeout_seconds=hugepages_timeout_seconds,
+        debug_enabled=debug_enabled,
     )
 
 
