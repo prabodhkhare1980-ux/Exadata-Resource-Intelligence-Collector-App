@@ -16,6 +16,7 @@ from collectors.db_inventory_collector import DBInventoryCollector, DBInventoryR
 from collectors.asm_diskgroups_collector import ASMDiskgroupCollector, ASMDiskgroupRecord
 from collectors.os_collector import OSCollectionRecord, OSCollector
 from collectors.hugepages_collector import HugePagesCollector, HugePagesRecord
+from collectors.version_inventory_collector import VersionInventoryCollector, VersionInventoryRecord
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
@@ -32,6 +33,8 @@ from reports.writers import (
     write_os_json,
     write_hugepages_csv,
     write_hugepages_json,
+    write_version_inventory_csv,
+    write_version_inventory_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -167,8 +170,36 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
             collection_status="failed",
             collection_error=str(exc),
         )
-    return os_record, db_record, asm_records, hugepages_record
 
+    version_collector = VersionInventoryCollector(runner, context=context, logger=logging.getLogger("collectors.version_inventory"))
+    try:
+        version_record = version_collector.collect_host(cluster.name, host, logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Version inventory collection skipped/failed for %s", host.name)
+        version_record = VersionInventoryRecord(
+            cluster=cluster.name,
+            host=host.name,
+            address=host.address,
+            collected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            collection_status="failed",
+            collection_error=str(exc),
+        )
+    return os_record, db_record, asm_records, hugepages_record, version_record
+
+
+
+def _normalize_collected_tuple(collected, cluster_name: str, host_name: str, address: str):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if len(collected) == 3:
+        os_record, db_record, host_asm_records = collected
+        hugepages_record = HugePagesRecord(cluster=cluster_name, host=host_name, address=address, collected_at=now, collection_status="skipped", collection_error="not_returned_by_test_stub")
+        version_record = VersionInventoryRecord(cluster=cluster_name, host=host_name, address=address, collected_at=now, collection_status="skipped", collection_error="not_returned_by_test_stub")
+        return os_record, db_record, host_asm_records, hugepages_record, version_record
+    if len(collected) == 4:
+        os_record, db_record, host_asm_records, hugepages_record = collected
+        version_record = VersionInventoryRecord(cluster=cluster_name, host=host_name, address=address, collected_at=now, collection_status="skipped", collection_error="not_returned_by_test_stub")
+        return os_record, db_record, host_asm_records, hugepages_record, version_record
+    return collected
 
 def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +209,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     db_records = []
     asm_records = []
     hugepages_records = []
+    version_records = []
     clusters_total = len(inventory.clusters)
     hosts_total = sum(len(cluster.hosts) for cluster in inventory.clusters)
     hosts_success = 0
@@ -190,15 +222,12 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
             for host in cluster.hosts:
                 LOGGER.info("Starting host %s", host.name)
                 collected = _collect_host(cluster, host, runner, inventory.logs_dir, inventory)
-                if len(collected) == 3:
-                    os_record, db_record, host_asm_records = collected
-                    hugepages_record = HugePagesRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), collection_status="skipped", collection_error="not_returned_by_test_stub")
-                else:
-                    os_record, db_record, host_asm_records, hugepages_record = collected
+                os_record, db_record, host_asm_records, hugepages_record, version_record = _normalize_collected_tuple(collected, cluster.name, host.name, host.address)
                 os_records.append(os_record)
                 db_records.append(db_record)
                 asm_records.extend(host_asm_records)
                 hugepages_records.append(hugepages_record)
+                version_records.append(version_record)
                 if os_record.status == "ok" and db_record.status == "ok":
                     hosts_success += 1
                     LOGGER.info("Completed host %s", host.name)
@@ -215,11 +244,12 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
             for future in as_completed(cluster_futures):
                 cluster_name = cluster_futures[future]
                 try:
-                    cluster_os, cluster_db, cluster_asm, cluster_hugepages, cluster_success, cluster_failed = future.result()
+                    cluster_os, cluster_db, cluster_asm, cluster_hugepages, cluster_versions, cluster_success, cluster_failed = future.result()
                     os_records.extend(cluster_os)
                     db_records.extend(cluster_db)
                     asm_records.extend(cluster_asm)
                     hugepages_records.extend(cluster_hugepages)
+                    version_records.extend(cluster_versions)
                     hosts_success += cluster_success
                     hosts_failed += cluster_failed
                 except Exception as exc:  # noqa: BLE001
@@ -236,10 +266,12 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_asm_summary_json(asm_records, inventory.output_dir)
     write_hugepages_csv(hugepages_records, inventory.output_dir)
     write_hugepages_json(hugepages_records, inventory.output_dir)
-    health_rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records)
-    write_health_summary_csv(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
-    write_health_summary_json(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
-    write_health_summary_html(os_records, asm_records, hugepages_records, db_records, inventory.output_dir)
+    write_version_inventory_csv(version_records, inventory.output_dir)
+    write_version_inventory_json(version_records, inventory.output_dir)
+    health_rows = build_health_summary_rows(os_records, asm_records, hugepages_records, db_records, version_records)
+    write_health_summary_csv(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records)
+    write_health_summary_json(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records)
+    write_health_summary_html(os_records, asm_records, hugepages_records, db_records, inventory.output_dir, version_records)
     _print_health_summary(health_rows)
     duration_seconds = round(time.perf_counter() - start_time, 2)
     LOGGER.info(
@@ -308,6 +340,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
     db_records = []
     asm_records = []
     hugepages_records = []
+    version_records = []
     success = 0
     failed = 0
     with ThreadPoolExecutor(max_workers=inventory.max_hosts_per_cluster) as host_pool:
@@ -320,15 +353,12 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
             timeout_seconds = max(host.timeout_seconds, 1) * 2
             try:
                 collected = future.result(timeout=timeout_seconds)
-                if len(collected) == 3:
-                    os_record, db_record, host_asm_records = collected
-                    hugepages_record = HugePagesRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), collection_status="skipped", collection_error="not_returned_by_test_stub")
-                else:
-                    os_record, db_record, host_asm_records, hugepages_record = collected
+                os_record, db_record, host_asm_records, hugepages_record, version_record = _normalize_collected_tuple(collected, cluster.name, host.name, host.address)
                 os_records.append(os_record)
                 db_records.append(db_record)
                 asm_records.extend(host_asm_records)
                 hugepages_records.append(hugepages_record)
+                version_records.append(version_record)
                 if os_record.status == "ok" and db_record.status == "ok":
                     success += 1
                     LOGGER.info("Completed host %s", host.name)
@@ -342,6 +372,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
                 os_records.append(OSCollectionRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=f"Host timed out after {timeout_seconds} seconds"))
                 db_records.append(DBInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=f"Host timed out after {timeout_seconds} seconds"))
                 hugepages_records.append(HugePagesRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, warning_level="ERROR", collection_status="failed", collection_error=f"Host timed out after {timeout_seconds} seconds"))
+                version_records.append(VersionInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, collection_status="failed", collection_error=f"Host timed out after {timeout_seconds} seconds"))
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 LOGGER.exception("Failed host %s", host.name)
@@ -349,7 +380,8 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
                 os_records.append(OSCollectionRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=str(exc)))
                 db_records.append(DBInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, status="failed", error=str(exc)))
                 hugepages_records.append(HugePagesRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, warning_level="ERROR", collection_status="failed", collection_error=str(exc)))
-    return os_records, db_records, asm_records, hugepages_records, success, failed
+                version_records.append(VersionInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at=now, collection_status="failed", collection_error=str(exc)))
+    return os_records, db_records, asm_records, hugepages_records, version_records, success, failed
 
 
 
