@@ -18,7 +18,7 @@ from ssh_runner import SSHRunner
 if TYPE_CHECKING:
     from inventory import HostConfig
 
-AWR_ERROR_CATEGORY = "AWR_UNAVAILABLE_OR_LICENSE"
+AWR_ERROR_CATEGORY = "AWR_UNAVAILABLE_OR_PRIVILEGE"
 
 DB_PERFORMANCE_COLUMNS = [
     "Cluster", "HOST_NAME", "DB_NAME", "INSTANCE_NAME", "END_TIME",
@@ -185,7 +185,7 @@ class DBPerformanceCollector:
     def _collect_performance(self, inv, host, db_unique_name, oracle_home, oracle_sid, days_back, timeout_seconds, collected_at, sql_executor) -> list[DBPerformanceRecord]:
         result = _execute_sql(self.runner, host, oracle_home, oracle_sid, _build_db_performance_sql(days_back), timeout_seconds, sql_executor, "performance")
         if not result.ok:
-            return [self._failed_perf(inv, db_unique_name, oracle_home, oracle_sid, collected_at, _sql_failure_error(result, inv.host), _db_perf_error_category(result.stdout, result.stderr), result)]
+            return [self._failed_perf(inv, db_unique_name, oracle_home, oracle_sid, collected_at, _sql_failure_error(result, inv.host), _db_perf_error_category(result.stdout, result.stderr, getattr(result, "error", "")), result)]
         try:
             return [DBPerformanceRecord(Cluster=inv.cluster, Collected_At=collected_at, source_host=inv.host, source_address=inv.address, source_oracle_sid=oracle_sid, db_unique_name=db_unique_name, oracle_home=oracle_home, host=inv.host, address=inv.address, oracle_sid=oracle_sid, **row) for row in parse_db_performance_output(result.stdout)]
         except ValueError as exc:
@@ -194,7 +194,7 @@ class DBPerformanceCollector:
     def _collect_memory(self, inv, host, db_unique_name, oracle_home, oracle_sid, days_back, timeout_seconds, collected_at, sql_executor) -> list[DBMemoryHistoryRecord]:
         result = _execute_sql(self.runner, host, oracle_home, oracle_sid, _build_db_memory_sql(days_back), timeout_seconds, sql_executor, "memory")
         if not result.ok:
-            return [self._failed_mem(inv, db_unique_name, oracle_home, oracle_sid, collected_at, _sql_failure_error(result, inv.host), _db_perf_error_category(result.stdout, result.stderr), result)]
+            return [self._failed_mem(inv, db_unique_name, oracle_home, oracle_sid, collected_at, _sql_failure_error(result, inv.host), _db_perf_error_category(result.stdout, result.stderr, getattr(result, "error", "")), result)]
         try:
             return [DBMemoryHistoryRecord(Cluster=inv.cluster, Collected_At=collected_at, source_host=inv.host, source_address=inv.address, source_oracle_sid=oracle_sid, db_unique_name=db_unique_name, oracle_home=oracle_home, host=inv.host, address=inv.address, oracle_sid=oracle_sid, **row) for row in parse_db_memory_output(result.stdout)]
         except ValueError as exc:
@@ -267,12 +267,20 @@ def _execute_sql(runner, host, oracle_home, sid, sql, timeout_seconds, sql_execu
     return runner._run(ssh_command, host, sql)
 
 
-def _db_perf_error_category(stdout: str = "", stderr: str = "") -> str:
-    upper = f"{stdout}\n{stderr}".upper()
-    if "ORA-00942" in upper or "ORA-01031" in upper or "DBA_HIST" in upper:
-        return AWR_ERROR_CATEGORY
-    if "ORA-01219" in upper or "DATABASE NOT OPEN" in upper:
+def _db_perf_error_category(stdout: str = "", stderr: str = "", error: str = "") -> str:
+    upper = f"{stdout}\n{stderr}\n{error}".upper()
+    if "ORA-01219" in upper or "DATABASE NOT OPEN" in upper or "DB_NOT_OPEN" in upper:
         return "DB_NOT_OPEN"
+    if "ORA-00904" in upper:
+        return "SQL_BUG"
+    if "ORA-01555" in upper or "TIMED OUT" in upper or "TIMEOUT" in upper:
+        return "SQL_RUNTIME"
+    if "ORA-00942" in upper or "ORA-01031" in upper:
+        return AWR_ERROR_CATEGORY
+    if "AWR DISABLED" in upper or "AWR UNAVAILABLE" in upper or "MISSING DBA_HIST" in upper:
+        return AWR_ERROR_CATEGORY
+    if "DBA_HIST" in upper and "ORA-00904" not in upper:
+        return AWR_ERROR_CATEGORY
     if "ORA-" in upper:
         return "ORACLE_ERROR"
     if "SP2-" in upper:
@@ -290,7 +298,10 @@ set termout off
 set feedback off
 set heading off
 set verify off
-set pages 0 lines 32767 trimspool on tab off
+set pages 0
+set lines 32767
+set trimspool on
+set tab off
 alter session set nls_date_format='YYYY-MM-DD HH24:MI:SS';
 define DAYS_BACK={days}
 
@@ -339,47 +350,108 @@ set termout off
 set feedback off
 set heading off
 set verify off
-set pages 0 lines 32767 trimspool on tab off
+set pages 0
+set lines 32767
+set trimspool on
+set tab off
 alter session set nls_date_format='YYYY-MM-DD HH24:MI:SS';
 define DAYS_BACK={days}
 
 WITH snaps AS (
-  SELECT snap_id, dbid, instance_number, instance_name, end_interval_time end_time
+  SELECT snap_id,
+         dbid,
+         instance_number,
+         startup_time,
+         begin_interval_time,
+         end_interval_time end_time
   FROM dba_hist_snapshot
   WHERE end_interval_time >= SYSDATE - &&DAYS_BACK
-), db AS (SELECT trim(name) database_name FROM v$database), inst AS (SELECT instance_number, host_name FROM gv$instance),
+),
+db AS (
+  SELECT trim(name) database_name FROM v$database
+),
+inst AS (
+  SELECT dbid,
+         instance_number,
+         startup_time,
+         instance_name,
+         host_name
+  FROM dba_hist_database_instance
+),
 params AS (
-  SELECT snap_id, dbid, instance_number,
-    max(CASE WHEN parameter_name='sga_target' THEN value END) sga_target,
-    max(CASE WHEN parameter_name='sga_max_size' THEN value END) sga_max_size,
-    max(CASE WHEN parameter_name='pga_aggregate_target' THEN value END) pga_aggregate_target,
-    max(CASE WHEN parameter_name='pga_aggregate_limit' THEN value END) pga_aggregate_limit
+  SELECT snap_id,
+         dbid,
+         instance_number,
+         max(CASE WHEN parameter_name='sga_target' THEN value END) sga_target,
+         max(CASE WHEN parameter_name='sga_max_size' THEN value END) sga_max_size,
+         max(CASE WHEN parameter_name='pga_aggregate_target' THEN value END) pga_aggregate_target,
+         max(CASE WHEN parameter_name='pga_aggregate_limit' THEN value END) pga_aggregate_limit
   FROM dba_hist_parameter
-  WHERE parameter_name IN ('sga_target','sga_max_size','pga_aggregate_target','pga_aggregate_limit')
+  WHERE parameter_name IN (
+    'sga_target',
+    'sga_max_size',
+    'pga_aggregate_target',
+    'pga_aggregate_limit'
+  )
   GROUP BY snap_id, dbid, instance_number
-), sga AS (
-  SELECT snap_id, dbid, instance_number, sum(bytes) sga_used
-  FROM dba_hist_sgastat GROUP BY snap_id, dbid, instance_number
-), pga AS (
-  SELECT snap_id, dbid, instance_number,
-    max(CASE WHEN name='total PGA allocated' THEN value END) pga_allocated,
-    max(CASE WHEN name='total PGA inuse' THEN value END) pga_used,
-    max(CASE WHEN name='total freeable PGA memory' THEN value END) pga_freeable,
-    max(CASE WHEN name='maximum PGA allocated' THEN value END) pga_max_allocated
+),
+sga AS (
+  SELECT snap_id,
+         dbid,
+         instance_number,
+         sum(bytes) sga_used
+  FROM dba_hist_sgastat
+  GROUP BY snap_id, dbid, instance_number
+),
+pga AS (
+  SELECT snap_id,
+         dbid,
+         instance_number,
+         max(CASE WHEN name='total PGA allocated' THEN value END) pga_allocated,
+         max(CASE WHEN name='total PGA inuse' THEN value END) pga_used,
+         max(CASE WHEN name='total freeable PGA memory' THEN value END) pga_freeable,
+         max(CASE WHEN name='maximum PGA allocated' THEN value END) pga_max_allocated
   FROM dba_hist_pgastat
-  WHERE name IN ('total PGA allocated','total PGA inuse','total freeable PGA memory','maximum PGA allocated')
+  WHERE name IN (
+    'total PGA allocated',
+    'total PGA inuse',
+    'total freeable PGA memory',
+    'maximum PGA allocated'
+  )
   GROUP BY snap_id, dbid, instance_number
 )
-SELECT db.database_name || '|' || snaps.instance_name || '|' || nvl(inst.host_name,'') || '|' || to_char(snaps.end_time,'YYYY-MM-DD HH24:MI:SS') || '|' ||
-  nvl(round(params.sga_target/1024/1024/1024,2),0) || '|' || nvl(round(params.sga_max_size/1024/1024/1024,2),0) || '|' || nvl(round(sga.sga_used/1024/1024/1024,2),0) || '|' ||
-  nvl(round(params.pga_aggregate_target/1024/1024/1024,2),0) || '|' || nvl(round(params.pga_aggregate_limit/1024/1024/1024,2),0) || '|' ||
-  nvl(round(pga.pga_allocated/1024/1024/1024,2),0) || '|' || nvl(round(pga.pga_used/1024/1024/1024,2),0) || '|' || nvl(round(pga.pga_freeable/1024/1024/1024,2),0) || '|' || nvl(round(pga.pga_max_allocated/1024/1024/1024,2),0)
-FROM snaps CROSS JOIN db
-LEFT JOIN inst ON inst.instance_number=snaps.instance_number
-LEFT JOIN params ON params.snap_id=snaps.snap_id AND params.dbid=snaps.dbid AND params.instance_number=snaps.instance_number
-LEFT JOIN sga ON sga.snap_id=snaps.snap_id AND sga.dbid=snaps.dbid AND sga.instance_number=snaps.instance_number
-LEFT JOIN pga ON pga.snap_id=snaps.snap_id AND pga.dbid=snaps.dbid AND pga.instance_number=snaps.instance_number
-ORDER BY snaps.end_time;
+SELECT db.database_name || '|' ||
+       nvl(inst.instance_name, 'UNKNOWN') || '|' ||
+       nvl(inst.host_name, '') || '|' ||
+       to_char(snaps.end_time,'YYYY-MM-DD HH24:MI:SS') || '|' ||
+       nvl(round(params.sga_target/1024/1024/1024,2),0) || '|' ||
+       nvl(round(params.sga_max_size/1024/1024/1024,2),0) || '|' ||
+       nvl(round(sga.sga_used/1024/1024/1024,2),0) || '|' ||
+       nvl(round(params.pga_aggregate_target/1024/1024/1024,2),0) || '|' ||
+       nvl(round(params.pga_aggregate_limit/1024/1024/1024,2),0) || '|' ||
+       nvl(round(pga.pga_allocated/1024/1024/1024,2),0) || '|' ||
+       nvl(round(pga.pga_used/1024/1024/1024,2),0) || '|' ||
+       nvl(round(pga.pga_freeable/1024/1024/1024,2),0) || '|' ||
+       nvl(round(pga.pga_max_allocated/1024/1024/1024,2),0)
+FROM snaps
+CROSS JOIN db
+LEFT JOIN inst
+  ON inst.dbid = snaps.dbid
+ AND inst.instance_number = snaps.instance_number
+ AND inst.startup_time = snaps.startup_time
+LEFT JOIN params
+  ON params.snap_id = snaps.snap_id
+ AND params.dbid = snaps.dbid
+ AND params.instance_number = snaps.instance_number
+LEFT JOIN sga
+  ON sga.snap_id = snaps.snap_id
+ AND sga.dbid = snaps.dbid
+ AND sga.instance_number = snaps.instance_number
+LEFT JOIN pga
+  ON pga.snap_id = snaps.snap_id
+ AND pga.dbid = snaps.dbid
+ AND pga.instance_number = snaps.instance_number
+ORDER BY snaps.end_time, inst.instance_name;
 exit
 """.replace("\r\n", "\n").replace("\r", "\n").lstrip()
 

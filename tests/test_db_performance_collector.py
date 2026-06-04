@@ -11,6 +11,7 @@ from collectors.db_performance_collector import (
     DBMemoryHistoryRecord,
     DBPerformanceCollector,
     DBPerformanceRecord,
+    _build_db_memory_sql,
     _build_db_performance_sql,
     _db_perf_error_category,
     parse_db_memory_output,
@@ -107,6 +108,69 @@ def test_ora_00942_handling_marks_awr_unavailable() -> None:
     assert perf[0].error_category == AWR_ERROR_CATEGORY
     assert mem[0].error_category == AWR_ERROR_CATEGORY
     assert _db_perf_error_category("ORA-01031: insufficient privileges", "") == AWR_ERROR_CATEGORY
+
+
+def test_memory_awr_sql_resolves_instance_name_from_database_instance() -> None:
+    sql = _build_db_memory_sql(7).lower()
+    assert "snaps.instance_name" not in sql
+    assert "from dba_hist_database_instance" in sql
+    assert "nvl(inst.instance_name, 'unknown')" in sql
+    assert "inst.dbid = snaps.dbid" in sql
+    assert "inst.instance_number = snaps.instance_number" in sql
+    assert "inst.startup_time = snaps.startup_time" in sql
+
+
+def test_memory_awr_sqlplus_hygiene_settings_are_explicit() -> None:
+    sql = _build_db_memory_sql(7).lower()
+    assert "set echo off" in sql
+    assert "set termout off" in sql
+    assert "set feedback off" in sql
+    assert "set heading off" in sql
+    assert "set verify off" in sql
+    assert "set pages 0" in sql
+    assert "set lines 32767" in sql
+    assert "set trimspool on" in sql
+    assert "set tab off" in sql
+
+
+def test_ora_00904_maps_to_sql_bug_without_current_fallback() -> None:
+    def executor(oracle_home: str, sid: str, sql: str, sql_kind: str) -> CommandResult:
+        return _result(stdout='ORA-00904: "INSTANCE_NAME": invalid identifier\n', returncode=904)
+
+    perf, mem = DBPerformanceCollector(None).collect_host(
+        _inventory_record(),
+        FakeHost(),
+        collect_cpu_iops=False,
+        collect_memory_history=True,
+        sql_executor=executor,
+    )
+    assert perf == []
+    assert mem[0].collection_status == "failed"
+    assert mem[0].error_category == "SQL_BUG"
+    assert mem[0].size_source == "AWR"
+
+
+def test_memory_sql_payload_sent_only_once_and_success_does_not_store_sql_stdout() -> None:
+    calls: list[str] = []
+
+    def executor(oracle_home: str, sid: str, sql: str, sql_kind: str) -> CommandResult:
+        assert sql_kind == "memory"
+        calls.append(sql)
+        return _result(stdout="DB1|DB11|node1|2026-06-01 00:00:00|10|12|9|4|8|7|6|1|7.5\n")
+
+    perf, mem = DBPerformanceCollector(None).collect_host(
+        _inventory_record(),
+        FakeHost(),
+        collect_cpu_iops=False,
+        collect_memory_history=True,
+        sql_executor=executor,
+    )
+    assert perf == []
+    assert len(calls) == 1
+    assert calls[0].count("WITH snaps AS") == 1
+    assert mem[0].collection_status == "success"
+    assert mem[0].sql_stdout == ""
+    assert "WITH snaps AS" not in mem[0].sql_stdout
 
 
 def test_csv_json_output_generation_filters_errors_and_deduplicates(tmp_path: Path) -> None:
