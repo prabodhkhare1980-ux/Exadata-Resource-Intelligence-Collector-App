@@ -103,3 +103,20 @@ Available dashboard tabs:
 7. Raw Data Explorer
 
 Generate collector output first with `python main.py` so the dashboard can load files such as `health_summary.json`, `asm_diskgroups.json`, `hugepages.json`, `os_inventory.json`, `db_inventory.json`, and `version_inventory.json` from `output/`.
+
+## DB Resource Details output
+
+The DB resource details collector writes dashboard-ready SQL collection output to separate success and diagnostic files:
+
+- `output/db_resource_details.csv` and `output/db_resource_details.json` contain only rows where `collection_status=success`.
+- `output/db_resource_details_errors.csv` and `output/db_resource_details_errors.json` contain skipped and failed rows, including SQL diagnostics such as `error_category`, `sql_returncode`, `sql_stdout`, and `sql_stderr`.
+- Successful CSV rows use clean dashboard columns and do not include duplicate `Cluster`/`cluster` fields.
+- Successful JSON rows use lowercase canonical field names such as `cluster`, `db_unique_name`, `db_size_gb`, `used_db_size_gb`, and `db_used_pct`.
+- `DB_USED_PCT` / `db_used_pct` is calculated as `USED_DB_SIZE_GB / DB_SIZE_GB * 100` and rounded to two decimals. It is blank when `DB_SIZE_GB` is blank or zero.
+
+SQL collection is streamed inline over SSH through stdin execution. No SQL files or scripts are copied to target servers, and no remote temp scripts are created.
+
+Database size source values:
+
+- `cdb` uses `cdb_data_files` and `cdb_segments`.
+- `dba_fallback` uses `dba_data_files` and `dba_segments` after CDB-view fallback.

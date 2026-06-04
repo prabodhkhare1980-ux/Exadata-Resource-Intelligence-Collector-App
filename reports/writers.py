@@ -70,7 +70,7 @@ def write_db_inventory_csv(records: Iterable[DBInventoryRecord], output_dir: Pat
     return csv_path
 
 
-DB_RESOURCE_DETAIL_CSV_FIELDS = [
+DB_RESOURCE_SUCCESS_CSV_FIELDS = [
     "Cluster",
     "HOST_NAME",
     "DB_NAME",
@@ -87,32 +87,210 @@ DB_RESOURCE_DETAIL_CSV_FIELDS = [
     "CPU_COUNT",
     "DB_SIZE_GB",
     "USED_DB_SIZE_GB",
+    "DB_USED_PCT",
+    "db_unique_name",
+    "oracle_home",
+    "oracle_sid",
+    "size_source",
     "Collected_At",
 ]
+
+DB_RESOURCE_SUCCESS_JSON_FIELDS = [
+    "cluster",
+    "host",
+    "address",
+    "host_name",
+    "db_name",
+    "db_role",
+    "open_mode",
+    "version",
+    "rac_enabled",
+    "inst_count",
+    "sga_target_gb",
+    "pga_aggr_target_gb",
+    "sga_max_size_gb",
+    "pga_aggr_limit_gb",
+    "processes",
+    "cpu_count",
+    "db_size_gb",
+    "used_db_size_gb",
+    "db_used_pct",
+    "db_unique_name",
+    "oracle_home",
+    "oracle_sid",
+    "size_source",
+    "collection_status",
+    "collection_error",
+    "collected_at",
+    "mapping_source",
+]
+
+DB_RESOURCE_ERROR_FIELDS = [
+    "cluster",
+    "host",
+    "address",
+    "db_unique_name",
+    "oracle_home",
+    "oracle_sid",
+    "collection_status",
+    "collection_error",
+    "error_category",
+    "sql_returncode",
+    "sql_stdout",
+    "sql_stderr",
+    "collected_at",
+    "mapping_source",
+]
+
 
 def write_db_resource_details_csv(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "db_resource_details.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=DB_RESOURCE_DETAIL_CSV_FIELDS, extrasaction="ignore")
+        writer = csv.DictWriter(csv_file, fieldnames=DB_RESOURCE_SUCCESS_CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
-        for row in _db_resource_detail_rows(records):
-            writer.writerow(row)
+        writer.writerows(_db_resource_success_csv_rows(records))
     return csv_path
+
 
 def write_db_resource_details_json(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "db_resource_details.json"
     with json_path.open("w", encoding="utf-8") as json_file:
-        json.dump(_db_resource_detail_rows(records), json_file, indent=2)
+        json.dump(_db_resource_success_json_rows(records), json_file, indent=2)
         json_file.write("\n")
     return json_path
+
+
+def write_db_resource_details_errors_csv(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_resource_details_errors.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=DB_RESOURCE_ERROR_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(_db_resource_error_rows(records))
+    return csv_path
+
+
+def write_db_resource_details_errors_json(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_resource_details_errors.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(_db_resource_error_rows(records), json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
 
 def _db_resource_detail_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for record in records:
         rows.extend(dict(row) for row in record.db_resource_details)
     return rows
+
+
+def _db_resource_success_csv_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
+    return [_db_resource_success_csv_row(row) for row in _db_resource_detail_rows(records) if str(row.get("collection_status") or "").lower() == "success"]
+
+
+def _db_resource_success_json_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
+    return [_db_resource_success_json_row(row) for row in _db_resource_detail_rows(records) if str(row.get("collection_status") or "").lower() == "success"]
+
+
+def _db_resource_error_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
+    return [
+        {field: _canonical_db_resource_row(row).get(field, "") for field in DB_RESOURCE_ERROR_FIELDS}
+        for row in _db_resource_detail_rows(records)
+        if str(row.get("collection_status") or "").lower() in {"skipped", "failed"}
+    ]
+
+
+def _db_resource_success_csv_row(row: dict[str, object]) -> dict[str, object]:
+    used_pct = _db_used_pct(row)
+    return {
+        "Cluster": row.get("Cluster") or row.get("cluster") or "",
+        "HOST_NAME": row.get("HOST_NAME") or row.get("host_name") or "",
+        "DB_NAME": row.get("DB_NAME") or row.get("db_name") or "",
+        "DB_ROLE": row.get("DB_ROLE") or row.get("db_role") or "",
+        "OPEN_MODE": row.get("OPEN_MODE") or row.get("open_mode") or "",
+        "VERSION": row.get("VERSION") or row.get("version") or "",
+        "RAC_ENABLED": row.get("RAC_ENABLED") or row.get("rac_enabled") or "",
+        "INST_COUNT": row.get("INST_COUNT") or row.get("inst_count") or "",
+        "SGA_TARGET_GB": row.get("SGA_TARGET_GB") or row.get("sga_target_gb") or "",
+        "PGA_AGGR_TARGET_GB": row.get("PGA_AGGR_TARGET_GB") or row.get("pga_aggr_target_gb") or "",
+        "SGA_MAX_SIZE_GB": row.get("SGA_MAX_SIZE_GB") or row.get("sga_max_size_gb") or "",
+        "PGA_AGGR_LIMIT_GB": row.get("PGA_AGGR_LIMIT_GB") or row.get("pga_aggr_limit_gb") or "",
+        "PROCESSES": row.get("PROCESSES") or row.get("processes") or "",
+        "CPU_COUNT": row.get("CPU_COUNT") or row.get("cpu_count") or "",
+        "DB_SIZE_GB": row.get("DB_SIZE_GB") or row.get("db_size_gb") or "",
+        "USED_DB_SIZE_GB": row.get("USED_DB_SIZE_GB") or row.get("used_db_size_gb") or "",
+        "DB_USED_PCT": used_pct,
+        "db_unique_name": row.get("db_unique_name") or "",
+        "oracle_home": row.get("oracle_home") or "",
+        "oracle_sid": row.get("oracle_sid") or "",
+        "size_source": row.get("size_source") or "",
+        "Collected_At": row.get("Collected_At") or row.get("collected_at") or "",
+    }
+
+
+def _db_resource_success_json_row(row: dict[str, object]) -> dict[str, object]:
+    canonical = _canonical_db_resource_row(row)
+    return {field: canonical.get(field, "") for field in DB_RESOURCE_SUCCESS_JSON_FIELDS}
+
+
+def _canonical_db_resource_row(row: dict[str, object]) -> dict[str, object]:
+    canonical = {
+        "cluster": row.get("cluster") or row.get("Cluster") or "",
+        "host": row.get("host") or "",
+        "address": row.get("address") or "",
+        "host_name": row.get("host_name") or row.get("HOST_NAME") or "",
+        "db_name": row.get("db_name") or row.get("DB_NAME") or "",
+        "db_role": row.get("db_role") or row.get("DB_ROLE") or "",
+        "open_mode": row.get("open_mode") or row.get("OPEN_MODE") or "",
+        "version": row.get("version") or row.get("VERSION") or "",
+        "rac_enabled": row.get("rac_enabled") or row.get("RAC_ENABLED") or "",
+        "inst_count": row.get("inst_count") or row.get("INST_COUNT") or "",
+        "sga_target_gb": row.get("sga_target_gb") or row.get("SGA_TARGET_GB") or "",
+        "pga_aggr_target_gb": row.get("pga_aggr_target_gb") or row.get("PGA_AGGR_TARGET_GB") or "",
+        "sga_max_size_gb": row.get("sga_max_size_gb") or row.get("SGA_MAX_SIZE_GB") or "",
+        "pga_aggr_limit_gb": row.get("pga_aggr_limit_gb") or row.get("PGA_AGGR_LIMIT_GB") or "",
+        "processes": row.get("processes") or row.get("PROCESSES") or "",
+        "cpu_count": row.get("cpu_count") or row.get("CPU_COUNT") or "",
+        "db_size_gb": row.get("db_size_gb") or row.get("DB_SIZE_GB") or "",
+        "used_db_size_gb": row.get("used_db_size_gb") or row.get("USED_DB_SIZE_GB") or "",
+        "db_used_pct": _db_used_pct(row),
+        "db_unique_name": row.get("db_unique_name") or "",
+        "oracle_home": row.get("oracle_home") or "",
+        "oracle_sid": row.get("oracle_sid") or "",
+        "size_source": row.get("size_source") or "",
+        "collection_status": row.get("collection_status") or "",
+        "collection_error": row.get("collection_error") or "",
+        "error_category": row.get("error_category") or "",
+        "sql_returncode": row.get("sql_returncode") or "",
+        "sql_stdout": row.get("sql_stdout") or "",
+        "sql_stderr": row.get("sql_stderr") or "",
+        "collected_at": row.get("collected_at") or row.get("Collected_At") or "",
+        "mapping_source": row.get("mapping_source") or "",
+    }
+    return canonical
+
+
+def _db_used_pct(row: dict[str, object]) -> object:
+    size = _optional_float(row.get("DB_SIZE_GB") or row.get("db_size_gb"))
+    used = _optional_float(row.get("USED_DB_SIZE_GB") or row.get("used_db_size_gb"))
+    if size in (None, 0) or used is None:
+        return ""
+    return round((used / size) * 100, 2)
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
 
 def write_db_inventory_json(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -592,8 +770,7 @@ def _db_inventory_health_rows(records: Iterable[DBInventoryRecord]) -> list[dict
                     record.collected_at,
                 )
             )
-            continue
-        if not record.databases:
+        elif not record.databases:
             rows.append(
                 _health_row(
                     record.cluster,
@@ -607,46 +784,68 @@ def _db_inventory_health_rows(records: Iterable[DBInventoryRecord]) -> list[dict
                     record.collected_at,
                 )
             )
-            continue
-        for database in record.databases:
-            status_text = record.srvctl_status.get(database, "discovered")
-            rows.append(
-                _health_row(
-                    record.cluster,
-                    record.host,
-                    "DB_INVENTORY",
-                    database,
-                    "status",
-                    _compact_status(status_text),
-                    _db_warning_level(status_text),
-                    _details(status=status_text, config=record.srvctl_config.get(database, "")),
-                    record.collected_at,
+        else:
+            for database in record.databases:
+                status_text = record.srvctl_status.get(database, "discovered")
+                rows.append(
+                    _health_row(
+                        record.cluster,
+                        record.host,
+                        "DB_INVENTORY",
+                        database,
+                        "status",
+                        _compact_status(status_text),
+                        _db_warning_level(status_text),
+                        _details(status=status_text, config=record.srvctl_config.get(database, "")),
+                        record.collected_at,
+                    )
                 )
-            )
+
         for detail in record.db_resource_details:
-            status = str(detail.get("collection_status") or "")
-            db_name = str(detail.get("DB_NAME") or detail.get("db_unique_name") or "database")
-            rows.append(
-                _health_row(
-                    record.cluster,
-                    record.host,
-                    "DB_RESOURCE",
-                    db_name,
-                    "collection_status",
-                    status,
-                    _db_resource_warning_level(status),
-                    _details(
-                        db_unique_name=detail.get("db_unique_name"),
-                        oracle_home=detail.get("oracle_home"),
-                        oracle_sid=detail.get("oracle_sid"),
-                        size_source=detail.get("size_source"),
-                        collection_error=detail.get("collection_error"),
-                        sql_returncode=detail.get("sql_returncode"),
-                        sql_stderr=detail.get("sql_stderr"),
-                    ),
-                    str(detail.get("Collected_At") or record.collected_at),
+            status = str(detail.get("collection_status") or "").lower()
+            object_name = str(detail.get("db_unique_name") or detail.get("DB_NAME") or "database")
+            collected_at = str(detail.get("collected_at") or detail.get("Collected_At") or record.collected_at)
+            if status == "success":
+                db_used_pct = _db_resource_used_pct(detail)
+                rows.append(
+                    _health_row(
+                        record.cluster,
+                        record.host,
+                        "DB_RESOURCE",
+                        object_name,
+                        "db_used_pct",
+                        db_used_pct,
+                        _db_resource_pct_warning_level(db_used_pct),
+                        _details(
+                            db_name=detail.get("DB_NAME") or detail.get("db_name"),
+                            db_size_gb=detail.get("DB_SIZE_GB") or detail.get("db_size_gb"),
+                            used_db_size_gb=detail.get("USED_DB_SIZE_GB") or detail.get("used_db_size_gb"),
+                            oracle_home=detail.get("oracle_home"),
+                            oracle_sid=detail.get("oracle_sid"),
+                            size_source=detail.get("size_source"),
+                        ),
+                        collected_at,
+                    )
                 )
-            )
+            elif status == "failed":
+                rows.append(
+                    _health_row(
+                        record.cluster,
+                        record.host,
+                        "DB_RESOURCE",
+                        object_name,
+                        "collection_status",
+                        "failed",
+                        "WARNING",
+                        _details(
+                            collection_error=detail.get("collection_error"),
+                            error_category=detail.get("error_category"),
+                            sql_returncode=detail.get("sql_returncode"),
+                            sql_stderr=detail.get("sql_stderr"),
+                        ),
+                        collected_at,
+                    )
+                )
     return rows
 
 
@@ -684,12 +883,21 @@ def _filesystem_warning_level(use_pct: float) -> str:
 
 
 
-def _db_resource_warning_level(status: str) -> str:
-    if status == "success":
-        return "OK"
-    if status == "skipped":
+def _db_resource_pct_warning_level(value: object) -> str:
+    pct = _numeric_value(value)
+    if pct >= 95:
+        return "CRITICAL"
+    if pct >= 85:
         return "WARNING"
-    return "CRITICAL"
+    return "OK"
+
+
+def _db_resource_used_pct(detail: dict[str, object]) -> object:
+    size = _optional_float(detail.get("DB_SIZE_GB") or detail.get("db_size_gb"))
+    used = _optional_float(detail.get("USED_DB_SIZE_GB") or detail.get("used_db_size_gb"))
+    if size in (None, 0) or used is None:
+        return ""
+    return round((used / size) * 100, 2)
 
 
 def _health_recommendation(category: str, warning_level: str, metric: str, value: object) -> str:
@@ -711,11 +919,15 @@ def _health_recommendation(category: str, warning_level: str, metric: str, value
         if level == "WARNING" and free_pct <= 10:
             return "Monitor HugePages free count."
 
-    if category == "DB_RESOURCE" and metric == "collection_status":
-        if str(value) == "skipped":
-            return "No local running instance on this host."
-        if level == "CRITICAL":
-            return "Review local SYSDBA connectivity and database open state."
+    if category == "DB_RESOURCE" and metric == "db_used_pct":
+        used_pct = _numeric_value(value)
+        if level == "CRITICAL" and used_pct >= 95:
+            return "Review database space usage and growth immediately."
+        if level == "WARNING" and used_pct >= 85:
+            return "Review database growth trend and reclaim opportunities."
+
+    if category == "DB_RESOURCE" and metric == "collection_status" and str(value) == "failed":
+        return "Review SYSDBA connectivity, database state, and SQL error details."
 
     if category == "VERSION_INVENTORY":
         if metric == "imageinfo_available":

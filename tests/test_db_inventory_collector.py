@@ -27,10 +27,13 @@ from ssh_runner import CommandResult
 from collectors.db_inventory_collector import (
     _build_db_resource_sql,
     _collect_db_resource_details,
+    _extract_sql_error_messages,
     _parse_db_resource_sql_output,
     _parse_oracle_home_from_srvctl_config,
     _parse_running_instances_from_srvctl_status,
     _select_local_instance,
+    _sql_error_category,
+    _sql_failure_error,
 )
 
 
@@ -150,38 +153,51 @@ def test_collect_db_resource_details_skips_when_no_local_instance() -> None:
         [],
         "node1.example.com",
     )
-    assert rows == [
-        {
-            "HOST_NAME": "",
-            "DB_NAME": "",
-            "DB_ROLE": "",
-            "OPEN_MODE": "",
-            "VERSION": "",
-            "RAC_ENABLED": "",
-            "INST_COUNT": "",
-            "SGA_TARGET_GB": "",
-            "PGA_AGGR_TARGET_GB": "",
-            "SGA_MAX_SIZE_GB": "",
-            "PGA_AGGR_LIMIT_GB": "",
-            "PROCESSES": "",
-            "CPU_COUNT": "",
-            "DB_SIZE_GB": "",
-            "USED_DB_SIZE_GB": "",
-            "Cluster": "c1",
-            "cluster": "c1",
-            "host": "node1",
-            "address": "10.0.0.1",
-            "db_unique_name": "DB1_UNQ",
-            "oracle_home": "/u01/dbhome",
-            "oracle_sid": "",
-            "size_source": "",
-            "collection_status": "skipped",
-            "collection_error": "no_local_running_instance",
-            "sql_returncode": "",
-            "sql_stderr": "",
-            "Collected_At": "now",
-        }
+    assert len(rows) == 1
+    assert rows[0]["collection_status"] == "skipped"
+    assert rows[0]["collection_error"] == "no_local_running_instance"
+    assert rows[0]["error_category"] == "NO_LOCAL_INSTANCE"
+    assert rows[0]["db_unique_name"] == "DB1_UNQ"
+
+
+def test_collect_db_resource_details_failed_record_contains_diagnostics() -> None:
+    def executor(oracle_home: str, sid: str, sql: str, use_cdb_views: bool) -> CommandResult:
+        return _result(stdout="ORA-01031: insufficient privileges\n", stderr="Connection to node1 closed.\n", returncode=1031)
+
+    rows = _collect_db_resource_details(
+        None,
+        FakeHost(),
+        "c1",
+        "node1",
+        "10.0.0.1",
+        "now",
+        ["DB1_UNQ"],
+        {"DB1_UNQ": "Oracle home: /u01/dbhome"},
+        {"DB1_UNQ": "Instance DB1_1 is running on node node1"},
+        [],
+        "node1.example.com",
+        sql_executor=executor,
+    )
+    assert rows[0]["collection_status"] == "failed"
+    assert rows[0]["collection_error"] == "ORA-01031: insufficient privileges"
+    assert rows[0]["error_category"] == "ORACLE_ERROR"
+    assert rows[0]["sql_stdout"] == "ORA-01031: insufficient privileges"
+    assert rows[0]["sql_stderr"] == "Connection to node1 closed."
+
+
+def test_sql_error_parsing_and_connection_closed_noise() -> None:
+    result = _result(
+        stdout="SP2-0306: Invalid option.\nTNS-12514: listener does not currently know of service requested\n",
+        stderr="Connection to node1 closed.\n",
+        returncode=1,
+    )
+    assert _extract_sql_error_messages(result.stdout, result.stderr) == [
+        "SP2-0306: Invalid option.",
+        "TNS-12514: listener does not currently know of service requested",
     ]
+    assert _sql_failure_error(result, "node1") == "SP2-0306: Invalid option. | TNS-12514: listener does not currently know of service requested"
+    assert _sql_error_category(result.stdout, result.stderr, result.returncode) == "SQLPLUS_ERROR"
+
 
 
 def test_build_db_resource_sql_uses_dba_views_for_11g() -> None:

@@ -30,6 +30,8 @@ from reports.writers import (
     write_db_inventory_csv,
     write_db_inventory_json,
     write_db_resource_details_csv,
+    write_db_resource_details_errors_csv,
+    write_db_resource_details_errors_json,
     write_db_resource_details_json,
     write_os_csv,
     write_os_json,
@@ -264,6 +266,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_inventory_json(db_records, inventory.output_dir)
     write_db_resource_details_csv(db_records, inventory.output_dir)
     write_db_resource_details_json(db_records, inventory.output_dir)
+    write_db_resource_details_errors_csv(db_records, inventory.output_dir)
+    write_db_resource_details_errors_json(db_records, inventory.output_dir)
     write_asm_diskgroups_csv(asm_records, inventory.output_dir, include_debug=inventory.asm_include_debug)
     write_asm_diskgroups_json(asm_records, inventory.output_dir, include_debug=inventory.asm_include_debug)
     write_asm_metadata_csv(asm_records, inventory.output_dir)
