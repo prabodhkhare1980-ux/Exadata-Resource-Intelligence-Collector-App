@@ -126,8 +126,10 @@ collection:
 
 Outputs:
 
-- `output/db_performance.csv` and `output/db_performance.json` contain AWR CPU, IOPS, and throughput history.
-- `output/db_memory_history.csv` and `output/db_memory_history.json` contain AWR SGA/PGA memory history.
+- `output/db_performance.csv` and `output/db_performance.json` contain successful AWR CPU, IOPS, and throughput history rows only.
+- `output/db_performance_errors.csv` and `output/db_performance_errors.json` contain failed DB performance collection attempts with SQL stdout/stderr diagnostics.
+- `output/db_memory_history.csv` and `output/db_memory_history.json` contain successful AWR SGA/PGA memory history rows only.
+- `output/db_memory_history_errors.csv` and `output/db_memory_history_errors.json` contain failed DB memory history collection attempts with SQL stdout/stderr diagnostics.
 
 SQL is streamed inline through the existing SSH runner to `sqlplus -s / as sysdba`; no SQL files are copied and no remote temp SQL files are created. The collector reuses DB inventory/resource-detail discovery to select each local running `oracle_sid` and `oracle_home`.
 

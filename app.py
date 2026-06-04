@@ -1050,8 +1050,8 @@ def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     with c4:
         sga_long = table.melt(id_vars=["end_time", "db_name", "instance_name"], value_vars=["sga_target_gb", "sga_used_gb"], var_name="metric", value_name="gb")
         st.plotly_chart(px.line(sga_long, x="end_time", y="gb", color="db_name", line_dash="metric", title="SGA_TARGET_GB vs SGA_USED_GB"), use_container_width=True)
-    pga_long = table.melt(id_vars=["end_time", "db_name", "instance_name"], value_vars=["pga_aggregate_target_gb", "pga_allocated_gb"], var_name="metric", value_name="gb")
-    st.plotly_chart(px.line(pga_long, x="end_time", y="gb", color="db_name", line_dash="metric", title="PGA_AGGREGATE_TARGET_GB vs PGA_ALLOCATED_GB"), use_container_width=True)
+    pga_long = table.melt(id_vars=["end_time", "db_name", "instance_name"], value_vars=["pga_aggregate_limit_gb", "pga_allocated_gb"], var_name="metric", value_name="gb")
+    st.plotly_chart(px.line(pga_long, x="end_time", y="gb", color="db_name", line_dash="metric", title="PGA_AGGREGATE_LIMIT_GB vs PGA_ALLOCATED_GB"), use_container_width=True)
     st.dataframe(table, use_container_width=True, hide_index=True)
 
 def render_raw_data_page() -> None:

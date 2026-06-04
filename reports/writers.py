@@ -480,52 +480,150 @@ def _version_summary_row(record: VersionInventoryRecord) -> dict[str, object]:
     return {field: getattr(record, field) for field in VERSION_SUMMARY_FIELDS}
 
 
+DB_PERFORMANCE_ERROR_COLUMNS = [
+    *DB_PERFORMANCE_COLUMNS,
+    "oracle_home",
+    "sql_returncode",
+    "sql_stdout",
+    "sql_stderr",
+]
+DB_MEMORY_ERROR_COLUMNS = [
+    *DB_MEMORY_COLUMNS,
+    "oracle_home",
+    "sql_returncode",
+    "sql_stdout",
+    "sql_stderr",
+]
+
+
 def write_db_performance_csv(records: Iterable[DBPerformanceRecord], output_dir: Path) -> Path:
-    """Write DB CPU/IOPS AWR history to output/db_performance.csv."""
+    """Write successful DB CPU/IOPS AWR history to output/db_performance.csv."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "db_performance.csv"
+    success_records = _dedupe_db_history_success(records)
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=DB_PERFORMANCE_COLUMNS, extrasaction="ignore")
         writer.writeheader()
-        for record in records:
-            writer.writerow(record.to_csv_row())
+        for record in success_records:
+            writer.writerow(_db_history_success_row(record, DB_PERFORMANCE_COLUMNS))
     return csv_path
 
 
 def write_db_performance_json(records: Iterable[DBPerformanceRecord], output_dir: Path) -> Path:
-    """Write DB CPU/IOPS AWR history to output/db_performance.json."""
+    """Write successful DB CPU/IOPS AWR history to output/db_performance.json."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "db_performance.json"
+    success_records = _dedupe_db_history_success(records)
     with json_path.open("w", encoding="utf-8") as json_file:
-        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json.dump([_db_history_success_row(record, DB_PERFORMANCE_COLUMNS) for record in success_records], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def write_db_performance_errors_csv(records: Iterable[DBPerformanceRecord], output_dir: Path) -> Path:
+    """Write failed DB CPU/IOPS AWR collection rows to output/db_performance_errors.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_performance_errors.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=DB_PERFORMANCE_ERROR_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for record in _db_history_error_records(records):
+            writer.writerow(_db_history_error_row(record, DB_PERFORMANCE_ERROR_COLUMNS))
+    return csv_path
+
+
+def write_db_performance_errors_json(records: Iterable[DBPerformanceRecord], output_dir: Path) -> Path:
+    """Write failed DB CPU/IOPS AWR collection rows to output/db_performance_errors.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_performance_errors.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([_db_history_error_row(record, DB_PERFORMANCE_ERROR_COLUMNS) for record in _db_history_error_records(records)], json_file, indent=2)
         json_file.write("\n")
     return json_path
 
 
 def write_db_memory_history_csv(records: Iterable[DBMemoryHistoryRecord], output_dir: Path) -> Path:
-    """Write DB SGA/PGA AWR history to output/db_memory_history.csv."""
+    """Write successful DB SGA/PGA AWR history to output/db_memory_history.csv."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "db_memory_history.csv"
+    success_records = _dedupe_db_history_success(records)
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=DB_MEMORY_COLUMNS, extrasaction="ignore")
         writer.writeheader()
-        for record in records:
-            writer.writerow(record.to_csv_row())
+        for record in success_records:
+            writer.writerow(_db_history_success_row(record, DB_MEMORY_COLUMNS))
     return csv_path
 
 
 def write_db_memory_history_json(records: Iterable[DBMemoryHistoryRecord], output_dir: Path) -> Path:
-    """Write DB SGA/PGA AWR history to output/db_memory_history.json."""
+    """Write successful DB SGA/PGA AWR history to output/db_memory_history.json."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "db_memory_history.json"
+    success_records = _dedupe_db_history_success(records)
     with json_path.open("w", encoding="utf-8") as json_file:
-        json.dump([record.to_json_dict() for record in records], json_file, indent=2)
+        json.dump([_db_history_success_row(record, DB_MEMORY_COLUMNS) for record in success_records], json_file, indent=2)
         json_file.write("\n")
     return json_path
+
+
+def write_db_memory_history_errors_csv(records: Iterable[DBMemoryHistoryRecord], output_dir: Path) -> Path:
+    """Write failed DB SGA/PGA AWR collection rows to output/db_memory_history_errors.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_memory_history_errors.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=DB_MEMORY_ERROR_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for record in _db_history_error_records(records):
+            writer.writerow(_db_history_error_row(record, DB_MEMORY_ERROR_COLUMNS))
+    return csv_path
+
+
+def write_db_memory_history_errors_json(records: Iterable[DBMemoryHistoryRecord], output_dir: Path) -> Path:
+    """Write failed DB SGA/PGA AWR collection rows to output/db_memory_history_errors.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_memory_history_errors.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump([_db_history_error_row(record, DB_MEMORY_ERROR_COLUMNS) for record in _db_history_error_records(records)], json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def _db_history_key(record: DBPerformanceRecord | DBMemoryHistoryRecord) -> tuple[str, str, str, str, str]:
+    return (record.Cluster, record.db_unique_name, record.DB_NAME, record.INSTANCE_NAME, record.END_TIME)
+
+
+def _dedupe_db_history_success(records: Iterable[DBPerformanceRecord] | Iterable[DBMemoryHistoryRecord]) -> list[DBPerformanceRecord] | list[DBMemoryHistoryRecord]:
+    deduped: dict[tuple[str, str, str, str, str], DBPerformanceRecord | DBMemoryHistoryRecord] = {}
+    for record in records:
+        if record.collection_status != "success":
+            continue
+        key = _db_history_key(record)
+        if key in deduped:
+            deduped[key].duplicate_count = int(getattr(deduped[key], "duplicate_count", 1) or 1) + 1
+            continue
+        record.duplicate_count = 1
+        deduped[key] = record
+    return list(deduped.values())
+
+
+def _db_history_error_records(records: Iterable[DBPerformanceRecord] | Iterable[DBMemoryHistoryRecord]) -> list[DBPerformanceRecord] | list[DBMemoryHistoryRecord]:
+    return [record for record in records if record.collection_status != "success"]
+
+
+def _db_history_success_row(record: DBPerformanceRecord | DBMemoryHistoryRecord, columns: list[str]) -> dict[str, object]:
+    return {column: getattr(record, column, "") for column in columns}
+
+
+def _db_history_error_row(record: DBPerformanceRecord | DBMemoryHistoryRecord, columns: list[str]) -> dict[str, object]:
+    return {column: getattr(record, column, "") for column in columns}
 
 
 def write_health_summary_csv(
@@ -918,13 +1016,13 @@ def _db_performance_health_rows(records: Iterable[DBPerformanceRecord]) -> list[
     rows: list[dict[str, object]] = []
     for record in records:
         if record.collection_status == "failed":
-            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_PERFORMANCE", record.db_unique_name or record.DB_NAME or "DB_PERFORMANCE", "collection_status", "failed", "WARNING", _details(collection_error=record.collection_error, error_category=record.error_category), record.Collected_At))
+            rows.append(_health_row(record.Cluster, record.source_host or record.HOST_NAME, "DB_PERFORMANCE", record.db_unique_name or record.DB_NAME or "DB_PERFORMANCE", "collection_status", "failed", "WARNING", _details(collection_error=record.collection_error, error_category=record.error_category), record.Collected_At))
             continue
         if record.collection_status == "skipped":
             continue
         avg = _numeric_value(record.HOST_CPU_UTIL_PCT_AVG)
         level = "CRITICAL" if avg >= 95 else "WARNING" if avg >= 85 else "OK"
-        rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_PERFORMANCE", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "host_cpu_util_pct_avg", avg, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, total_iops_avg=record.TOTAL_IOPS_AVG), record.Collected_At))
+        rows.append(_health_row(record.Cluster, record.HOST_NAME or record.source_host, "DB_PERFORMANCE", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "host_cpu_util_pct_avg", avg, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, total_iops_avg=record.TOTAL_IOPS_AVG), record.Collected_At))
     return rows
 
 
@@ -932,7 +1030,7 @@ def _db_memory_health_rows(records: Iterable[DBMemoryHistoryRecord]) -> list[dic
     rows: list[dict[str, object]] = []
     for record in records:
         if record.collection_status == "failed":
-            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_MEMORY", record.db_unique_name or record.DB_NAME or "DB_MEMORY", "collection_status", "failed", "WARNING", _details(collection_error=record.collection_error, error_category=record.error_category), record.Collected_At))
+            rows.append(_health_row(record.Cluster, record.source_host or record.HOST_NAME, "DB_MEMORY", record.db_unique_name or record.DB_NAME or "DB_MEMORY", "collection_status", "failed", "WARNING", _details(collection_error=record.collection_error, error_category=record.error_category), record.Collected_At))
             continue
         if record.collection_status == "skipped":
             continue
@@ -941,13 +1039,13 @@ def _db_memory_health_rows(records: Iterable[DBMemoryHistoryRecord]) -> list[dic
         if sga_target > 0:
             pct = round((sga_used / sga_target) * 100, 2)
             level = "CRITICAL" if pct >= 98 else "WARNING" if pct >= 90 else "OK"
-            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_MEMORY", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "sga_used_pct_of_target", pct, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, sga_used_gb=record.SGA_USED_GB, sga_target_gb=record.SGA_TARGET_GB), record.Collected_At))
+            rows.append(_health_row(record.Cluster, record.HOST_NAME or record.source_host, "DB_MEMORY", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "sga_used_pct_of_target", pct, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, sga_used_gb=record.SGA_USED_GB, sga_target_gb=record.SGA_TARGET_GB), record.Collected_At))
         pga_alloc = _numeric_value(record.PGA_ALLOCATED_GB)
         pga_limit = _numeric_value(record.PGA_AGGREGATE_LIMIT_GB)
         if pga_limit > 0:
             pct = round((pga_alloc / pga_limit) * 100, 2)
             level = "CRITICAL" if pct >= 98 else "WARNING" if pct >= 90 else "OK"
-            rows.append(_health_row(record.Cluster, record.host or record.HOST_NAME, "DB_MEMORY", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "pga_allocated_pct_of_limit", pct, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, pga_allocated_gb=record.PGA_ALLOCATED_GB, pga_limit_gb=record.PGA_AGGREGATE_LIMIT_GB), record.Collected_At))
+            rows.append(_health_row(record.Cluster, record.HOST_NAME or record.source_host, "DB_MEMORY", record.DB_NAME or record.db_unique_name or record.INSTANCE_NAME, "pga_allocated_pct_of_limit", pct, level, _details(instance_name=record.INSTANCE_NAME, end_time=record.END_TIME, pga_allocated_gb=record.PGA_ALLOCATED_GB, pga_limit_gb=record.PGA_AGGREGATE_LIMIT_GB), record.Collected_At))
     return rows
 
 def _health_row(

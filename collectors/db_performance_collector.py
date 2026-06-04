@@ -28,9 +28,11 @@ DB_PERFORMANCE_COLUMNS = [
     "READ_MBPS_MAX", "WRITE_MBPS_MAX", "TOTAL_MBPS_MAX",
     "CPU_USAGE_PER_SEC_AVG", "CPU_USAGE_PER_SEC_MAX",
     "HOST_CPU_UTIL_PCT_AVG", "HOST_CPU_UTIL_PCT_MAX", "Collected_At",
+    "db_unique_name", "source_host", "source_address", "source_oracle_sid",
+    "collection_status", "collection_error", "error_category", "size_source", "duplicate_count",
 ]
 
-DB_PERFORMANCE_SQL_COLUMNS = ["DB_NAME", "INSTANCE_NAME", "HOST_NAME", "END_TIME", *DB_PERFORMANCE_COLUMNS[5:-1]]
+DB_PERFORMANCE_SQL_COLUMNS = ["DB_NAME", "INSTANCE_NAME", "HOST_NAME", "END_TIME", *DB_PERFORMANCE_COLUMNS[5:21]]
 
 DB_MEMORY_COLUMNS = [
     "Cluster", "HOST_NAME", "DB_NAME", "INSTANCE_NAME", "END_TIME",
@@ -38,9 +40,11 @@ DB_MEMORY_COLUMNS = [
     "PGA_AGGREGATE_TARGET_GB", "PGA_AGGREGATE_LIMIT_GB",
     "PGA_ALLOCATED_GB", "PGA_USED_GB", "PGA_FREEABLE_GB",
     "PGA_MAX_ALLOCATED_GB", "Collected_At",
+    "db_unique_name", "source_host", "source_address", "source_oracle_sid",
+    "collection_status", "collection_error", "error_category", "size_source", "duplicate_count",
 ]
 
-DB_MEMORY_SQL_COLUMNS = ["DB_NAME", "INSTANCE_NAME", "HOST_NAME", "END_TIME", *DB_MEMORY_COLUMNS[5:-1]]
+DB_MEMORY_SQL_COLUMNS = ["DB_NAME", "INSTANCE_NAME", "HOST_NAME", "END_TIME", *DB_MEMORY_COLUMNS[5:14]]
 
 
 @dataclass
@@ -67,14 +71,19 @@ class DBPerformanceRecord:
     HOST_CPU_UTIL_PCT_AVG: str = ""
     HOST_CPU_UTIL_PCT_MAX: str = ""
     Collected_At: str = ""
-    host: str = ""
-    address: str = ""
     db_unique_name: str = ""
-    oracle_home: str = ""
-    oracle_sid: str = ""
+    source_host: str = ""
+    source_address: str = ""
+    source_oracle_sid: str = ""
     collection_status: str = "success"
     collection_error: str = ""
     error_category: str = ""
+    size_source: str = "AWR"
+    duplicate_count: int = 1
+    oracle_home: str = ""
+    host: str = ""
+    address: str = ""
+    oracle_sid: str = ""
     sql_returncode: int | str = ""
     sql_stdout: str = ""
     sql_stderr: str = ""
@@ -103,14 +112,19 @@ class DBMemoryHistoryRecord:
     PGA_FREEABLE_GB: str = ""
     PGA_MAX_ALLOCATED_GB: str = ""
     Collected_At: str = ""
-    host: str = ""
-    address: str = ""
     db_unique_name: str = ""
-    oracle_home: str = ""
-    oracle_sid: str = ""
+    source_host: str = ""
+    source_address: str = ""
+    source_oracle_sid: str = ""
     collection_status: str = "success"
     collection_error: str = ""
     error_category: str = ""
+    size_source: str = "AWR"
+    duplicate_count: int = 1
+    oracle_home: str = ""
+    host: str = ""
+    address: str = ""
+    oracle_sid: str = ""
     sql_returncode: int | str = ""
     sql_stdout: str = ""
     sql_stderr: str = ""
@@ -173,7 +187,7 @@ class DBPerformanceCollector:
         if not result.ok:
             return [self._failed_perf(inv, db_unique_name, oracle_home, oracle_sid, collected_at, _sql_failure_error(result, inv.host), _db_perf_error_category(result.stdout, result.stderr), result)]
         try:
-            return [DBPerformanceRecord(Cluster=inv.cluster, Collected_At=collected_at, host=inv.host, address=inv.address, db_unique_name=db_unique_name, oracle_home=oracle_home, oracle_sid=oracle_sid, **row) for row in parse_db_performance_output(result.stdout)]
+            return [DBPerformanceRecord(Cluster=inv.cluster, Collected_At=collected_at, source_host=inv.host, source_address=inv.address, source_oracle_sid=oracle_sid, db_unique_name=db_unique_name, oracle_home=oracle_home, host=inv.host, address=inv.address, oracle_sid=oracle_sid, **row) for row in parse_db_performance_output(result.stdout)]
         except ValueError as exc:
             return [self._failed_perf(inv, db_unique_name, oracle_home, oracle_sid, collected_at, str(exc), "PARSE_ERROR", result)]
 
@@ -182,15 +196,15 @@ class DBPerformanceCollector:
         if not result.ok:
             return [self._failed_mem(inv, db_unique_name, oracle_home, oracle_sid, collected_at, _sql_failure_error(result, inv.host), _db_perf_error_category(result.stdout, result.stderr), result)]
         try:
-            return [DBMemoryHistoryRecord(Cluster=inv.cluster, Collected_At=collected_at, host=inv.host, address=inv.address, db_unique_name=db_unique_name, oracle_home=oracle_home, oracle_sid=oracle_sid, **row) for row in parse_db_memory_output(result.stdout)]
+            return [DBMemoryHistoryRecord(Cluster=inv.cluster, Collected_At=collected_at, source_host=inv.host, source_address=inv.address, source_oracle_sid=oracle_sid, db_unique_name=db_unique_name, oracle_home=oracle_home, host=inv.host, address=inv.address, oracle_sid=oracle_sid, **row) for row in parse_db_memory_output(result.stdout)]
         except ValueError as exc:
             return [self._failed_mem(inv, db_unique_name, oracle_home, oracle_sid, collected_at, str(exc), "PARSE_ERROR", result)]
 
     def _failed_perf(self, inv, db_unique_name, oracle_home, oracle_sid, collected_at, error, category, result=None, status="failed") -> DBPerformanceRecord:
-        return DBPerformanceRecord(Cluster=inv.cluster, HOST_NAME=inv.host, Collected_At=collected_at, host=inv.host, address=inv.address, db_unique_name=db_unique_name, oracle_home=oracle_home, oracle_sid=oracle_sid, collection_status=status, collection_error=error, error_category=category, sql_returncode=getattr(result, "returncode", ""), sql_stdout=getattr(result, "stdout", "").strip() if result else "", sql_stderr=getattr(result, "stderr", "").strip() if result else "")
+        return DBPerformanceRecord(Cluster=inv.cluster, HOST_NAME=inv.host, Collected_At=collected_at, source_host=inv.host, source_address=inv.address, source_oracle_sid=oracle_sid, host=inv.host, address=inv.address, db_unique_name=db_unique_name, oracle_home=oracle_home, oracle_sid=oracle_sid, collection_status=status, collection_error=error, error_category=category, sql_returncode=getattr(result, "returncode", ""), sql_stdout=getattr(result, "stdout", "").strip() if result else "", sql_stderr=getattr(result, "stderr", "").strip() if result else "")
 
     def _failed_mem(self, inv, db_unique_name, oracle_home, oracle_sid, collected_at, error, category, result=None, status="failed") -> DBMemoryHistoryRecord:
-        return DBMemoryHistoryRecord(Cluster=inv.cluster, HOST_NAME=inv.host, Collected_At=collected_at, host=inv.host, address=inv.address, db_unique_name=db_unique_name, oracle_home=oracle_home, oracle_sid=oracle_sid, collection_status=status, collection_error=error, error_category=category, sql_returncode=getattr(result, "returncode", ""), sql_stdout=getattr(result, "stdout", "").strip() if result else "", sql_stderr=getattr(result, "stderr", "").strip() if result else "")
+        return DBMemoryHistoryRecord(Cluster=inv.cluster, HOST_NAME=inv.host, Collected_At=collected_at, source_host=inv.host, source_address=inv.address, source_oracle_sid=oracle_sid, host=inv.host, address=inv.address, db_unique_name=db_unique_name, oracle_home=oracle_home, oracle_sid=oracle_sid, collection_status=status, collection_error=error, error_category=category, sql_returncode=getattr(result, "returncode", ""), sql_stdout=getattr(result, "stdout", "").strip() if result else "", sql_stderr=getattr(result, "stderr", "").strip() if result else "")
 
 
 def _local_success_db_details(details: Iterable[dict[str, object]]) -> list[dict[str, object]]:
@@ -205,18 +219,30 @@ def parse_db_memory_output(text: str) -> list[dict[str, str]]:
     return _parse_pipe_rows(text, DB_MEMORY_SQL_COLUMNS, 13, "DB memory history")
 
 
+SQL_ECHO_PREFIXES = ("whenever", "set", "select", "with", "from", "pivot", "order by", "exit")
+
+
 def _parse_pipe_rows(text: str, columns: list[str], expected: int, label: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
+    expected_delimiters = expected - 1
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         line = raw_line.strip()
-        if not line or line.lower().startswith("sql>") or line.startswith("-"):
+        lower_line = line.lower()
+        if (
+            not line
+            or lower_line.startswith("sql>")
+            or line.startswith("-")
+            or lower_line.startswith(SQL_ECHO_PREFIXES)
+        ):
+            continue
+        if line.count("|") != expected_delimiters:
             continue
         parts = [part.strip() for part in line.split("|")]
         if len(parts) != expected:
             continue
         rows.append(dict(zip(columns, parts, strict=True)))
     if not rows:
-        raise ValueError(f"Expected {expected} pipe-delimited {label} values")
+        raise ValueError(f"Expected {expected_delimiters} pipe delimiters / {expected} {label} fields")
     return rows
 
 
@@ -259,7 +285,12 @@ def _build_db_performance_sql(days_back: int) -> str:
     return f"""
 WHENEVER OSERROR EXIT 9;
 WHENEVER SQLERROR EXIT SQL.SQLCODE;
-set pages 0 feedback off verify off heading off echo off lines 32767 trimspool on tab off
+set echo off
+set termout off
+set feedback off
+set heading off
+set verify off
+set pages 0 lines 32767 trimspool on tab off
 alter session set nls_date_format='YYYY-MM-DD HH24:MI:SS';
 define DAYS_BACK={days}
 
@@ -303,7 +334,12 @@ def _build_db_memory_sql(days_back: int) -> str:
     return f"""
 WHENEVER OSERROR EXIT 9;
 WHENEVER SQLERROR EXIT SQL.SQLCODE;
-set pages 0 feedback off verify off heading off echo off lines 32767 trimspool on tab off
+set echo off
+set termout off
+set feedback off
+set heading off
+set verify off
+set pages 0 lines 32767 trimspool on tab off
 alter session set nls_date_format='YYYY-MM-DD HH24:MI:SS';
 define DAYS_BACK={days}
 
