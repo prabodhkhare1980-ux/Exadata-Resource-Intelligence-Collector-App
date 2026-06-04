@@ -56,7 +56,7 @@ def write_os_json(records: Iterable[OSCollectionRecord], output_dir: Path) -> Pa
 
 
 DB_CSV_FIELDS = [
-    "cluster","host","address","collected_at","status","error","ssh_returncode","hostname","date","gi_version","oratab","pmon_processes_json","databases_json","srvctl_config_json","srvctl_status_json","crsctl_stat_res_t","oracle_home_candidates_json",
+    "cluster","host","address","collected_at","status","error","ssh_returncode","hostname","date","gi_version","oratab","pmon_processes_json","databases_json","srvctl_config_json","srvctl_status_json","crsctl_stat_res_t","oracle_home_candidates_json","db_resource_details_json",
 ]
 
 def write_db_inventory_csv(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
@@ -68,6 +68,51 @@ def write_db_inventory_csv(records: Iterable[DBInventoryRecord], output_dir: Pat
         for record in records:
             writer.writerow(record.to_csv_row())
     return csv_path
+
+
+DB_RESOURCE_DETAIL_CSV_FIELDS = [
+    "Cluster",
+    "HOST_NAME",
+    "DB_NAME",
+    "DB_ROLE",
+    "OPEN_MODE",
+    "VERSION",
+    "RAC_ENABLED",
+    "INST_COUNT",
+    "SGA_TARGET_GB",
+    "PGA_AGGR_TARGET_GB",
+    "SGA_MAX_SIZE_GB",
+    "PGA_AGGR_LIMIT_GB",
+    "PROCESSES",
+    "CPU_COUNT",
+    "DB_SIZE_GB",
+    "USED_DB_SIZE_GB",
+    "Collected_At",
+]
+
+def write_db_resource_details_csv(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_resource_details.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=DB_RESOURCE_DETAIL_CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for row in _db_resource_detail_rows(records):
+            writer.writerow(row)
+    return csv_path
+
+def write_db_resource_details_json(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_resource_details.json"
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(_db_resource_detail_rows(records), json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+def _db_resource_detail_rows(records: Iterable[DBInventoryRecord]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        rows.extend(dict(row) for row in record.db_resource_details)
+    return rows
 
 def write_db_inventory_json(records: Iterable[DBInventoryRecord], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -578,6 +623,30 @@ def _db_inventory_health_rows(records: Iterable[DBInventoryRecord]) -> list[dict
                     record.collected_at,
                 )
             )
+        for detail in record.db_resource_details:
+            status = str(detail.get("collection_status") or "")
+            db_name = str(detail.get("DB_NAME") or detail.get("db_unique_name") or "database")
+            rows.append(
+                _health_row(
+                    record.cluster,
+                    record.host,
+                    "DB_RESOURCE",
+                    db_name,
+                    "collection_status",
+                    status,
+                    _db_resource_warning_level(status),
+                    _details(
+                        db_unique_name=detail.get("db_unique_name"),
+                        oracle_home=detail.get("oracle_home"),
+                        oracle_sid=detail.get("oracle_sid"),
+                        size_source=detail.get("size_source"),
+                        collection_error=detail.get("collection_error"),
+                        sql_returncode=detail.get("sql_returncode"),
+                        sql_stderr=detail.get("sql_stderr"),
+                    ),
+                    str(detail.get("Collected_At") or record.collected_at),
+                )
+            )
     return rows
 
 
@@ -615,6 +684,14 @@ def _filesystem_warning_level(use_pct: float) -> str:
 
 
 
+def _db_resource_warning_level(status: str) -> str:
+    if status == "success":
+        return "OK"
+    if status == "skipped":
+        return "WARNING"
+    return "CRITICAL"
+
+
 def _health_recommendation(category: str, warning_level: str, metric: str, value: object) -> str:
     level = _normalize_health_level(warning_level)
     if level not in {"CRITICAL", "WARNING"}:
@@ -633,6 +710,12 @@ def _health_recommendation(category: str, warning_level: str, metric: str, value
             return "Review DB SGA/HugePages allocation; risk of HugePages exhaustion."
         if level == "WARNING" and free_pct <= 10:
             return "Monitor HugePages free count."
+
+    if category == "DB_RESOURCE" and metric == "collection_status":
+        if str(value) == "skipped":
+            return "No local running instance on this host."
+        if level == "CRITICAL":
+            return "Review local SYSDBA connectivity and database open state."
 
     if category == "VERSION_INVENTORY":
         if metric == "imageinfo_available":
