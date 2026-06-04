@@ -276,6 +276,102 @@ def normalize_hugepages(df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def normalize_db_resources(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare successful DB resource detail rows for KPIs, filters, and charts."""
+
+    columns = [
+        "cluster",
+        "db_unique_name",
+        "db_name",
+        "db_role",
+        "open_mode",
+        "version",
+        "rac_enabled",
+        "inst_count",
+        "sga_target_gb",
+        "pga_aggr_target_gb",
+        "sga_max_size_gb",
+        "pga_aggr_limit_gb",
+        "processes",
+        "cpu_count",
+        "db_size_gb",
+        "used_db_size_gb",
+        "db_used_pct",
+        "oracle_home",
+        "oracle_sid",
+        "host_name",
+        "host",
+        "collection_status",
+    ]
+    table = df.copy()
+    rename_map = {
+        "Cluster": "cluster",
+        "DB_NAME": "db_name",
+        "DB_ROLE": "db_role",
+        "OPEN_MODE": "open_mode",
+        "VERSION": "version",
+        "RAC_ENABLED": "rac_enabled",
+        "INST_COUNT": "inst_count",
+        "SGA_TARGET_GB": "sga_target_gb",
+        "PGA_AGGR_TARGET_GB": "pga_aggr_target_gb",
+        "SGA_MAX_SIZE_GB": "sga_max_size_gb",
+        "PGA_AGGR_LIMIT_GB": "pga_aggr_limit_gb",
+        "PROCESSES": "processes",
+        "CPU_COUNT": "cpu_count",
+        "DB_SIZE_GB": "db_size_gb",
+        "USED_DB_SIZE_GB": "used_db_size_gb",
+        "DB_USED_PCT": "db_used_pct",
+        "HOST_NAME": "host_name",
+    }
+    table = table.rename(columns={old: new for old, new in rename_map.items() if old in table.columns and new not in table.columns})
+    table = ensure_columns(table, columns)[columns].copy()
+    for column in [
+        "inst_count",
+        "sga_target_gb",
+        "pga_aggr_target_gb",
+        "sga_max_size_gb",
+        "pga_aggr_limit_gb",
+        "processes",
+        "cpu_count",
+        "db_size_gb",
+        "used_db_size_gb",
+        "db_used_pct",
+    ]:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+    if table["db_used_pct"].isna().all():
+        table["db_used_pct"] = (table["used_db_size_gb"] / table["db_size_gb"] * 100).round(2).where(table["db_size_gb"] > 0)
+    table["rac_enabled"] = table["rac_enabled"].astype(str).str.upper().replace({"NAN": ""})
+    return table
+
+
+def dedupe_db_resources(table: pd.DataFrame) -> pd.DataFrame:
+    """Keep the first successful row per cluster + db_unique_name for RAC-safe totals."""
+
+    if table.empty:
+        return table
+    dedupe = table.copy()
+    dedupe["_dedupe_key"] = dedupe["db_unique_name"].where(dedupe["db_unique_name"].notna() & (dedupe["db_unique_name"].astype(str).str.strip() != ""), dedupe["db_name"])
+    dedupe = dedupe.sort_index().drop_duplicates(subset=["cluster", "_dedupe_key"], keep="first")
+    return dedupe.drop(columns=["_dedupe_key"], errors="ignore")
+
+
+def normalize_db_resource_errors(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare DB resource skipped/failed rows for display."""
+
+    columns = [
+        "cluster",
+        "host",
+        "db_unique_name",
+        "oracle_sid",
+        "collection_status",
+        "error_category",
+        "collection_error",
+        "sql_returncode",
+        "mapping_source",
+    ]
+    return ensure_columns(df, columns)[columns].copy()
+
+
 def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
     """Build a normalized filesystem table from OS inventory output."""
 
@@ -326,6 +422,7 @@ def build_global_filters() -> tuple[str, dict[str, list[str]]]:
         normalize_health(read_output("health_summary")[0]),
         normalize_asm(read_output("asm_diskgroups")[0]),
         normalize_hugepages(read_output("hugepages")[0]),
+        normalize_db_resources(read_output("db_resource_details")[0]),
         ensure_columns(read_output("os_inventory")[0], ["cluster", "host"]),
         normalize_health(ensure_columns(read_output("version_inventory")[0], ["cluster", "host", "warning_level"])),
     ]
@@ -343,7 +440,7 @@ def build_global_filters() -> tuple[str, dict[str, list[str]]]:
     return page, filters
 
 
-def render_kpis(health: pd.DataFrame, asm: pd.DataFrame, hugepages: pd.DataFrame) -> None:
+def render_kpis(health: pd.DataFrame, asm: pd.DataFrame, hugepages: pd.DataFrame, db_resources: pd.DataFrame, db_errors: pd.DataFrame) -> None:
     """Render top executive KPI cards."""
 
     total_clusters = len({str(value) for value in pd.concat([health.get("cluster", pd.Series(dtype=object)), asm.get("cluster", pd.Series(dtype=object)), hugepages.get("cluster", pd.Series(dtype=object))]).dropna()})
@@ -353,8 +450,14 @@ def render_kpis(health: pd.DataFrame, asm: pd.DataFrame, hugepages: pd.DataFrame
     asm_total_tb = asm["total_tb"].sum(skipna=True) if "total_tb" in asm.columns else 0
     asm_free_tb = asm["free_tb"].sum(skipna=True) if "free_tb" in asm.columns else 0
     hp_critical = int((hugepages["warning_level"] == "CRITICAL").sum()) if "warning_level" in hugepages.columns else 0
+    db_deduped = dedupe_db_resources(db_resources)
+    total_dbs = len(db_deduped)
+    primary_dbs = int(db_deduped["db_role"].astype(str).str.upper().str.contains("PRIMARY", na=False).sum()) if "db_role" in db_deduped.columns else 0
+    standby_dbs = int(db_deduped["db_role"].astype(str).str.upper().str.contains("STANDBY", na=False).sum()) if "db_role" in db_deduped.columns else 0
+    db_warnings = int(health[(health.get("category", pd.Series(dtype=object)).astype(str) == "DB_RESOURCE") & (health.get("warning_level", pd.Series(dtype=object)).isin(["CRITICAL", "WARNING"]))].shape[0]) if not health.empty else 0
+    db_failures = int((db_errors.get("collection_status", pd.Series(dtype=object)).astype(str).str.lower() == "failed").sum()) if not db_errors.empty else 0
 
-    cols = st.columns(7)
+    cols = st.columns(12)
     with cols[0]:
         card("Total clusters", total_clusters, "neutral")
     with cols[1]:
@@ -369,6 +472,16 @@ def render_kpis(health: pd.DataFrame, asm: pd.DataFrame, hugepages: pd.DataFrame
         card("ASM free TB", f"{asm_free_tb:,.1f}", "OK")
     with cols[6]:
         card("HugePages critical hosts", hp_critical, "CRITICAL" if hp_critical else "OK")
+    with cols[7]:
+        card("Total DBs", total_dbs, "neutral")
+    with cols[8]:
+        card("Primary DBs", primary_dbs, "neutral")
+    with cols[9]:
+        card("Standby DBs", standby_dbs, "neutral")
+    with cols[10]:
+        card("DB space warnings", db_warnings, "WARNING" if db_warnings else "OK")
+    with cols[11]:
+        card("DB collection failures", db_failures, "WARNING" if db_failures else "OK")
 
 
 def render_action_required(health: pd.DataFrame) -> None:
@@ -392,15 +505,19 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     asm_df, asm_path = read_output("asm_diskgroups")
     huge_df, huge_path = read_output("hugepages")
     os_df, os_path = read_output("os_inventory")
+    db_df, _ = read_output("db_resource_details")
+    db_errors_df, _ = read_output("db_resource_details_errors")
 
     health = apply_global_filters(normalize_health(health_df), filters)
     asm = apply_global_filters(normalize_asm(asm_df), filters)
     hugepages = apply_global_filters(normalize_hugepages(huge_df), filters)
     filesystems = apply_global_filters(explode_filesystems(os_df), filters)
+    db_resources = apply_global_filters(normalize_db_resources(db_df), filters)
+    db_errors = apply_global_filters(normalize_db_resource_errors(db_errors_df), filters)
 
     st.title("Executive Exadata Resource Cockpit")
     st.caption("Executive risk, capacity, and action view from local collector output only.")
-    render_kpis(health, asm, hugepages)
+    render_kpis(health, asm, hugepages, db_resources, db_errors)
 
     st.markdown("### Critical Issues")
     show_source(health_path)
@@ -636,13 +753,133 @@ def summarize_db_inventory(df: pd.DataFrame) -> pd.DataFrame:
 
 def render_db_inventory_page(filters: dict[str, list[str]]) -> None:
     st.title("DB Inventory")
-    df, path = read_output("db_inventory")
+
+    raw_df, path = read_output("db_resource_details")
+    errors_df, errors_path = read_output("db_resource_details_errors")
     show_source(path)
-    if df.empty:
-        st.warning("No db_inventory output found in output/.")
+    if raw_df.empty:
+        st.warning("No db_resource_details output found in output/.")
         return
 
-    st.dataframe(apply_global_filters(summarize_db_inventory(df), filters), use_container_width=True, hide_index=True)
+    table = apply_global_filters(normalize_db_resources(raw_df), filters)
+    deduped = dedupe_db_resources(table)
+
+    st.markdown("## DB Resource Overview")
+    primary_count = int(deduped["db_role"].astype(str).str.upper().str.contains("PRIMARY", na=False).sum())
+    standby_count = int(deduped["db_role"].astype(str).str.upper().str.contains("STANDBY", na=False).sum())
+    rac_count = int(deduped["rac_enabled"].astype(str).str.upper().isin(["TRUE", "YES", "Y"]).sum())
+    over_85 = int((deduped["db_used_pct"] >= 85).sum())
+    over_95 = int((deduped["db_used_pct"] >= 95).sum())
+    total_size_tb = deduped["db_size_gb"].sum(skipna=True) / 1024
+    total_used_tb = deduped["used_db_size_gb"].sum(skipna=True) / 1024
+
+    kpis = st.columns(8)
+    metrics = [
+        ("Total DBs collected", len(deduped)),
+        ("Primary DB count", primary_count),
+        ("Standby DB count", standby_count),
+        ("RAC DB count", rac_count),
+        ("Total DB size TB", f"{total_size_tb:,.2f}"),
+        ("Total used DB size TB", f"{total_used_tb:,.2f}"),
+        ("DBs over 85% used", over_85),
+        ("DBs over 95% used", over_95),
+    ]
+    for col, (label, value) in zip(kpis, metrics, strict=False):
+        with col:
+            st.metric(label, value)
+
+    st.markdown("### DB Resource Filters")
+    filter_cols = st.columns(6)
+    local_filters: dict[str, Any] = {}
+    for col, field, label in zip(filter_cols[:5], ["cluster", "db_role", "open_mode", "version", "rac_enabled"], ["Cluster", "DB role", "Open mode", "Version", "RAC enabled"], strict=False):
+        values = sorted({str(value) for value in table[field].dropna() if str(value).strip()}) if field in table.columns else []
+        with col:
+            local_filters[field] = st.multiselect(label, values, default=[])
+    with filter_cols[5]:
+        threshold = st.number_input("DB used % threshold", min_value=0.0, max_value=100.0, value=0.0, step=5.0)
+
+    filtered = table.copy()
+    for field, selected in local_filters.items():
+        if selected:
+            filtered = filtered[filtered[field].astype(str).isin(selected)]
+    if threshold > 0:
+        filtered = filtered[filtered["db_used_pct"] >= threshold]
+    filtered_deduped = dedupe_db_resources(filtered)
+
+    st.markdown("## DB Resource Table")
+    display_columns = [
+        "cluster",
+        "db_unique_name",
+        "db_name",
+        "db_role",
+        "open_mode",
+        "version",
+        "rac_enabled",
+        "inst_count",
+        "sga_target_gb",
+        "pga_aggr_target_gb",
+        "sga_max_size_gb",
+        "pga_aggr_limit_gb",
+        "processes",
+        "cpu_count",
+        "db_size_gb",
+        "used_db_size_gb",
+        "db_used_pct",
+        "oracle_home",
+        "oracle_sid",
+        "host_name",
+    ]
+    st.dataframe(ensure_columns(filtered, display_columns)[display_columns], use_container_width=True, hide_index=True)
+
+    st.markdown("## DB Resource Charts")
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        top_size = filtered_deduped.nlargest(15, "db_size_gb") if not filtered_deduped.empty else pd.DataFrame()
+        if top_size.empty:
+            st.info("No DB_SIZE_GB values available.")
+        else:
+            st.plotly_chart(px.bar(top_size, x="db_unique_name", y="db_size_gb", color="cluster", title="Top 15 DBs by DB_SIZE_GB"), use_container_width=True)
+    with chart_col2:
+        top_used = filtered_deduped.nlargest(15, "used_db_size_gb") if not filtered_deduped.empty else pd.DataFrame()
+        if top_used.empty:
+            st.info("No USED_DB_SIZE_GB values available.")
+        else:
+            st.plotly_chart(px.bar(top_used, x="db_unique_name", y="used_db_size_gb", color="cluster", title="Top 15 DBs by USED_DB_SIZE_GB"), use_container_width=True)
+
+    chart_col3, chart_col4 = st.columns(2)
+    with chart_col3:
+        if filtered_deduped.empty:
+            st.info("No DB role values available.")
+        else:
+            role_counts = filtered_deduped.groupby("db_role", dropna=False).size().reset_index(name="db_count")
+            st.plotly_chart(px.bar(role_counts, x="db_role", y="db_count", title="DB count by role"), use_container_width=True)
+    with chart_col4:
+        if filtered_deduped.empty:
+            st.info("No DB version values available.")
+        else:
+            version_counts = filtered_deduped.groupby("version", dropna=False).size().reset_index(name="db_count")
+            st.plotly_chart(px.bar(version_counts, x="version", y="db_count", title="DB count by version"), use_container_width=True)
+
+    over_80 = filtered_deduped[filtered_deduped["db_used_pct"] > 80]
+    if over_80.empty:
+        st.success("No DBs over 80% used.")
+    else:
+        st.plotly_chart(px.bar(over_80.sort_values("db_used_pct", ascending=False), x="db_unique_name", y="db_used_pct", color="cluster", title="DB used percentage for DBs over 80%"), use_container_width=True)
+
+    st.markdown("## DB Collection Errors")
+    show_source(errors_path)
+    errors = apply_global_filters(normalize_db_resource_errors(errors_df), filters)
+    failed = errors[errors["collection_status"].astype(str).str.lower() == "failed"] if not errors.empty else pd.DataFrame()
+    skipped = errors[errors["collection_status"].astype(str).str.lower() == "skipped"] if not errors.empty else pd.DataFrame()
+    if failed.empty:
+        st.success("No failed DB resource collection rows found.")
+    else:
+        st.dataframe(failed, use_container_width=True, hide_index=True)
+    with st.expander("Skipped DBs with no local running instance", expanded=False):
+        if skipped.empty:
+            st.info("No skipped DB rows found.")
+        else:
+            st.dataframe(skipped, use_container_width=True, hide_index=True)
 
 
 def render_version_inventory_page(filters: dict[str, list[str]]) -> None:

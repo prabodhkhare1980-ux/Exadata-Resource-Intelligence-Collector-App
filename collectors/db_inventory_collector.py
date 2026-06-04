@@ -158,6 +158,16 @@ class DBInventoryCollector:
                 logger,
             )
         logger.info("DB resource details rows=%s", len(db_resource_details))
+        status_counts = {"success": 0, "skipped": 0, "failed": 0}
+        for detail in db_resource_details:
+            status_counts[str(detail.get("collection_status") or "")] = status_counts.get(str(detail.get("collection_status") or ""), 0) + 1
+        logger.info(
+            "DB resource details summary for %s: success=%s skipped=%s failed=%s",
+            host.name,
+            status_counts.get("success", 0),
+            status_counts.get("skipped", 0),
+            status_counts.get("failed", 0),
+        )
 
         collection_status = "success"
         collection_error = ""
@@ -576,7 +586,7 @@ def _collect_pmon_oratab_fallback_details(
         base = _db_resource_base_record(cluster, host_name, address, collected_at, db_unique_name, oracle_home)
         base.update({"oracle_sid": sid, "mapping_source": "pmon_oratab_fallback", "source": "pmon_oratab_fallback"})
         if not oracle_home:
-            base.update({"collection_status": "failed", "collection_error": "oracle_home_not_found"})
+            base.update({"collection_status": "failed", "collection_error": "oracle_home_not_found", "error_category": "UNKNOWN"})
             details.append(base)
             continue
         result = _execute_db_resource_sql(runner, host, oracle_home, sid, "", True, sql_executor)
@@ -584,9 +594,9 @@ def _collect_pmon_oratab_fallback_details(
         if (not result.ok) and _should_fallback_to_dba(result.stderr + "\n" + result.stdout):
             result = _execute_db_resource_sql(runner, host, oracle_home, sid, "", False, sql_executor)
             size_source = "dba_fallback"
-        base.update({"sql_returncode": result.returncode, "sql_stderr": result.stderr.strip(), "size_source": size_source})
+        base.update({"sql_returncode": result.returncode, "sql_stdout": result.stdout.strip(), "sql_stderr": result.stderr.strip(), "size_source": size_source})
         if not result.ok:
-            base.update({"collection_status": "failed", "collection_error": _sql_failure_error(result)})
+            base.update({"collection_status": "failed", "collection_error": _sql_failure_error(result, host_name), "error_category": _sql_error_category(result.stdout, result.stderr, result.returncode)})
             details.append(base)
             if logger:
                 logger.warning("DB resource SQL fallback failed for %s/%s: %s", db_unique_name, sid, base["collection_error"])
@@ -594,11 +604,11 @@ def _collect_pmon_oratab_fallback_details(
         try:
             parsed = _parse_db_resource_sql_output(result.stdout)
         except ValueError as exc:
-            base.update({"collection_status": "failed", "collection_error": str(exc)})
+            base.update({"collection_status": "failed", "collection_error": str(exc), "error_category": "UNKNOWN"})
             details.append(base)
             continue
         base.update(parsed)
-        base.update({"collection_status": "success", "collection_error": ""})
+        base.update({"collection_status": "success", "collection_error": "", "error_category": ""})
         details.append(base)
     return details
 
@@ -658,13 +668,13 @@ def _collect_db_resource_details(
         selected = _select_local_instance(instances, host_identity)
         base = _db_resource_base_record(cluster, host_name, address, collected_at, db_unique_name, oracle_home)
         if selected is None:
-            base.update({"collection_status": "skipped", "collection_error": "no_local_running_instance"})
+            base.update({"collection_status": "skipped", "collection_error": "no_local_running_instance", "error_category": "NO_LOCAL_INSTANCE"})
             details.append(base)
             continue
         sid = selected.get("sid", "")
         base.update({"oracle_sid": sid, "mapping_source": selected.get("mapping_source", "")})
         if not oracle_home:
-            base.update({"collection_status": "failed", "collection_error": "oracle_home_not_found"})
+            base.update({"collection_status": "failed", "collection_error": "oracle_home_not_found", "error_category": "UNKNOWN"})
             details.append(base)
             continue
 
@@ -675,9 +685,9 @@ def _collect_db_resource_details(
         if first_use_cdb and (not result.ok) and _should_fallback_to_dba(result.stderr + "\n" + result.stdout):
             result = _execute_db_resource_sql(runner, host, oracle_home, sid, version_hint, False, sql_executor)
             size_source = "dba_fallback"
-        base.update({"sql_returncode": result.returncode, "sql_stderr": result.stderr.strip(), "size_source": size_source})
+        base.update({"sql_returncode": result.returncode, "sql_stdout": result.stdout.strip(), "sql_stderr": result.stderr.strip(), "size_source": size_source})
         if not result.ok:
-            base.update({"collection_status": "failed", "collection_error": _sql_failure_error(result)})
+            base.update({"collection_status": "failed", "collection_error": _sql_failure_error(result, host_name), "error_category": _sql_error_category(result.stdout, result.stderr, result.returncode)})
             details.append(base)
             if logger:
                 logger.warning("DB resource SQL failed for %s/%s: %s", db_unique_name, sid, base["collection_error"])
@@ -685,11 +695,11 @@ def _collect_db_resource_details(
         try:
             parsed = _parse_db_resource_sql_output(result.stdout)
         except ValueError as exc:
-            base.update({"collection_status": "failed", "collection_error": str(exc)})
+            base.update({"collection_status": "failed", "collection_error": str(exc), "error_category": "UNKNOWN"})
             details.append(base)
             continue
         base.update(parsed)
-        base.update({"collection_status": "success", "collection_error": ""})
+        base.update({"collection_status": "success", "collection_error": "", "error_category": ""})
         details.append(base)
     return details
 
@@ -708,9 +718,12 @@ def _db_resource_base_record(cluster: str, host: str, address: str, collected_at
             "size_source": "",
             "collection_status": "",
             "collection_error": "",
+            "error_category": "",
             "sql_returncode": "",
+            "sql_stdout": "",
             "sql_stderr": "",
             "Collected_At": collected_at,
+            "mapping_source": "",
         }
     )
     return row
@@ -763,8 +776,65 @@ def _should_fallback_to_dba(output: str) -> bool:
     return any(marker in upper for marker in _CDB_FALLBACK_ERRORS)
 
 
-def _sql_failure_error(result) -> str:
-    detail = (result.stderr or result.stdout or f"sqlplus exited with {result.returncode}").strip()
+_ORACLE_MESSAGE_PATTERN = re.compile(r"\b(ORA-\d{5}|SP2-\d{4}|TNS-\d{5})\b[^\r\n]*", re.IGNORECASE)
+
+
+def _extract_sql_error_messages(stdout: str = "", stderr: str = "") -> list[str]:
+    """Extract Oracle/sqlplus/TNS diagnostic lines from stdout and stderr."""
+
+    messages: list[str] = []
+    seen: set[str] = set()
+    for text in (stdout or "", stderr or ""):
+        for match in _ORACLE_MESSAGE_PATTERN.finditer(text):
+            message = match.group(0).strip()
+            key = message.upper()
+            if message and key not in seen:
+                seen.add(key)
+                messages.append(message)
+    return messages
+
+
+def _is_connection_closed_noise(text: str, host_name: str = "") -> bool:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return True
+    pattern = re.compile(r"^Connection to .+ closed\.?$", re.IGNORECASE)
+    return all(pattern.match(line) for line in lines)
+
+
+def _sql_error_category(stdout: str = "", stderr: str = "", returncode: int | None = None, host_name: str = "") -> str:
+    combined = f"{stdout or ''}\n{stderr or ''}"
+    upper = combined.upper()
+    if "ORA-" in upper:
+        return "ORACLE_ERROR"
+    if "SP2-" in upper:
+        return "SQLPLUS_ERROR"
+    if "TNS-" in upper:
+        return "TNS_ERROR"
+    if stderr and not _is_connection_closed_noise(stderr, host_name):
+        return "SSH_ERROR"
+    if returncode not in (None, 0):
+        return "UNKNOWN"
+    return "UNKNOWN"
+
+
+def _sql_failure_error(result, host_name: str = "") -> str:
+    oracle_messages = _extract_sql_error_messages(result.stdout, result.stderr)
+    if oracle_messages:
+        return " | ".join(oracle_messages)
+
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    detail = ""
+    if stderr and not _is_connection_closed_noise(stderr, host_name):
+        detail = stderr
+    elif stdout:
+        detail = stdout
+    elif stderr:
+        detail = stderr
+    else:
+        detail = f"sqlplus exited with {result.returncode}"
+
     if "sudo" in detail.lower() and ("password" in detail.lower() or "not allowed" in detail.lower() or "a password is required" in detail.lower()):
         return f"{detail}; configure NOPASSWD sudo for the service account"
     return detail
