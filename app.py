@@ -525,6 +525,7 @@ MEMORY_ANALYTICS_NUMERIC_COLUMNS = [
     "pga_used_pct_of_target_max", "pga_aggregate_target_gb_max",
     "total_sga_used_gb_max", "total_pga_allocated_gb_max",
     "total_sga_max_size_gb", "total_pga_target_gb",
+    "database_count", "instance_count", "db_instances",
     "critical_count", "warning_count", "info_count",
 ]
 
@@ -552,14 +553,26 @@ def build_memory_cluster_rollup(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
         return pd.DataFrame()
     table = normalize_db_memory_summary(summary) if "warning_level" not in summary.columns else summary.copy()
-    table = ensure_columns(table, ["cluster", "instance_name", "sga_used_gb_max", "pga_allocated_gb_max", "sga_max_size_gb_max", "pga_aggregate_target_gb_max", "warning_severity"])
+    table = ensure_columns(
+        table,
+        [
+            "cluster", "db_unique_name", "db_name", "instance_name", "sga_used_gb_max",
+            "pga_allocated_gb_max", "sga_max_size_gb_max", "pga_aggregate_target_gb_max",
+            "warning_severity",
+        ],
+    )
+    database_identity = table["db_unique_name"].fillna(table["db_name"])
+    table = table.assign(_database_identity=database_identity)
     rollup = table.groupby("cluster", dropna=False).agg(
-        db_instances=("instance_name", "count"),
+        database_count=("_database_identity", "nunique"),
+        instance_count=("instance_name", "nunique"),
         total_sga_used_gb_max=("sga_used_gb_max", "sum"),
         total_pga_allocated_gb_max=("pga_allocated_gb_max", "sum"),
         total_sga_max_size_gb=("sga_max_size_gb_max", "sum"),
         total_pga_target_gb=("pga_aggregate_target_gb_max", "sum"),
     ).reset_index()
+    # Keep the legacy helper column for callers that used the original fallback schema.
+    rollup["db_instances"] = rollup["instance_count"]
     for severity in ["CRITICAL", "WARNING", "INFO"]:
         counts = table[table["warning_severity"] == severity].groupby("cluster", dropna=False).size()
         rollup[f"{severity.lower()}_count"] = rollup["cluster"].map(counts).fillna(0).astype(int)
@@ -684,23 +697,24 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     st.caption("Executive risk, capacity, and action view from local collector output only.")
     render_kpis(health, asm, hugepages, db_resources, db_errors)
 
-    st.markdown("### Database Memory")
-    show_source(memory_summary_path)
-    memory_cols = st.columns(4)
-    critical_memory = int((memory_summary["warning_severity"] == "CRITICAL").sum()) if not memory_summary.empty else 0
-    warning_memory = int((memory_summary["warning_severity"] == "WARNING").sum()) if not memory_summary.empty else 0
-    top_sga = memory_summary.nlargest(1, "sga_used_gb_max") if not memory_summary.empty else pd.DataFrame()
-    top_pga = memory_summary.nlargest(1, "pga_allocated_gb_max") if not memory_summary.empty else pd.DataFrame()
-    with memory_cols[0]:
-        card("Critical memory findings", critical_memory, "CRITICAL" if critical_memory else "OK")
-    with memory_cols[1]:
-        card("Warning memory findings", warning_memory, "WARNING" if warning_memory else "OK")
-    with memory_cols[2]:
-        value = "N/A" if top_sga.empty else f"{top_sga.iloc[0]['db_name']} / {top_sga.iloc[0]['instance_name']} ({top_sga.iloc[0]['sga_used_gb_max']:,.1f} GB)"
-        card("Top SGA consumer", value, "neutral")
-    with memory_cols[3]:
-        value = "N/A" if top_pga.empty else f"{top_pga.iloc[0]['db_name']} / {top_pga.iloc[0]['instance_name']} ({top_pga.iloc[0]['pga_allocated_gb_max']:,.1f} GB)"
-        card("Top PGA consumer", value, "neutral")
+    if memory_summary_path is not None and not memory_summary.empty:
+        st.markdown("### Database Memory")
+        show_source(memory_summary_path)
+        memory_cols = st.columns(4)
+        critical_memory = int((memory_summary["warning_severity"] == "CRITICAL").sum())
+        warning_memory = int((memory_summary["warning_severity"] == "WARNING").sum())
+        top_sga = memory_summary.nlargest(1, "sga_used_gb_max")
+        top_pga = memory_summary.nlargest(1, "pga_allocated_gb_max")
+        with memory_cols[0]:
+            card("Critical memory findings", critical_memory, "CRITICAL" if critical_memory else "OK")
+        with memory_cols[1]:
+            card("Warning memory findings", warning_memory, "WARNING" if warning_memory else "OK")
+        with memory_cols[2]:
+            value = f"{top_sga.iloc[0]['db_name']} / {top_sga.iloc[0]['instance_name']} ({top_sga.iloc[0]['sga_used_gb_max']:,.1f} GB)"
+            card("Top SGA consumer", value, "neutral")
+        with memory_cols[3]:
+            value = f"{top_pga.iloc[0]['db_name']} / {top_pga.iloc[0]['instance_name']} ({top_pga.iloc[0]['pga_allocated_gb_max']:,.1f} GB)"
+            card("Top PGA consumer", value, "neutral")
 
     st.markdown("### Critical Issues")
     show_source(health_path)
@@ -1205,10 +1219,19 @@ def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     with c2:
         pga_long = table.melt(
             id_vars=["end_time", "db_name", "instance_name"],
-            value_vars=["pga_aggregate_target_gb", "pga_allocated_gb", "pga_used_gb"],
+            value_vars=[
+                "pga_aggregate_target_gb", "pga_aggregate_limit_gb",
+                "pga_allocated_gb", "pga_used_gb",
+            ],
             var_name="metric", value_name="gb",
         )
-        st.plotly_chart(px.line(pga_long, x="end_time", y="gb", color="metric", line_dash="instance_name", title="PGA target vs allocated vs used"), use_container_width=True)
+        st.plotly_chart(
+            px.line(
+                pga_long, x="end_time", y="gb", color="metric", line_dash="instance_name",
+                title="PGA target and limit vs allocated and used",
+            ),
+            use_container_width=True,
+        )
 
     pct_table = table.copy()
     pct_table["pga_used_pct_of_target"] = (pct_table["pga_used_gb"] / pct_table["pga_aggregate_target_gb"].replace(0, pd.NA)) * 100
@@ -1217,7 +1240,18 @@ def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
                 title="PGA used percentage over target", labels={"pga_used_pct_of_target": "% of PGA target"}),
         use_container_width=True,
     )
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    st.markdown("### Top memory snapshots")
+    snapshot_columns = [
+        "cluster", "db_name", "instance_name", "end_time", "sga_used_gb",
+        "sga_buffer_cache_gb", "sga_shared_pool_gb", "pga_allocated_gb", "pga_used_gb",
+    ]
+    top_snapshots = table.sort_values(
+        ["sga_used_gb", "pga_allocated_gb"], ascending=False, na_position="last",
+    ).head(20)
+    st.dataframe(top_snapshots[snapshot_columns], use_container_width=True, hide_index=True)
+
+    with st.expander("All normalized memory history rows"):
+        st.dataframe(table, use_container_width=True, hide_index=True)
 
 
 def _memory_consumer_label(table: pd.DataFrame) -> pd.Series:
@@ -1246,7 +1280,7 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         ("DB instances analyzed", len(summary), "neutral"),
         ("Critical memory findings", critical, "CRITICAL" if critical else "OK"),
         ("Warning memory findings", warning, "WARNING" if warning else "OK"),
-        ("Info findings", info, "INFO" if info else "OK"),
+        ("Info memory findings", info, "INFO" if info else "OK"),
         ("Total SGA max GB", f"{summary['sga_max_size_gb_max'].sum(skipna=True):,.1f}", "neutral"),
         ("Total SGA used max GB", f"{summary['sga_used_gb_max'].sum(skipna=True):,.1f}", "neutral"),
         ("Total PGA target GB", f"{summary['pga_aggregate_target_gb_max'].sum(skipna=True):,.1f}", "neutral"),
@@ -1264,11 +1298,17 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         rollup = build_memory_cluster_rollup(summary)
     else:
         show_source(rollup_path)
-    rollup_numeric = ["total_sga_used_gb_max", "total_pga_allocated_gb_max", "critical_count", "warning_count", "info_count"]
-    rollup = ensure_columns(rollup, ["cluster"] + rollup_numeric)
-    for column in rollup_numeric:
+    if "instance_count" not in rollup.columns and "db_instances" in rollup.columns:
+        rollup["instance_count"] = rollup["db_instances"]
+    rollup_columns = [
+        "cluster", "database_count", "instance_count", "total_sga_max_size_gb",
+        "total_sga_used_gb_max", "total_pga_target_gb", "total_pga_allocated_gb_max",
+        "critical_count", "warning_count", "info_count",
+    ]
+    rollup = ensure_columns(rollup, rollup_columns)
+    for column in rollup_columns[1:]:
         rollup[column] = pd.to_numeric(rollup[column], errors="coerce")
-    st.dataframe(rollup, use_container_width=True, hide_index=True)
+    st.dataframe(rollup[rollup_columns], use_container_width=True, hide_index=True)
     rc1, rc2, rc3 = st.columns(3)
     with rc1:
         st.plotly_chart(px.bar(rollup, x="cluster", y="total_sga_used_gb_max", title="Total SGA used max by cluster"), use_container_width=True)
@@ -1306,7 +1346,12 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         warnings = summary[summary["warning_severity"] != "OK"].copy()
     else:
         show_source(warnings_path)
-    warning_columns = ["cluster", "db_unique_name", "instance_name", "host_name", "warning_severity", "warnings", "sga_growth_headroom_gb", "pga_used_pct_of_target_max", "pga_allocated_gb_max", "pga_aggregate_target_gb_max"]
+    warning_columns = [
+        "cluster", "db_unique_name", "instance_name", "host_name", "warning_severity",
+        "warnings", "info_warnings", "warning_warnings", "critical_warnings",
+        "sga_growth_headroom_gb", "pga_used_pct_of_target_max", "pga_allocated_gb_max",
+        "pga_aggregate_target_gb_max",
+    ]
     warnings = ensure_columns(warnings, warning_columns + ["warning_level"])
     if warnings.empty:
         st.success("No memory warnings found.")
