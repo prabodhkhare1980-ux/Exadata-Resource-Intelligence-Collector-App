@@ -55,6 +55,11 @@ collection:
     timeout_seconds: 90
     collect_cpu_iops: true
     collect_memory_history: true
+  db_memory_history:
+    warning_thresholds:
+      sga_near_max_pct: 98
+      pga_used_pct_target: 80
+      pga_alloc_pct_target: 100
   debug:
     enabled: false
   ssh:

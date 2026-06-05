@@ -530,8 +530,21 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_performance_errors_json(db_performance_records, inventory.output_dir)
     write_db_memory_history_csv(db_memory_records, inventory.output_dir)
     write_db_memory_history_json(db_memory_records, inventory.output_dir)
-    write_db_memory_history_summary_csv(db_memory_records, inventory.output_dir)
-    write_db_memory_history_summary_json(db_memory_records, inventory.output_dir)
+    db_memory_warning_thresholds = {
+        "sga_near_max_pct": inventory.db_memory_sga_near_max_pct,
+        "pga_used_pct_target": inventory.db_memory_pga_used_pct_target,
+        "pga_alloc_pct_target": inventory.db_memory_pga_alloc_pct_target,
+    }
+    write_db_memory_history_summary_csv(
+        db_memory_records,
+        inventory.output_dir,
+        **db_memory_warning_thresholds,
+    )
+    write_db_memory_history_summary_json(
+        db_memory_records,
+        inventory.output_dir,
+        **db_memory_warning_thresholds,
+    )
     write_db_memory_cluster_summary_csv(db_memory_records, inventory.output_dir)
     write_db_memory_cluster_summary_json(db_memory_records, inventory.output_dir)
     write_db_memory_history_errors_csv(db_memory_records, inventory.output_dir)
@@ -857,6 +870,9 @@ def main(argv: list[str] | None = None) -> int:
                 db_performance_timeout_seconds=inventory.db_performance_timeout_seconds,
                 db_performance_collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
                 db_performance_collect_memory_history=inventory.db_performance_collect_memory_history,
+                db_memory_sga_near_max_pct=inventory.db_memory_sga_near_max_pct,
+                db_memory_pga_used_pct_target=inventory.db_memory_pga_used_pct_target,
+                db_memory_pga_alloc_pct_target=inventory.db_memory_pga_alloc_pct_target,
             )
         if args.max_hosts_per_cluster is not None:
             if args.max_hosts_per_cluster < 1:
@@ -881,6 +897,9 @@ def main(argv: list[str] | None = None) -> int:
                 db_performance_timeout_seconds=inventory.db_performance_timeout_seconds,
                 db_performance_collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
                 db_performance_collect_memory_history=inventory.db_performance_collect_memory_history,
+                db_memory_sga_near_max_pct=inventory.db_memory_sga_near_max_pct,
+                db_memory_pga_used_pct_target=inventory.db_memory_pga_used_pct_target,
+                db_memory_pga_alloc_pct_target=inventory.db_memory_pga_alloc_pct_target,
             )
         configure_logging(inventory.logs_dir, args.verbose)
         if args.show_inventory:

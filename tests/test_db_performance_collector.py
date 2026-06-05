@@ -614,21 +614,12 @@ def test_db_memory_history_summary_rollup_and_warnings(tmp_path: Path) -> None:
     assert row["pga_used_pct_of_target_max"] == 81.25
     assert row["pga_max_allocated_gb_max"] == 8.0
     assert row["sga_growth_headroom_gb"] == 1.0
-    assert row["configuration_warnings"] == "SGA_USED_OVER_90_PCT"
-    assert row["operational_warnings"] == "PGA_USED_OVER_TARGET"
-    assert row["informational_warnings"] == "SGA_USED_OVER_90_PCT"
+    assert row["info_warnings"] == "SGA_USED_OVER_90_PCT"
     assert row["warning_warnings"] == "PGA_USED_OVER_TARGET"
     assert row["critical_warnings"] == ""
     assert row["warning_count"] == 2
     assert row["warning_severity"] == "WARNING"
-    assert row["warnings"] == ";".join(
-        [
-            "PGA_ALLOC_OVER_90_PCT_TARGET",
-            "PGA_LIMIT_ZERO",
-            "PGA_USED_OVER_80_PCT_TARGET",
-            "SGA_USED_OVER_90_PCT",
-        ]
-    )
+    assert row["warnings"] == ("PGA_USED_OVER_TARGET;SGA_USED_OVER_90_PCT")
 
     write_db_memory_history_summary_csv(records, tmp_path)
     write_db_memory_history_summary_json(records, tmp_path)
@@ -637,6 +628,14 @@ def test_db_memory_history_summary_rollup_and_warnings(tmp_path: Path) -> None:
     ) as csv_file:
         csv_rows = list(csv.DictReader(csv_file))
     assert csv_rows[0]["snapshot_count"] == "2"
+    assert set(csv_rows[0]).isdisjoint(
+        {
+            "capacity_warnings",
+            "configuration_warnings",
+            "operational_warnings",
+            "informational_warnings",
+        }
+    )
     assert csv_rows[0]["warning_severity"] == "WARNING"
     assert csv_rows[0]["sga_growth_headroom_gb"] == "1.0"
     json_rows = json.loads(
@@ -644,7 +643,7 @@ def test_db_memory_history_summary_rollup_and_warnings(tmp_path: Path) -> None:
     )
     assert json_rows[0]["pga_allocated_gb_max"] == 7.5
     assert json_rows[0]["warning_count"] == 2
-    assert json_rows[0]["operational_warnings"] == "PGA_USED_OVER_TARGET"
+    assert json_rows[0]["warning_warnings"] == "PGA_USED_OVER_TARGET"
 
 
 def test_db_memory_cluster_summary_rollup_and_latest_totals(tmp_path: Path) -> None:
@@ -752,10 +751,11 @@ def test_db_memory_summary_warning_logic_includes_zero_target_and_null_safety() 
 
     assert rows[0]["sga_used_pct_of_target_avg"] == ""
     assert rows[0]["pga_used_pct_of_target_avg"] == ""
-    assert rows[0]["warnings"] == "PGA_LIMIT_ZERO;SGA_TARGET_ZERO"
-    assert rows[0]["configuration_warnings"] == "AMM_OR_MANUAL_SGA;PGA_LIMIT_ZERO"
-    assert rows[0]["informational_warnings"] == "AMM_OR_MANUAL_SGA;PGA_LIMIT_ZERO"
-    assert rows[0]["warning_count"] == 2
+    assert rows[0]["warnings"] == "AMM_OR_MANUAL_SGA;PGA_LIMIT_ZERO;SGA_TARGET_ZERO"
+    assert rows[0]["info_warnings"] == (
+        "AMM_OR_MANUAL_SGA;PGA_LIMIT_ZERO;SGA_TARGET_ZERO"
+    )
+    assert rows[0]["warning_count"] == 3
     assert rows[0]["warning_severity"] == "INFO"
 
 
@@ -782,8 +782,7 @@ def _memory_summary_row(**overrides: str) -> dict[str, object]:
 def test_sga_used_over_90_pct_is_informational_by_itself() -> None:
     row = _memory_summary_row(SGA_USED_GB="95")
 
-    assert row["configuration_warnings"] == "SGA_USED_OVER_90_PCT"
-    assert row["informational_warnings"] == "SGA_USED_OVER_90_PCT"
+    assert row["info_warnings"] == "SGA_USED_OVER_90_PCT"
     assert row["warning_warnings"] == ""
     assert row["critical_warnings"] == ""
     assert row["warning_count"] == 1
@@ -793,20 +792,85 @@ def test_sga_used_over_90_pct_is_informational_by_itself() -> None:
 def test_pga_allocation_over_target_is_critical() -> None:
     row = _memory_summary_row(PGA_ALLOCATED_GB="10.01")
 
-    assert row["operational_warnings"] == "PGA_ALLOC_OVER_TARGET"
+    assert row["info_warnings"] == ""
+    assert row["warning_warnings"] == ""
     assert row["critical_warnings"] == "PGA_ALLOC_OVER_TARGET"
     assert row["warning_count"] == 1
     assert row["warning_severity"] == "CRITICAL"
 
 
-def test_sga_target_zero_is_informational() -> None:
+def test_pga_used_over_target_is_warning() -> None:
+    row = _memory_summary_row(PGA_USED_GB="8")
+
+    assert row["info_warnings"] == ""
+    assert row["warning_warnings"] == "PGA_USED_OVER_TARGET"
+    assert row["critical_warnings"] == ""
+    assert row["warning_severity"] == "WARNING"
+
+
+def test_no_memory_warnings_has_ok_severity() -> None:
+    row = _memory_summary_row()
+
+    assert row["warnings"] == ""
+    assert row["info_warnings"] == ""
+    assert row["warning_warnings"] == ""
+    assert row["critical_warnings"] == ""
+    assert row["warning_count"] == 0
+    assert row["warning_severity"] == "OK"
+
+
+def test_memory_warning_codes_appear_in_only_one_category() -> None:
     row = _memory_summary_row(
-        SGA_TARGET_GB="0", SGA_MAX_SIZE_GB="10", SGA_USED_GB="5"
+        SGA_USED_GB="101",
+        PGA_AGGREGATE_LIMIT_GB="0",
+        PGA_ALLOCATED_GB="11",
+        PGA_USED_GB="8",
     )
 
+    categories = [
+        set(filter(None, str(row[column]).split(";")))
+        for column in ("info_warnings", "warning_warnings", "critical_warnings")
+    ]
+    assert categories[0].isdisjoint(categories[1])
+    assert categories[0].isdisjoint(categories[2])
+    assert categories[1].isdisjoint(categories[2])
+    assert row["warnings"] == ";".join(sorted(set().union(*categories)))
+    assert row["warning_count"] == len(set().union(*categories))
+
+
+def test_memory_warning_thresholds_are_configurable() -> None:
+    record = DBMemoryHistoryRecord(
+        Cluster="c1",
+        HOST_NAME="node1",
+        DB_NAME="DB1",
+        INSTANCE_NAME="DB11",
+        END_TIME="2026-06-01 00:00:00",
+        SGA_TARGET_GB="100",
+        SGA_MAX_SIZE_GB="100",
+        SGA_USED_GB="97",
+        PGA_AGGREGATE_TARGET_GB="10",
+        PGA_AGGREGATE_LIMIT_GB="20",
+        PGA_ALLOCATED_GB="10.5",
+        PGA_USED_GB="7.5",
+        db_unique_name="DB1_UNQ",
+    )
+
+    row = build_db_memory_history_summary_rows(
+        [record],
+        sga_near_max_pct=97,
+        pga_used_pct_target=75,
+        pga_alloc_pct_target=104,
+    )[0]
+
+    assert row["warning_warnings"] == "PGA_USED_OVER_TARGET;SGA_NEAR_MAX"
+    assert row["critical_warnings"] == "PGA_ALLOC_OVER_TARGET"
+
+
+def test_sga_target_zero_is_informational() -> None:
+    row = _memory_summary_row(SGA_TARGET_GB="0", SGA_MAX_SIZE_GB="10", SGA_USED_GB="5")
+
     assert row["sga_growth_headroom_gb"] == 5.0
-    assert row["configuration_warnings"] == "AMM_OR_MANUAL_SGA;SGA_TARGET_ZERO"
-    assert row["informational_warnings"] == "AMM_OR_MANUAL_SGA;SGA_TARGET_ZERO"
+    assert row["info_warnings"] == "AMM_OR_MANUAL_SGA;SGA_TARGET_ZERO"
     assert row["warning_warnings"] == ""
     assert row["warning_severity"] == "INFO"
 
@@ -819,20 +883,16 @@ def test_memory_warning_severity_uses_highest_of_multiple_types() -> None:
         PGA_USED_GB="8",
     )
 
-    assert row["capacity_warnings"] == "SGA_NEAR_MAX"
-    assert row["configuration_warnings"] == "PGA_LIMIT_ZERO;SGA_USED_OVER_90_PCT"
-    assert row["operational_warnings"] == "PGA_ALLOC_OVER_TARGET;PGA_USED_OVER_TARGET"
-    assert row["informational_warnings"] == "PGA_LIMIT_ZERO;SGA_USED_OVER_90_PCT"
+    assert row["info_warnings"] == "PGA_LIMIT_ZERO;SGA_USED_OVER_90_PCT"
     assert row["warning_warnings"] == "PGA_USED_OVER_TARGET;SGA_NEAR_MAX"
     assert row["critical_warnings"] == "PGA_ALLOC_OVER_TARGET"
     assert row["warning_count"] == 5
     assert row["warning_severity"] == "CRITICAL"
 
 
-def test_negative_sga_growth_headroom_is_critical() -> None:
+def test_sga_used_over_max_size_is_critical() -> None:
     row = _memory_summary_row(SGA_MAX_SIZE_GB="100", SGA_USED_GB="101")
 
     assert row["sga_growth_headroom_gb"] == -1.0
-    assert "SGA_GROWTH_HEADROOM_NEGATIVE" in row["capacity_warnings"]
-    assert "SGA_GROWTH_HEADROOM_NEGATIVE" in row["critical_warnings"]
+    assert row["critical_warnings"] == "SGA_USED_OVER_MAX_SIZE"
     assert row["warning_severity"] == "CRITICAL"
