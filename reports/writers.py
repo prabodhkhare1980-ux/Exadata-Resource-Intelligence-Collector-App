@@ -852,6 +852,7 @@ DB_MEMORY_SUMMARY_COLUMNS = [
     "sga_used_gb_max",
     "sga_used_pct_of_target_avg",
     "sga_used_pct_of_target_max",
+    "sga_growth_headroom_gb",
     "sga_buffer_cache_gb_avg",
     "sga_buffer_cache_gb_max",
     "sga_shared_pool_gb_avg",
@@ -869,6 +870,14 @@ DB_MEMORY_SUMMARY_COLUMNS = [
     "pga_used_pct_of_target_max",
     "pga_max_allocated_gb_max",
     "warnings",
+    "capacity_warnings",
+    "configuration_warnings",
+    "operational_warnings",
+    "informational_warnings",
+    "warning_warnings",
+    "critical_warnings",
+    "warning_count",
+    "warning_severity",
 ]
 
 DB_MEMORY_CLUSTER_SUMMARY_COLUMNS = [
@@ -970,61 +979,65 @@ def build_db_memory_history_summary_rows(
         pga_pct_values = _ratio_values(
             group_records, "PGA_USED_GB", "PGA_AGGREGATE_TARGET_GB"
         )
-        rows.append(
-            {
-                "Cluster": cluster,
-                "db_unique_name": db_unique_name,
-                "DB_NAME": db_name,
-                "INSTANCE_NAME": instance_name,
-                "HOST_NAME": host_name,
-                "snapshot_count": len(group_records),
-                "begin_time_min": min(
-                    (r.END_TIME for r in group_records if r.END_TIME), default=""
-                ),
-                "end_time_max": max(
-                    (r.END_TIME for r in group_records if r.END_TIME), default=""
-                ),
-                "sga_target_gb_max": _max_metric(group_records, "SGA_TARGET_GB"),
-                "sga_max_size_gb_max": _max_metric(group_records, "SGA_MAX_SIZE_GB"),
-                "sga_used_gb_avg": _avg_metric(group_records, "SGA_USED_GB"),
-                "sga_used_gb_max": _max_metric(group_records, "SGA_USED_GB"),
-                "sga_used_pct_of_target_avg": _avg_values(sga_pct_values),
-                "sga_used_pct_of_target_max": _max_values(sga_pct_values),
-                "sga_buffer_cache_gb_avg": _avg_metric(
-                    group_records, "SGA_BUFFER_CACHE_GB"
-                ),
-                "sga_buffer_cache_gb_max": _max_metric(
-                    group_records, "SGA_BUFFER_CACHE_GB"
-                ),
-                "sga_shared_pool_gb_avg": _avg_metric(
-                    group_records, "SGA_SHARED_POOL_GB"
-                ),
-                "sga_shared_pool_gb_max": _max_metric(
-                    group_records, "SGA_SHARED_POOL_GB"
-                ),
-                "sga_large_pool_gb_avg": _avg_metric(
-                    group_records, "SGA_LARGE_POOL_GB"
-                ),
-                "sga_other_gb_avg": _avg_metric(group_records, "SGA_OTHER_GB"),
-                "sga_other_gb_max": _max_metric(group_records, "SGA_OTHER_GB"),
-                "pga_aggregate_target_gb_max": _max_metric(
-                    group_records, "PGA_AGGREGATE_TARGET_GB"
-                ),
-                "pga_aggregate_limit_gb_max": _max_metric(
-                    group_records, "PGA_AGGREGATE_LIMIT_GB"
-                ),
-                "pga_allocated_gb_avg": _avg_metric(group_records, "PGA_ALLOCATED_GB"),
-                "pga_allocated_gb_max": _max_metric(group_records, "PGA_ALLOCATED_GB"),
-                "pga_used_gb_avg": _avg_metric(group_records, "PGA_USED_GB"),
-                "pga_used_gb_max": _max_metric(group_records, "PGA_USED_GB"),
-                "pga_used_pct_of_target_avg": _avg_values(pga_pct_values),
-                "pga_used_pct_of_target_max": _max_values(pga_pct_values),
-                "pga_max_allocated_gb_max": _max_metric(
-                    group_records, "PGA_MAX_ALLOCATED_GB"
-                ),
-                "warnings": ";".join(_db_memory_warning_flags(group_records)),
-            }
-        )
+        sga_max_size = _max_metric(group_records, "SGA_MAX_SIZE_GB")
+        sga_used_max = _max_metric(group_records, "SGA_USED_GB")
+        row: dict[str, object] = {
+            "Cluster": cluster,
+            "db_unique_name": db_unique_name,
+            "DB_NAME": db_name,
+            "INSTANCE_NAME": instance_name,
+            "HOST_NAME": host_name,
+            "snapshot_count": len(group_records),
+            "begin_time_min": min(
+                (r.END_TIME for r in group_records if r.END_TIME), default=""
+            ),
+            "end_time_max": max(
+                (r.END_TIME for r in group_records if r.END_TIME), default=""
+            ),
+            "sga_target_gb_max": _max_metric(group_records, "SGA_TARGET_GB"),
+            "sga_max_size_gb_max": sga_max_size,
+            "sga_used_gb_avg": _avg_metric(group_records, "SGA_USED_GB"),
+            "sga_used_gb_max": sga_used_max,
+            "sga_used_pct_of_target_avg": _avg_values(sga_pct_values),
+            "sga_used_pct_of_target_max": _max_values(sga_pct_values),
+            "sga_growth_headroom_gb": _metric_difference(
+                sga_max_size, sga_used_max
+            ),
+            "sga_buffer_cache_gb_avg": _avg_metric(
+                group_records, "SGA_BUFFER_CACHE_GB"
+            ),
+            "sga_buffer_cache_gb_max": _max_metric(
+                group_records, "SGA_BUFFER_CACHE_GB"
+            ),
+            "sga_shared_pool_gb_avg": _avg_metric(
+                group_records, "SGA_SHARED_POOL_GB"
+            ),
+            "sga_shared_pool_gb_max": _max_metric(
+                group_records, "SGA_SHARED_POOL_GB"
+            ),
+            "sga_large_pool_gb_avg": _avg_metric(
+                group_records, "SGA_LARGE_POOL_GB"
+            ),
+            "sga_other_gb_avg": _avg_metric(group_records, "SGA_OTHER_GB"),
+            "sga_other_gb_max": _max_metric(group_records, "SGA_OTHER_GB"),
+            "pga_aggregate_target_gb_max": _max_metric(
+                group_records, "PGA_AGGREGATE_TARGET_GB"
+            ),
+            "pga_aggregate_limit_gb_max": _max_metric(
+                group_records, "PGA_AGGREGATE_LIMIT_GB"
+            ),
+            "pga_allocated_gb_avg": _avg_metric(group_records, "PGA_ALLOCATED_GB"),
+            "pga_allocated_gb_max": _max_metric(group_records, "PGA_ALLOCATED_GB"),
+            "pga_used_gb_avg": _avg_metric(group_records, "PGA_USED_GB"),
+            "pga_used_gb_max": _max_metric(group_records, "PGA_USED_GB"),
+            "pga_used_pct_of_target_avg": _avg_values(pga_pct_values),
+            "pga_used_pct_of_target_max": _max_values(pga_pct_values),
+            "pga_max_allocated_gb_max": _max_metric(
+                group_records, "PGA_MAX_ALLOCATED_GB"
+            ),
+        }
+        row.update(_db_memory_warning_summary(row, group_records))
+        rows.append(row)
     return rows
 
 
@@ -1144,7 +1157,21 @@ def _round_metric(value: float) -> float:
     return rounded
 
 
-def _db_memory_warning_flags(records: Iterable[DBMemoryHistoryRecord]) -> list[str]:
+def _metric_difference(
+    minuend: float | str, subtrahend: float | str
+) -> float | str:
+    left = _safe_float(minuend)
+    right = _safe_float(subtrahend)
+    if left is None or right is None:
+        return ""
+    return _round_metric(left - right)
+
+
+def _db_memory_legacy_warning_flags(
+    records: Iterable[DBMemoryHistoryRecord],
+) -> list[str]:
+    """Retain the original warning text for downstream compatibility."""
+
     warnings: set[str] = set()
     for record in records:
         sga_target = _safe_float(record.SGA_TARGET_GB)
@@ -1152,7 +1179,7 @@ def _db_memory_warning_flags(records: Iterable[DBMemoryHistoryRecord]) -> list[s
         sga_max = _safe_float(record.SGA_MAX_SIZE_GB)
         pga_target = _safe_float(record.PGA_AGGREGATE_TARGET_GB)
         pga_limit = _safe_float(record.PGA_AGGREGATE_LIMIT_GB)
-        pga_alloc = _safe_float(record.PGA_ALLOCATED_GB)
+        pga_allocated = _safe_float(record.PGA_ALLOCATED_GB)
         pga_used = _safe_float(record.PGA_USED_GB)
         if sga_target == 0 and (sga_used or 0) > 0:
             warnings.add("SGA_TARGET_ZERO")
@@ -1166,11 +1193,89 @@ def _db_memory_warning_flags(records: Iterable[DBMemoryHistoryRecord]) -> list[s
         if pga_target and pga_target > 0:
             if pga_used is not None and pga_used / pga_target >= 0.8:
                 warnings.add("PGA_USED_OVER_80_PCT_TARGET")
-            if pga_alloc is not None and pga_alloc / pga_target >= 0.9:
+            if pga_allocated is not None and pga_allocated / pga_target >= 0.9:
                 warnings.add("PGA_ALLOC_OVER_90_PCT_TARGET")
         if pga_limit == 0:
             warnings.add("PGA_LIMIT_ZERO")
     return sorted(warnings)
+
+
+def _db_memory_warning_summary(
+    row: dict[str, object], records: Iterable[DBMemoryHistoryRecord]
+) -> dict[str, object]:
+    """Classify memory findings by domain and severity for a summary row."""
+
+    capacity: set[str] = set()
+    configuration: set[str] = set()
+    operational: set[str] = set()
+    informational: set[str] = set()
+    warning: set[str] = set()
+    critical: set[str] = set()
+
+    sga_target = _safe_float(row.get("sga_target_gb_max"))
+    sga_max = _safe_float(row.get("sga_max_size_gb_max"))
+    sga_used_avg = _safe_float(row.get("sga_used_gb_avg"))
+    sga_used_max = _safe_float(row.get("sga_used_gb_max"))
+    sga_headroom = _safe_float(row.get("sga_growth_headroom_gb"))
+    pga_target = _safe_float(row.get("pga_aggregate_target_gb_max"))
+    pga_limit = _safe_float(row.get("pga_aggregate_limit_gb_max"))
+    pga_allocated = _safe_float(row.get("pga_allocated_gb_max"))
+    pga_used_pct = _safe_float(row.get("pga_used_pct_of_target_max"))
+    legacy_warnings = _db_memory_legacy_warning_flags(records)
+
+    if sga_target == 0 and sga_max is not None and sga_max > 0:
+        configuration.add("SGA_TARGET_ZERO")
+        informational.add("SGA_TARGET_ZERO")
+    if sga_target == 0 and sga_used_avg is not None and sga_used_avg > 0:
+        configuration.add("AMM_OR_MANUAL_SGA")
+        informational.add("AMM_OR_MANUAL_SGA")
+    if sga_max is not None and sga_max > 0 and sga_used_max is not None:
+        sga_used_ratio = sga_used_max / sga_max
+        if sga_used_ratio >= 0.9:
+            configuration.add("SGA_USED_OVER_90_PCT")
+            informational.add("SGA_USED_OVER_90_PCT")
+        if sga_used_ratio >= 0.98:
+            capacity.add("SGA_NEAR_MAX")
+            warning.add("SGA_NEAR_MAX")
+    if sga_headroom is not None and sga_headroom < 0:
+        capacity.add("SGA_GROWTH_HEADROOM_NEGATIVE")
+        critical.add("SGA_GROWTH_HEADROOM_NEGATIVE")
+
+    if pga_used_pct is not None and pga_used_pct >= 80:
+        operational.add("PGA_USED_OVER_TARGET")
+        warning.add("PGA_USED_OVER_TARGET")
+    if (
+        pga_target is not None
+        and pga_allocated is not None
+        and pga_allocated > pga_target
+    ):
+        operational.add("PGA_ALLOC_OVER_TARGET")
+        critical.add("PGA_ALLOC_OVER_TARGET")
+    if pga_limit == 0:
+        configuration.add("PGA_LIMIT_ZERO")
+        informational.add("PGA_LIMIT_ZERO")
+
+    all_warnings = informational | warning | critical
+    if critical:
+        severity = "CRITICAL"
+    elif warning:
+        severity = "WARNING"
+    elif informational:
+        severity = "INFO"
+    else:
+        severity = "OK"
+
+    return {
+        "warnings": ";".join(legacy_warnings),
+        "capacity_warnings": ";".join(sorted(capacity)),
+        "configuration_warnings": ";".join(sorted(configuration)),
+        "operational_warnings": ";".join(sorted(operational)),
+        "informational_warnings": ";".join(sorted(informational)),
+        "warning_warnings": ";".join(sorted(warning)),
+        "critical_warnings": ";".join(sorted(critical)),
+        "warning_count": len(all_warnings),
+        "warning_severity": severity,
+    }
 
 
 def write_db_memory_history_errors_csv(
