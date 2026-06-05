@@ -1232,16 +1232,14 @@ def _db_memory_warning_summary(
                 raise ValueError(
                     "sga_near_max_severity must be either 'info' or 'warning'."
                 )
-            can_grow_with_limited_headroom = (
-                sga_target is not None
-                and sga_target < sga_max
-                and sga_growth_headroom is not None
-                and sga_growth_headroom <= 1
+            target_equals_max = sga_target is not None and sga_target == sga_max
+            target_below_max = sga_target is not None and sga_target < sga_max
+            limited_growth_headroom = (
+                sga_growth_headroom is not None and sga_growth_headroom <= 1
             )
-            # Near-max allocation is informational by default. Even when the
-            # configured severity is warning, suppress warning noise unless the
-            # SGA can grow and no more than 1 GB of max-size headroom remains.
-            if can_grow_with_limited_headroom:
+            if target_equals_max:
+                informational.add("SGA_NEAR_MAX")
+            elif target_below_max and limited_growth_headroom:
                 warning.add("SGA_NEAR_MAX")
             else:
                 informational.add("SGA_NEAR_MAX")

@@ -888,6 +888,18 @@ def test_sga_near_max_is_warning_when_growth_headroom_is_one_gb() -> None:
     assert row["warning_severity"] == "WARNING"
 
 
+def test_sga_near_max_is_info_when_growth_headroom_exceeds_one_gb() -> None:
+    row = _memory_summary_row(
+        SGA_TARGET_GB="95", SGA_MAX_SIZE_GB="100", SGA_USED_GB="98.9"
+    )
+
+    assert row["sga_growth_headroom_gb"] == 1.1
+    assert row["info_warnings"] == "SGA_NEAR_MAX;SGA_USED_OVER_90_PCT"
+    assert row["warning_warnings"] == ""
+    assert row["critical_warnings"] == ""
+    assert row["warning_severity"] == "INFO"
+
+
 def test_sga_target_zero_is_informational() -> None:
     row = _memory_summary_row(SGA_TARGET_GB="0", SGA_MAX_SIZE_GB="10", SGA_USED_GB="5")
 
