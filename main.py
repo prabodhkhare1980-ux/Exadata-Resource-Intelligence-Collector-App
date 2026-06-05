@@ -531,6 +531,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_memory_history_csv(db_memory_records, inventory.output_dir)
     write_db_memory_history_json(db_memory_records, inventory.output_dir)
     db_memory_warning_thresholds = {
+        "sga_near_max_severity": inventory.db_memory_sga_near_max_severity,
         "sga_near_max_pct": inventory.db_memory_sga_near_max_pct,
         "pga_used_pct_target": inventory.db_memory_pga_used_pct_target,
         "pga_alloc_pct_target": inventory.db_memory_pga_alloc_pct_target,
@@ -870,6 +871,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_performance_timeout_seconds=inventory.db_performance_timeout_seconds,
                 db_performance_collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
                 db_performance_collect_memory_history=inventory.db_performance_collect_memory_history,
+                db_memory_sga_near_max_severity=inventory.db_memory_sga_near_max_severity,
                 db_memory_sga_near_max_pct=inventory.db_memory_sga_near_max_pct,
                 db_memory_pga_used_pct_target=inventory.db_memory_pga_used_pct_target,
                 db_memory_pga_alloc_pct_target=inventory.db_memory_pga_alloc_pct_target,
@@ -897,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_performance_timeout_seconds=inventory.db_performance_timeout_seconds,
                 db_performance_collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
                 db_performance_collect_memory_history=inventory.db_performance_collect_memory_history,
+                db_memory_sga_near_max_severity=inventory.db_memory_sga_near_max_severity,
                 db_memory_sga_near_max_pct=inventory.db_memory_sga_near_max_pct,
                 db_memory_pga_used_pct_target=inventory.db_memory_pga_used_pct_target,
                 db_memory_pga_alloc_pct_target=inventory.db_memory_pga_alloc_pct_target,
