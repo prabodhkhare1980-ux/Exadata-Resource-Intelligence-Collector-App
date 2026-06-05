@@ -122,6 +122,11 @@ collection:
     timeout_seconds: 90
     collect_cpu_iops: true
     collect_memory_history: true
+  db_memory_history:
+    warning_thresholds:
+      sga_near_max_pct: 98
+      pga_used_pct_target: 80
+      pga_alloc_pct_target: 100
 ```
 
 Outputs:
@@ -130,6 +135,17 @@ Outputs:
 - `output/db_performance_errors.csv` and `output/db_performance_errors.json` contain failed DB performance collection attempts with SQL stdout/stderr diagnostics.
 - `output/db_memory_history.csv` and `output/db_memory_history.json` contain successful AWR SGA/PGA memory history rows only.
 - `output/db_memory_history_errors.csv` and `output/db_memory_history_errors.json` contain failed DB memory history collection attempts with SQL stdout/stderr diagnostics.
+- `output/db_memory_history_summary.csv` and `output/db_memory_history_summary.json` roll history up per database instance and use a non-overlapping warning model. `info_warnings`, `warning_warnings`, and `critical_warnings` contain unique, sorted, semicolon-separated codes assigned to exactly one severity. The backward-compatible `warnings` field is the unique, sorted union of those three fields; `warning_count` counts that union, and `warning_severity` reports the highest populated severity (`CRITICAL`, `WARNING`, `INFO`, or `OK`).
+
+DB memory summary warning mapping:
+
+| Severity | Warning codes |
+| --- | --- |
+| INFO | `AMM_OR_MANUAL_SGA`, `SGA_TARGET_ZERO`, `PGA_LIMIT_ZERO`, `SGA_USED_OVER_90_PCT` |
+| WARNING | `SGA_NEAR_MAX`, `PGA_USED_OVER_TARGET` |
+| CRITICAL | `PGA_ALLOC_OVER_TARGET`, `SGA_USED_OVER_MAX_SIZE` |
+
+`PGA_USED_OVER_TARGET` uses `pga_used_pct_target` (inclusive), `PGA_ALLOC_OVER_TARGET` requires allocation above both the target and configured percentage threshold, and `SGA_NEAR_MAX` uses `sga_near_max_pct` (inclusive). The former overlapping `capacity_warnings`, `configuration_warnings`, `operational_warnings`, and `informational_warnings` columns are no longer generated.
 
 SQL is streamed inline through the existing SSH runner to `sqlplus -s / as sysdba`; no SQL files are copied and no remote temp SQL files are created. The collector reuses DB inventory/resource-detail discovery to select each local running `oracle_sid` and `oracle_home`.
 

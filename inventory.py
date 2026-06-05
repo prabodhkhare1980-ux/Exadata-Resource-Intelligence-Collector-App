@@ -54,6 +54,9 @@ class Inventory:
     db_performance_timeout_seconds: int = 90
     db_performance_collect_cpu_iops: bool = True
     db_performance_collect_memory_history: bool = True
+    db_memory_sga_near_max_pct: float = 98
+    db_memory_pga_used_pct_target: float = 80
+    db_memory_pga_alloc_pct_target: float = 100
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -146,6 +149,14 @@ def load_inventory(path: str | Path) -> Inventory:
     db_perf_cfg = collection.get("db_performance") or {}
     if not isinstance(db_perf_cfg, dict):
         raise ValueError("'collection.db_performance' must be a mapping.")
+    db_memory_cfg = collection.get("db_memory_history") or {}
+    if not isinstance(db_memory_cfg, dict):
+        raise ValueError("'collection.db_memory_history' must be a mapping.")
+    warning_thresholds = db_memory_cfg.get("warning_thresholds") or {}
+    if not isinstance(warning_thresholds, dict):
+        raise ValueError(
+            "'collection.db_memory_history.warning_thresholds' must be a mapping."
+        )
     return Inventory(
         clusters=clusters,
         output_dir=output_dir,
@@ -166,6 +177,15 @@ def load_inventory(path: str | Path) -> Inventory:
         db_performance_timeout_seconds=int(db_perf_cfg.get("timeout_seconds", 90)),
         db_performance_collect_cpu_iops=bool(db_perf_cfg.get("collect_cpu_iops", True)),
         db_performance_collect_memory_history=bool(db_perf_cfg.get("collect_memory_history", True)),
+        db_memory_sga_near_max_pct=float(
+            warning_thresholds.get("sga_near_max_pct", 98)
+        ),
+        db_memory_pga_used_pct_target=float(
+            warning_thresholds.get("pga_used_pct_target", 80)
+        ),
+        db_memory_pga_alloc_pct_target=float(
+            warning_thresholds.get("pga_alloc_pct_target", 100)
+        ),
     )
 
 
