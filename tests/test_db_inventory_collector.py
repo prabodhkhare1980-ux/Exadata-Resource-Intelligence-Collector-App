@@ -209,7 +209,9 @@ from collectors.db_inventory_collector import (
     DB_INVENTORY_SCRIPT,
     DBInventoryCollector,
     _build_gi_command,
+    _build_sqlplus_command,
     _collect_pmon_oratab_fallback_details,
+    _resolve_db_owner,
 )
 
 
@@ -303,3 +305,48 @@ def test_pmon_oratab_fallback_collects_local_sql_details() -> None:
     assert rows[0]["mapping_source"] == "pmon_oratab_fallback"
     assert rows[0]["collection_status"] == "success"
     assert rows[0]["DB_NAME"] == "DB1"
+
+
+class _DBOwnerRunner:
+    def __init__(self, result: CommandResult) -> None:
+        self.result = result
+        self.commands: list[str] = []
+
+    def run_command(self, host: FakeHost, command: str) -> CommandResult:
+        self.commands.append(command)
+        return self.result
+
+
+def test_sqlplus_command_uses_oracle_binary_owner() -> None:
+    runner = _DBOwnerRunner(_result(stdout="oracle\n"))
+
+    owner = _resolve_db_owner(runner, FakeHost(), "/u01/app/oracle/dbhome_1")
+    command = _build_sqlplus_command("/u01/app/oracle/dbhome_1", "DB1", owner)
+
+    assert owner == "oracle"
+    assert runner.commands == [
+        "stat -c '%U' /u01/app/oracle/dbhome_1/bin/oracle"
+    ]
+    assert command.startswith("sudo -n -u oracle env ORACLE_HOME=/u01/app/oracle/dbhome_1 ORACLE_SID=DB1 ")
+
+
+def test_sqlplus_command_supports_non_oracle_db_owner() -> None:
+    runner = _DBOwnerRunner(_result(stdout="dbadmin\n"))
+
+    owner = _resolve_db_owner(runner, FakeHost(), "/opt/oracle/dbhome")
+    command = _build_sqlplus_command("/opt/oracle/dbhome", "FIN1", owner)
+
+    assert owner == "dbadmin"
+    assert "sudo -n -u dbadmin env" in command
+    assert "ORACLE_HOME=/opt/oracle/dbhome" in command
+    assert "ORACLE_SID=FIN1" in command
+
+
+def test_sqlplus_owner_falls_back_when_oracle_binary_is_missing() -> None:
+    runner = _DBOwnerRunner(
+        _result(stderr="stat: cannot stat oracle: No such file or directory", returncode=1)
+    )
+
+    owner = _resolve_db_owner(runner, FakeHost(), "/missing/dbhome")
+
+    assert owner == "oracle"

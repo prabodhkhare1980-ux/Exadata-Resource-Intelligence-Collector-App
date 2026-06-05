@@ -6,9 +6,11 @@ import argparse
 import csv
 import json
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -143,7 +145,7 @@ def preflight(inventory: Inventory, debug_ssh: bool = False) -> int:
             key_readable = bool(
                 host.private_key
                 and Path(host.private_key).is_file()
-                and Path(host.private_key).stat().st_mode
+                and os.access(host.private_key, os.R_OK)
             )
             ssh_result = runner.run_command(host, "hostname")
             sudo_host = runner.run_command(host, "sudo -n hostname")
@@ -400,6 +402,28 @@ def _normalize_collected_tuple(
     return collected
 
 
+def _partition_asm_records(
+    records: list[ASMDiskgroupRecord],
+) -> tuple[list[ASMDiskgroupRecord], list[ASMDiskgroupRecord], list[ASMDiskgroupRecord]]:
+    diskgroup_records = [
+        record
+        for record in records
+        if record.record_type != "host_metadata"
+        and record.asm_collection_status == "success"
+        and bool(record.diskgroup_name)
+    ]
+    metadata_records = [
+        record for record in records if record.record_type == "host_metadata"
+    ]
+    failure_records = [
+        record
+        for record in records
+        if record.record_type != "host_metadata"
+        and (record.asm_collection_status != "success" or not record.diskgroup_name)
+    ]
+    return diskgroup_records, metadata_records, failure_records
+
+
 def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
     inventory.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -506,16 +530,24 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_resource_details_json(db_records, inventory.output_dir)
     write_db_resource_details_errors_csv(db_records, inventory.output_dir)
     write_db_resource_details_errors_json(db_records, inventory.output_dir)
+    diskgroup_records, metadata_records, failure_records = _partition_asm_records(
+        asm_records
+    )
+    diskgroup_output_records = [*diskgroup_records, *failure_records]
     write_asm_diskgroups_csv(
-        asm_records, inventory.output_dir, include_debug=inventory.asm_include_debug
+        diskgroup_output_records,
+        inventory.output_dir,
+        include_debug=inventory.asm_include_debug,
     )
     write_asm_diskgroups_json(
-        asm_records, inventory.output_dir, include_debug=inventory.asm_include_debug
+        diskgroup_output_records,
+        inventory.output_dir,
+        include_debug=inventory.asm_include_debug,
     )
-    write_asm_metadata_csv(asm_records, inventory.output_dir)
-    write_asm_metadata_json(asm_records, inventory.output_dir)
-    write_asm_summary_csv(asm_records, inventory.output_dir)
-    write_asm_summary_json(asm_records, inventory.output_dir)
+    write_asm_metadata_csv(metadata_records, inventory.output_dir)
+    write_asm_metadata_json(metadata_records, inventory.output_dir)
+    write_asm_summary_csv(diskgroup_records, inventory.output_dir)
+    write_asm_summary_json(diskgroup_records, inventory.output_dir)
     write_hugepages_csv(hugepages_records, inventory.output_dir)
     write_hugepages_json(hugepages_records, inventory.output_dir)
     write_version_inventory_csv(version_records, inventory.output_dir)
@@ -550,9 +582,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_memory_cluster_summary_json(db_memory_records, inventory.output_dir)
     write_db_memory_history_errors_csv(db_memory_records, inventory.output_dir)
     write_db_memory_history_errors_json(db_memory_records, inventory.output_dir)
+    health_asm_records = [*diskgroup_records, *failure_records]
     health_rows = build_health_summary_rows(
         os_records,
-        asm_records,
+        health_asm_records,
         hugepages_records,
         db_records,
         version_records,
@@ -561,7 +594,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     write_health_summary_csv(
         os_records,
-        asm_records,
+        health_asm_records,
         hugepages_records,
         db_records,
         inventory.output_dir,
@@ -571,7 +604,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     write_health_summary_json(
         os_records,
-        asm_records,
+        health_asm_records,
         hugepages_records,
         db_records,
         inventory.output_dir,
@@ -581,7 +614,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     write_health_summary_html(
         os_records,
-        asm_records,
+        health_asm_records,
         hugepages_records,
         db_records,
         inventory.output_dir,
@@ -661,16 +694,24 @@ def run_asm_only(
                     print(f"[ASM-DEBUG] sqlplus_stdout={summary.sqlplus_stdout}")
                 if summary.sqlplus_stderr:
                     print(f"[ASM-DEBUG] sqlplus_stderr={summary.sqlplus_stderr}")
+    diskgroup_records, metadata_records, failure_records = _partition_asm_records(
+        asm_records
+    )
+    diskgroup_output_records = [*diskgroup_records, *failure_records]
     write_asm_diskgroups_csv(
-        asm_records, inventory.output_dir, include_debug=inventory.asm_include_debug
+        diskgroup_output_records,
+        inventory.output_dir,
+        include_debug=inventory.asm_include_debug,
     )
     write_asm_diskgroups_json(
-        asm_records, inventory.output_dir, include_debug=inventory.asm_include_debug
+        diskgroup_output_records,
+        inventory.output_dir,
+        include_debug=inventory.asm_include_debug,
     )
-    write_asm_metadata_csv(asm_records, inventory.output_dir)
-    write_asm_metadata_json(asm_records, inventory.output_dir)
-    write_asm_summary_csv(asm_records, inventory.output_dir)
-    write_asm_summary_json(asm_records, inventory.output_dir)
+    write_asm_metadata_csv(metadata_records, inventory.output_dir)
+    write_asm_metadata_json(metadata_records, inventory.output_dir)
+    write_asm_summary_csv(diskgroup_records, inventory.output_dir)
+    write_asm_summary_json(diskgroup_records, inventory.output_dir)
     return 0
 
 
@@ -851,58 +892,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_clusters is not None:
             if args.max_clusters < 1:
                 raise ValueError("--max-clusters must be >= 1")
-            inventory = Inventory(
-                clusters=inventory.clusters,
-                output_dir=inventory.output_dir,
-                logs_dir=inventory.logs_dir,
-                parallel_enabled=inventory.parallel_enabled,
-                max_clusters=args.max_clusters,
-                max_hosts_per_cluster=inventory.max_hosts_per_cluster,
-                asm_enabled=inventory.asm_enabled,
-                asm_timeout_seconds=inventory.asm_timeout_seconds,
-                asm_fail_host_on_error=inventory.asm_fail_host_on_error,
-                asm_include_debug=inventory.asm_include_debug,
-                hugepages_enabled=inventory.hugepages_enabled,
-                hugepages_timeout_seconds=inventory.hugepages_timeout_seconds,
-                debug_enabled=inventory.debug_enabled,
-                db_performance_enabled=inventory.db_performance_enabled,
-                db_performance_use_awr=inventory.db_performance_use_awr,
-                db_performance_days_back=inventory.db_performance_days_back,
-                db_performance_timeout_seconds=inventory.db_performance_timeout_seconds,
-                db_performance_collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
-                db_performance_collect_memory_history=inventory.db_performance_collect_memory_history,
-                db_memory_sga_near_max_severity=inventory.db_memory_sga_near_max_severity,
-                db_memory_sga_near_max_pct=inventory.db_memory_sga_near_max_pct,
-                db_memory_pga_used_pct_target=inventory.db_memory_pga_used_pct_target,
-                db_memory_pga_alloc_pct_target=inventory.db_memory_pga_alloc_pct_target,
-            )
+            inventory = replace(inventory, max_clusters=args.max_clusters)
         if args.max_hosts_per_cluster is not None:
             if args.max_hosts_per_cluster < 1:
                 raise ValueError("--max-hosts-per-cluster must be >= 1")
-            inventory = Inventory(
-                clusters=inventory.clusters,
-                output_dir=inventory.output_dir,
-                logs_dir=inventory.logs_dir,
-                parallel_enabled=inventory.parallel_enabled,
-                max_clusters=inventory.max_clusters,
-                max_hosts_per_cluster=args.max_hosts_per_cluster,
-                asm_enabled=inventory.asm_enabled,
-                asm_timeout_seconds=inventory.asm_timeout_seconds,
-                asm_fail_host_on_error=inventory.asm_fail_host_on_error,
-                asm_include_debug=inventory.asm_include_debug,
-                hugepages_enabled=inventory.hugepages_enabled,
-                hugepages_timeout_seconds=inventory.hugepages_timeout_seconds,
-                debug_enabled=inventory.debug_enabled,
-                db_performance_enabled=inventory.db_performance_enabled,
-                db_performance_use_awr=inventory.db_performance_use_awr,
-                db_performance_days_back=inventory.db_performance_days_back,
-                db_performance_timeout_seconds=inventory.db_performance_timeout_seconds,
-                db_performance_collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
-                db_performance_collect_memory_history=inventory.db_performance_collect_memory_history,
-                db_memory_sga_near_max_severity=inventory.db_memory_sga_near_max_severity,
-                db_memory_sga_near_max_pct=inventory.db_memory_sga_near_max_pct,
-                db_memory_pga_used_pct_target=inventory.db_memory_pga_used_pct_target,
-                db_memory_pga_alloc_pct_target=inventory.db_memory_pga_alloc_pct_target,
+            inventory = replace(
+                inventory, max_hosts_per_cluster=args.max_hosts_per_cluster
             )
         configure_logging(inventory.logs_dir, args.verbose)
         if args.show_inventory:

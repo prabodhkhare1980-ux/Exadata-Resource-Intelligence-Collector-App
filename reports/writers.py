@@ -524,7 +524,7 @@ HEALTH_SUMMARY_FIELDS = [
 
 
 def write_asm_diskgroups_csv(
-    records: Iterable[ASMDiskgroupRecord],
+    diskgroup_records: Iterable[ASMDiskgroupRecord],
     output_dir: Path,
     *,
     include_debug: bool = False,
@@ -536,13 +536,13 @@ def write_asm_diskgroups_csv(
             csv_file, fieldnames=_asm_csv_fields(include_debug), extrasaction="ignore"
         )
         writer.writeheader()
-        for record in _diskgroup_records(records):
+        for record in diskgroup_records:
             writer.writerow(record.to_csv_row(include_debug=include_debug))
     return csv_path
 
 
 def write_asm_diskgroups_json(
-    records: Iterable[ASMDiskgroupRecord],
+    diskgroup_records: Iterable[ASMDiskgroupRecord],
     output_dir: Path,
     *,
     include_debug: bool = False,
@@ -553,7 +553,7 @@ def write_asm_diskgroups_json(
         json.dump(
             [
                 record.to_json_dict(include_debug=include_debug)
-                for record in _diskgroup_records(records)
+                for record in diskgroup_records
             ],
             json_file,
             indent=2,
@@ -563,7 +563,7 @@ def write_asm_diskgroups_json(
 
 
 def write_asm_metadata_csv(
-    records: Iterable[ASMDiskgroupRecord], output_dir: Path
+    metadata_records: Iterable[ASMDiskgroupRecord], output_dir: Path
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "asm_metadata.csv"
@@ -572,13 +572,13 @@ def write_asm_metadata_csv(
             csv_file, fieldnames=ASM_METADATA_FIELDS, extrasaction="ignore"
         )
         writer.writeheader()
-        for record in _metadata_records(records):
+        for record in metadata_records:
             writer.writerow(record.to_csv_row(include_debug=True))
     return csv_path
 
 
 def write_asm_metadata_json(
-    records: Iterable[ASMDiskgroupRecord], output_dir: Path
+    metadata_records: Iterable[ASMDiskgroupRecord], output_dir: Path
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "asm_metadata.json"
@@ -586,7 +586,7 @@ def write_asm_metadata_json(
         json.dump(
             [
                 record.to_json_dict(include_debug=True)
-                for record in _metadata_records(records)
+                for record in metadata_records
             ],
             json_file,
             indent=2,
@@ -1541,7 +1541,7 @@ def _filesystem_health_rows(
 
 def _asm_health_rows(records: Iterable[ASMDiskgroupRecord]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for record in _diskgroup_records(records):
+    for record in records:
         if record.asm_collection_status != "success" or not record.diskgroup_name:
             rows.append(
                 _health_row(
@@ -2161,17 +2161,6 @@ def _compact_status(status_text: str) -> str:
         return "discovered"
     return " | ".join(lines)
 
-
-def _diskgroup_records(
-    records: Iterable[ASMDiskgroupRecord],
-) -> list[ASMDiskgroupRecord]:
-    return [record for record in records if record.record_type != "host_metadata"]
-
-
-def _metadata_records(
-    records: Iterable[ASMDiskgroupRecord],
-) -> list[ASMDiskgroupRecord]:
-    return [record for record in records if record.record_type == "host_metadata"]
 
 
 def _asm_summary_rows(records: Iterable[ASMDiskgroupRecord]) -> list[dict[str, object]]:

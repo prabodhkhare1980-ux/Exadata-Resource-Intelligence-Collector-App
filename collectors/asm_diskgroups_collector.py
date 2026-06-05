@@ -73,24 +73,6 @@ class ASMDiskgroupRecord:
         return row
 
 
-class _ASMRecordList(list[ASMDiskgroupRecord]):
-    """Compatibility shim for legacy tests that iterated successful rows inconsistently."""
-
-    def __init__(self, records: list[ASMDiskgroupRecord]) -> None:
-        super().__init__(records)
-        self._iterations = 0
-
-    def __iter__(self):  # type: ignore[override]
-        self._iterations += 1
-        if self._iterations <= 2:
-            return super().__iter__()
-        return (record for record in list.__iter__(self) if record.record_type != "host_metadata")
-
-    def __getitem__(self, index):  # type: ignore[override]
-        if isinstance(index, int) and self._iterations >= 3:
-            return [record for record in list.__iter__(self) if record.record_type != "host_metadata"][index]
-        return super().__getitem__(index)
-
 
 class ASMDiskgroupCollector:
     def __init__(self, runner: SSHRunner, context: SharedHostContext | None = None, logger: logging.Logger | None = None) -> None:
@@ -204,11 +186,8 @@ class ASMDiskgroupCollector:
             {
                 "asm_command": asm_command,
                 "asm_returncode": str(asm_result.returncode),
-                "asmcmd_stdout": "",
-                "asmcmd_stderr": "",
                 "asm_stdout": asm_result.stdout,
                 "asm_stderr": asm_result.stderr,
-                "asm_returncode": str(asm_result.returncode),
                 "asmcmd_stdout": asm_result.stdout,
                 "asmcmd_stderr": asm_result.stderr,
                 "asm_collection_status": "success" if asm_result.ok else "failed",
@@ -247,7 +226,7 @@ class ASMDiskgroupCollector:
             logger.info("Completed ASM diskgroup collection: status=success rows=%s", len(rows))
         else:
             logger.warning("ASM diskgroup collection succeeded but no diskgroup rows were parsed")
-        return _ASMRecordList([metadata, *rows])
+        return [metadata, *rows]
 
     def _run_host_command(self, host: "HostConfig", key: str, command: str):
         if self.context is not None:
@@ -258,60 +237,6 @@ class ASMDiskgroupCollector:
 def _utc_timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
-
-def _with_timeout(remote_command: str, timeout_seconds: int) -> str:
-    return f"timeout {max(1, int(timeout_seconds))}s sh -c {shlex.quote(remote_command)}"
-
-
-def _parse_asm_identity(output: str) -> tuple[str, str]:
-    line = _first_nonempty_line(output)
-    if not line or "|" not in line:
-        return "", ""
-    asm_sid, grid_home = (part.strip() for part in line.split("|", 1))
-    return asm_sid, grid_home
-
-
-def _parse_grid_owner_identity(output: str) -> tuple[str, str]:
-    line = _first_nonempty_line(output)
-    if not line or "|" not in line:
-        return "", ""
-    grid_owner, asm_process = (part.strip() for part in line.split("|", 1))
-    return grid_owner, asm_process
-
-
-def _first_nonempty_line(output: str) -> str:
-    for line in output.splitlines():
-        stripped = _strip_shell_prompt(line).strip()
-        if stripped:
-            return stripped
-    return ""
-
-
-def _build_asmcmd_command(grid_owner: str, grid_home: str, asm_sid: str, timeout_seconds: int) -> str:
-    path = f"{grid_home}/bin:/usr/bin:/bin"
-    return " ".join(
-        [
-            "sudo",
-            "-n",
-            "-u",
-            shlex.quote(grid_owner),
-            "env",
-            f"ORACLE_HOME={shlex.quote(grid_home)}",
-            f"ORACLE_SID={shlex.quote(asm_sid)}",
-            f"PATH={shlex.quote(path)}",
-            "timeout",
-            f"{max(1, int(timeout_seconds))}s",
-            "asmcmd",
-            "lsdg",
-        ]
-    )
-
-
-def _asm_failure_reason(stderr: str, returncode: int) -> str:
-    detail = stderr.strip() or f"asmcmd exited with {returncode}"
-    if "sudo" in detail.lower() and ("password" in detail.lower() or "not allowed" in detail.lower() or "a password is required" in detail.lower()):
-        return f"{detail}; configure NOPASSWD sudo for the service account"
-    return detail
 
 
 def _build_host_metadata_record(
