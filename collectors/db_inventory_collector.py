@@ -743,19 +743,40 @@ def _execute_db_resource_sql(runner: SSHRunner | None, host, oracle_home: str, s
         return sql_executor(oracle_home, sid, sql, use_cdb_views)
     if runner is None:
         raise ValueError("runner is required when sql_executor is not supplied")
-    command = _build_sqlplus_command(oracle_home, sid)
+    db_owner = _resolve_db_owner(runner, host, oracle_home)
+    logging.getLogger(__name__).debug(
+        "Resolved DB SQL environment: db_owner=%s db_home=%s oracle_sid=%s",
+        db_owner,
+        oracle_home,
+        sid,
+    )
+    command = _build_sqlplus_command(oracle_home, sid, db_owner)
     ssh_command = [*runner._build_ssh_command(host, allocate_tty=getattr(host, "force_tty", False)), command]
     return runner._run(ssh_command, host, sql)
 
 
-def _build_sqlplus_command(oracle_home: str, sid: str) -> str:
+def _resolve_db_owner(runner: SSHRunner, host, oracle_home: str) -> str:
+    oracle_binary = f"{oracle_home}/bin/oracle"
+    result = runner.run_command(
+        host, f"stat -c '%U' {shlex.quote(oracle_binary)}"
+    )
+    if result.ok:
+        db_owner = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        if db_owner:
+            return db_owner
+    return "oracle"
+
+
+def _build_sqlplus_command(
+    oracle_home: str, sid: str, db_owner: str = "oracle"
+) -> str:
     path = f"{oracle_home}/bin:/usr/bin:/bin"
     return " ".join(
         [
             "sudo",
             "-n",
             "-u",
-            "oracle",
+            shlex.quote(db_owner),
             "env",
             f"ORACLE_HOME={shlex.quote(oracle_home)}",
             f"ORACLE_SID={shlex.quote(sid)}",

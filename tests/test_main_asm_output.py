@@ -64,3 +64,34 @@ def test_asm_script_template_is_deprecated_for_direct_commands() -> None:
 
     assert "direct SSH commands" in ASM_COLLECTION_SCRIPT
     assert "__ASM_TIMEOUT_SECONDS__" not in ASM_COLLECTION_SCRIPT
+
+
+def test_partition_asm_records_is_explicit() -> None:
+    diskgroup = ASMDiskgroupRecord(
+        cluster="c1",
+        host="h1",
+        address="10.0.0.1",
+        diskgroup_name="DATA",
+        asm_collection_status="success",
+    )
+    metadata = ASMDiskgroupRecord(
+        cluster="c1",
+        host="h1",
+        address="10.0.0.1",
+        record_type="host_metadata",
+        asm_collection_status="success",
+    )
+    failure = ASMDiskgroupRecord(
+        cluster="c1",
+        host="h2",
+        address="10.0.0.2",
+        asm_collection_status="failed_env",
+    )
+
+    diskgroup_records, metadata_records, failure_records = main._partition_asm_records(
+        [metadata, diskgroup, failure]
+    )
+
+    assert diskgroup_records == [diskgroup]
+    assert metadata_records == [metadata]
+    assert failure_records == [failure]

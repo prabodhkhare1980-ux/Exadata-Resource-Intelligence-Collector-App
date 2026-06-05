@@ -4,7 +4,18 @@
 
 Build a Python-based Exadata infrastructure intelligence and capacity collection system.
 
-Phase 1 foundation remains limited to SSH runner, YAML config, OS/filesystem/CPU/memory collectors, and CSV/JSON output.
+The root tree is the canonical implementation for now:
+
+- `main.py`
+- `inventory.py`
+- `ssh_runner.py`
+- `collectors/`
+- `reports/writers.py`
+- `app.py`
+
+The previous Phase 1 implementation under `src/exadata_ric/` has been retired. A future
+migration of the canonical modules into a package layout may happen later, but must not be
+combined with current collector or dashboard stabilization work.
 
 ## Authentication Design (Current)
 
@@ -40,6 +51,7 @@ DO NOT:
 - Create temp scripts on remote servers
 - Install packages on remote servers
 
-## Initial Scope
+## Current Scope
 
-No ASM/IORM/SQL/licensing/dashboard work in this phase.
+Keep changes focused on the canonical root implementation. Do not perform the future
+`src/exadata_ric/` package migration as part of unrelated cleanup or bug-fix work.

@@ -12,7 +12,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterable
 
-from collectors.db_inventory_collector import DBInventoryRecord, _sql_failure_error
+from collectors.db_inventory_collector import (
+    DBInventoryRecord,
+    _resolve_db_owner,
+    _sql_failure_error,
+)
 from ssh_runner import SSHRunner
 
 if TYPE_CHECKING:
@@ -811,14 +815,16 @@ def _parse_pipe_rows(
     return rows
 
 
-def _build_sqlplus_command(oracle_home: str, sid: str, timeout_seconds: int) -> str:
+def _build_sqlplus_command(
+    oracle_home: str, sid: str, timeout_seconds: int, db_owner: str = "oracle"
+) -> str:
     path = f"{oracle_home}/bin:/usr/bin:/bin"
     return " ".join(
         [
             "sudo",
             "-n",
             "-u",
-            "oracle",
+            shlex.quote(db_owner),
             "env",
             f"ORACLE_HOME={shlex.quote(oracle_home)}",
             f"ORACLE_SID={shlex.quote(sid)}",
@@ -841,7 +847,14 @@ def _execute_sql(
         return sql_executor(oracle_home, sid, sql, sql_kind)
     if runner is None:
         raise ValueError("runner is required when sql_executor is not supplied")
-    command = _build_sqlplus_command(oracle_home, sid, timeout_seconds)
+    db_owner = _resolve_db_owner(runner, host, oracle_home)
+    logging.getLogger(__name__).debug(
+        "Resolved DB SQL environment: db_owner=%s db_home=%s oracle_sid=%s",
+        db_owner,
+        oracle_home,
+        sid,
+    )
+    command = _build_sqlplus_command(oracle_home, sid, timeout_seconds, db_owner)
     ssh_command = [
         *runner._build_ssh_command(
             host, allocate_tty=getattr(host, "force_tty", False)

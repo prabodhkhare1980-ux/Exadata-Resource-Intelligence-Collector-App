@@ -55,13 +55,13 @@ def test_direct_command_collection_success() -> None:
     assert diskgroup_rows[1].total_mb == 75497472
     assert diskgroup_rows[1].free_mb == 48650676
     assert diskgroup_rows[1].usable_file_mb == 16206624
-    assert [row.diskgroup_name for row in rows] == ["DATAC1", "RECOC1"]
-    assert rows[0].total_mb == 301989888
-    assert rows[0].free_mb == 124454028
-    assert rows[0].usable_file_mb == 41474256
-    assert rows[1].total_mb == 75497472
-    assert rows[1].free_mb == 48650676
-    assert rows[1].usable_file_mb == 16206624
+    assert [row.diskgroup_name for row in diskgroup_rows] == ["DATAC1", "RECOC1"]
+    assert diskgroup_rows[0].total_mb == 301989888
+    assert diskgroup_rows[0].free_mb == 124454028
+    assert diskgroup_rows[0].usable_file_mb == 41474256
+    assert diskgroup_rows[1].total_mb == 75497472
+    assert diskgroup_rows[1].free_mb == 48650676
+    assert diskgroup_rows[1].usable_file_mb == 16206624
     assert "awk -F:" in runner.commands[0]
     assert "ps -eo user,args" in runner.commands[1]
     assert runner.commands[2] == (
