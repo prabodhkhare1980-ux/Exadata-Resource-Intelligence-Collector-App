@@ -893,6 +893,7 @@ def write_db_memory_history_summary_csv(
     records: Iterable[DBMemoryHistoryRecord],
     output_dir: Path,
     *,
+    sga_near_max_severity: str = "info",
     sga_near_max_pct: float = 98,
     pga_used_pct_target: float = 80,
     pga_alloc_pct_target: float = 100,
@@ -903,6 +904,7 @@ def write_db_memory_history_summary_csv(
     csv_path = output_dir / "db_memory_history_summary.csv"
     rows = build_db_memory_history_summary_rows(
         records,
+        sga_near_max_severity=sga_near_max_severity,
         sga_near_max_pct=sga_near_max_pct,
         pga_used_pct_target=pga_used_pct_target,
         pga_alloc_pct_target=pga_alloc_pct_target,
@@ -920,6 +922,7 @@ def write_db_memory_history_summary_json(
     records: Iterable[DBMemoryHistoryRecord],
     output_dir: Path,
     *,
+    sga_near_max_severity: str = "info",
     sga_near_max_pct: float = 98,
     pga_used_pct_target: float = 80,
     pga_alloc_pct_target: float = 100,
@@ -930,6 +933,7 @@ def write_db_memory_history_summary_json(
     json_path = output_dir / "db_memory_history_summary.json"
     rows = build_db_memory_history_summary_rows(
         records,
+        sga_near_max_severity=sga_near_max_severity,
         sga_near_max_pct=sga_near_max_pct,
         pga_used_pct_target=pga_used_pct_target,
         pga_alloc_pct_target=pga_alloc_pct_target,
@@ -976,6 +980,7 @@ def write_db_memory_cluster_summary_json(
 def build_db_memory_history_summary_rows(
     records: Iterable[DBMemoryHistoryRecord],
     *,
+    sga_near_max_severity: str = "info",
     sga_near_max_pct: float = 98,
     pga_used_pct_target: float = 80,
     pga_alloc_pct_target: float = 100,
@@ -1052,6 +1057,7 @@ def build_db_memory_history_summary_rows(
         row.update(
             _db_memory_warning_summary(
                 row,
+                sga_near_max_severity=sga_near_max_severity,
                 sga_near_max_pct=sga_near_max_pct,
                 pga_used_pct_target=pga_used_pct_target,
                 pga_alloc_pct_target=pga_alloc_pct_target,
@@ -1188,6 +1194,7 @@ def _metric_difference(minuend: float | str, subtrahend: float | str) -> float |
 def _db_memory_warning_summary(
     row: dict[str, object],
     *,
+    sga_near_max_severity: str,
     sga_near_max_pct: float,
     pga_used_pct_target: float,
     pga_alloc_pct_target: float,
@@ -1206,6 +1213,7 @@ def _db_memory_warning_summary(
     pga_limit = _safe_float(row.get("pga_aggregate_limit_gb_max"))
     pga_allocated = _safe_float(row.get("pga_allocated_gb_max"))
     pga_used_pct = _safe_float(row.get("pga_used_pct_of_target_max"))
+    sga_growth_headroom = _safe_float(row.get("sga_growth_headroom_gb"))
 
     if sga_target == 0 and (
         (sga_max is not None and sga_max > 0)
@@ -1219,7 +1227,24 @@ def _db_memory_warning_summary(
         if sga_used_pct_of_max >= 90:
             informational.add("SGA_USED_OVER_90_PCT")
         if sga_used_pct_of_max >= sga_near_max_pct:
-            warning.add("SGA_NEAR_MAX")
+            configured_near_max_severity = sga_near_max_severity.strip().lower()
+            if configured_near_max_severity not in {"info", "warning"}:
+                raise ValueError(
+                    "sga_near_max_severity must be either 'info' or 'warning'."
+                )
+            can_grow_with_limited_headroom = (
+                sga_target is not None
+                and sga_target < sga_max
+                and sga_growth_headroom is not None
+                and sga_growth_headroom <= 1
+            )
+            # Near-max allocation is informational by default. Even when the
+            # configured severity is warning, suppress warning noise unless the
+            # SGA can grow and no more than 1 GB of max-size headroom remains.
+            if can_grow_with_limited_headroom:
+                warning.add("SGA_NEAR_MAX")
+            else:
+                informational.add("SGA_NEAR_MAX")
         if sga_used_max > sga_max:
             critical.add("SGA_USED_OVER_MAX_SIZE")
 

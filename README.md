@@ -124,6 +124,7 @@ collection:
     collect_memory_history: true
   db_memory_history:
     warning_thresholds:
+      sga_near_max_severity: info
       sga_near_max_pct: 98
       pga_used_pct_target: 80
       pga_alloc_pct_target: 100
@@ -141,11 +142,11 @@ DB memory summary warning mapping:
 
 | Severity | Warning codes |
 | --- | --- |
-| INFO | `AMM_OR_MANUAL_SGA`, `SGA_TARGET_ZERO`, `PGA_LIMIT_ZERO`, `SGA_USED_OVER_90_PCT` |
-| WARNING | `SGA_NEAR_MAX`, `PGA_USED_OVER_TARGET` |
+| INFO | `AMM_OR_MANUAL_SGA`, `SGA_TARGET_ZERO`, `PGA_LIMIT_ZERO`, `SGA_USED_OVER_90_PCT`, and normally `SGA_NEAR_MAX` |
+| WARNING | `PGA_USED_OVER_TARGET`; `SGA_NEAR_MAX` only with limited growth headroom |
 | CRITICAL | `PGA_ALLOC_OVER_TARGET`, `SGA_USED_OVER_MAX_SIZE` |
 
-`PGA_USED_OVER_TARGET` uses `pga_used_pct_target` (inclusive), `PGA_ALLOC_OVER_TARGET` requires allocation above both the target and configured percentage threshold, and `SGA_NEAR_MAX` uses `sga_near_max_pct` (inclusive). The former overlapping `capacity_warnings`, `configuration_warnings`, `operational_warnings`, and `informational_warnings` columns are no longer generated.
+`PGA_USED_OVER_TARGET` uses `pga_used_pct_target` (inclusive), and `PGA_ALLOC_OVER_TARGET` requires allocation above both the target and configured percentage threshold. `SGA_NEAR_MAX` uses `sga_near_max_pct` (inclusive) and defaults to `sga_near_max_severity: info`; it escalates to WARNING only when `sga_target_gb_max` is below `sga_max_size_gb_max` and `sga_growth_headroom_gb` is at most 1 GB. The former overlapping `capacity_warnings`, `configuration_warnings`, `operational_warnings`, and `informational_warnings` columns are no longer generated.
 
 SQL is streamed inline through the existing SSH runner to `sqlplus -s / as sysdba`; no SQL files are copied and no remote temp SQL files are created. The collector reuses DB inventory/resource-detail discovery to select each local running `oracle_sid` and `oracle_home`.
 

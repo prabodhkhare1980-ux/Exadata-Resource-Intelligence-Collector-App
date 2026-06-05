@@ -54,6 +54,7 @@ class Inventory:
     db_performance_timeout_seconds: int = 90
     db_performance_collect_cpu_iops: bool = True
     db_performance_collect_memory_history: bool = True
+    db_memory_sga_near_max_severity: str = "info"
     db_memory_sga_near_max_pct: float = 98
     db_memory_pga_used_pct_target: float = 80
     db_memory_pga_alloc_pct_target: float = 100
@@ -177,6 +178,9 @@ def load_inventory(path: str | Path) -> Inventory:
         db_performance_timeout_seconds=int(db_perf_cfg.get("timeout_seconds", 90)),
         db_performance_collect_cpu_iops=bool(db_perf_cfg.get("collect_cpu_iops", True)),
         db_performance_collect_memory_history=bool(db_perf_cfg.get("collect_memory_history", True)),
+        db_memory_sga_near_max_severity=str(
+            warning_thresholds.get("sga_near_max_severity", "info")
+        ).strip().lower(),
         db_memory_sga_near_max_pct=float(
             warning_thresholds.get("sga_near_max_pct", 98)
         ),

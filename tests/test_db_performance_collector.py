@@ -845,9 +845,9 @@ def test_memory_warning_thresholds_are_configurable() -> None:
         DB_NAME="DB1",
         INSTANCE_NAME="DB11",
         END_TIME="2026-06-01 00:00:00",
-        SGA_TARGET_GB="100",
+        SGA_TARGET_GB="96",
         SGA_MAX_SIZE_GB="100",
-        SGA_USED_GB="97",
+        SGA_USED_GB="99",
         PGA_AGGREGATE_TARGET_GB="10",
         PGA_AGGREGATE_LIMIT_GB="20",
         PGA_ALLOCATED_GB="10.5",
@@ -862,8 +862,30 @@ def test_memory_warning_thresholds_are_configurable() -> None:
         pga_alloc_pct_target=104,
     )[0]
 
+    assert row["info_warnings"] == "SGA_USED_OVER_90_PCT"
     assert row["warning_warnings"] == "PGA_USED_OVER_TARGET;SGA_NEAR_MAX"
     assert row["critical_warnings"] == "PGA_ALLOC_OVER_TARGET"
+
+
+def test_sga_near_max_is_info_when_target_equals_max_size() -> None:
+    row = _memory_summary_row(SGA_USED_GB="99")
+
+    assert row["info_warnings"] == "SGA_NEAR_MAX;SGA_USED_OVER_90_PCT"
+    assert row["warning_warnings"] == ""
+    assert row["critical_warnings"] == ""
+    assert row["warning_severity"] == "INFO"
+
+
+def test_sga_near_max_is_warning_when_growth_headroom_is_one_gb() -> None:
+    row = _memory_summary_row(
+        SGA_TARGET_GB="95", SGA_MAX_SIZE_GB="100", SGA_USED_GB="99"
+    )
+
+    assert row["sga_growth_headroom_gb"] == 1.0
+    assert row["info_warnings"] == "SGA_USED_OVER_90_PCT"
+    assert row["warning_warnings"] == "SGA_NEAR_MAX"
+    assert row["critical_warnings"] == ""
+    assert row["warning_severity"] == "WARNING"
 
 
 def test_sga_target_zero_is_informational() -> None:
@@ -883,8 +905,10 @@ def test_memory_warning_severity_uses_highest_of_multiple_types() -> None:
         PGA_USED_GB="8",
     )
 
-    assert row["info_warnings"] == "PGA_LIMIT_ZERO;SGA_USED_OVER_90_PCT"
-    assert row["warning_warnings"] == "PGA_USED_OVER_TARGET;SGA_NEAR_MAX"
+    assert row["info_warnings"] == (
+        "PGA_LIMIT_ZERO;SGA_NEAR_MAX;SGA_USED_OVER_90_PCT"
+    )
+    assert row["warning_warnings"] == "PGA_USED_OVER_TARGET"
     assert row["critical_warnings"] == "PGA_ALLOC_OVER_TARGET"
     assert row["warning_count"] == 5
     assert row["warning_severity"] == "CRITICAL"
