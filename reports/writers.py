@@ -6,7 +6,7 @@ import csv
 import html
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from collectors.db_inventory_collector import DBInventoryRecord
 from collectors.os_collector import OSCollectionRecord
@@ -835,6 +835,342 @@ def write_db_memory_history_json(
         )
         json_file.write("\n")
     return json_path
+
+
+DB_MEMORY_SUMMARY_COLUMNS = [
+    "Cluster",
+    "db_unique_name",
+    "DB_NAME",
+    "INSTANCE_NAME",
+    "HOST_NAME",
+    "snapshot_count",
+    "begin_time_min",
+    "end_time_max",
+    "sga_target_gb_max",
+    "sga_max_size_gb_max",
+    "sga_used_gb_avg",
+    "sga_used_gb_max",
+    "sga_used_pct_of_target_avg",
+    "sga_used_pct_of_target_max",
+    "sga_buffer_cache_gb_avg",
+    "sga_buffer_cache_gb_max",
+    "sga_shared_pool_gb_avg",
+    "sga_shared_pool_gb_max",
+    "sga_large_pool_gb_avg",
+    "sga_other_gb_avg",
+    "sga_other_gb_max",
+    "pga_aggregate_target_gb_max",
+    "pga_aggregate_limit_gb_max",
+    "pga_allocated_gb_avg",
+    "pga_allocated_gb_max",
+    "pga_used_gb_avg",
+    "pga_used_gb_max",
+    "pga_used_pct_of_target_avg",
+    "pga_used_pct_of_target_max",
+    "pga_max_allocated_gb_max",
+    "warnings",
+]
+
+DB_MEMORY_CLUSTER_SUMMARY_COLUMNS = [
+    "Cluster",
+    "database_count",
+    "instance_count",
+    "avg_sga_used_gb",
+    "max_sga_used_gb",
+    "total_latest_sga_used_gb",
+    "total_latest_pga_used_gb",
+    "total_latest_pga_allocated_gb",
+]
+
+
+def write_db_memory_history_summary_csv(
+    records: Iterable[DBMemoryHistoryRecord], output_dir: Path
+) -> Path:
+    """Write per-instance DB memory history rollups to output/db_memory_history_summary.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_memory_history_summary.csv"
+    rows = build_db_memory_history_summary_rows(records)
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=DB_MEMORY_SUMMARY_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return csv_path
+
+
+def write_db_memory_history_summary_json(
+    records: Iterable[DBMemoryHistoryRecord], output_dir: Path
+) -> Path:
+    """Write per-instance DB memory history rollups to output/db_memory_history_summary.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_memory_history_summary.json"
+    rows = build_db_memory_history_summary_rows(records)
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def write_db_memory_cluster_summary_csv(
+    records: Iterable[DBMemoryHistoryRecord], output_dir: Path
+) -> Path:
+    """Write cluster-level DB memory rollups to output/db_memory_cluster_summary.csv."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_memory_cluster_summary.csv"
+    rows = build_db_memory_cluster_summary_rows(records)
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=DB_MEMORY_CLUSTER_SUMMARY_COLUMNS,
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return csv_path
+
+
+def write_db_memory_cluster_summary_json(
+    records: Iterable[DBMemoryHistoryRecord], output_dir: Path
+) -> Path:
+    """Write cluster-level DB memory rollups to output/db_memory_cluster_summary.json."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_memory_cluster_summary.json"
+    rows = build_db_memory_cluster_summary_rows(records)
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def build_db_memory_history_summary_rows(
+    records: Iterable[DBMemoryHistoryRecord],
+) -> list[dict[str, object]]:
+    """Build per-instance DB memory summary rows from successful history records."""
+
+    groups: dict[tuple[str, str, str, str, str], list[DBMemoryHistoryRecord]] = {}
+    for record in _dedupe_db_history_success(records):
+        key = (
+            record.Cluster or "",
+            record.db_unique_name or "",
+            record.DB_NAME or "",
+            record.INSTANCE_NAME or "",
+            record.HOST_NAME or "",
+        )
+        groups.setdefault(key, []).append(record)
+
+    rows: list[dict[str, object]] = []
+    for key, group_records in sorted(groups.items()):
+        cluster, db_unique_name, db_name, instance_name, host_name = key
+        sga_pct_values = _ratio_values(group_records, "SGA_USED_GB", "SGA_TARGET_GB")
+        pga_pct_values = _ratio_values(
+            group_records, "PGA_USED_GB", "PGA_AGGREGATE_TARGET_GB"
+        )
+        rows.append(
+            {
+                "Cluster": cluster,
+                "db_unique_name": db_unique_name,
+                "DB_NAME": db_name,
+                "INSTANCE_NAME": instance_name,
+                "HOST_NAME": host_name,
+                "snapshot_count": len(group_records),
+                "begin_time_min": min(
+                    (r.END_TIME for r in group_records if r.END_TIME), default=""
+                ),
+                "end_time_max": max(
+                    (r.END_TIME for r in group_records if r.END_TIME), default=""
+                ),
+                "sga_target_gb_max": _max_metric(group_records, "SGA_TARGET_GB"),
+                "sga_max_size_gb_max": _max_metric(group_records, "SGA_MAX_SIZE_GB"),
+                "sga_used_gb_avg": _avg_metric(group_records, "SGA_USED_GB"),
+                "sga_used_gb_max": _max_metric(group_records, "SGA_USED_GB"),
+                "sga_used_pct_of_target_avg": _avg_values(sga_pct_values),
+                "sga_used_pct_of_target_max": _max_values(sga_pct_values),
+                "sga_buffer_cache_gb_avg": _avg_metric(
+                    group_records, "SGA_BUFFER_CACHE_GB"
+                ),
+                "sga_buffer_cache_gb_max": _max_metric(
+                    group_records, "SGA_BUFFER_CACHE_GB"
+                ),
+                "sga_shared_pool_gb_avg": _avg_metric(
+                    group_records, "SGA_SHARED_POOL_GB"
+                ),
+                "sga_shared_pool_gb_max": _max_metric(
+                    group_records, "SGA_SHARED_POOL_GB"
+                ),
+                "sga_large_pool_gb_avg": _avg_metric(
+                    group_records, "SGA_LARGE_POOL_GB"
+                ),
+                "sga_other_gb_avg": _avg_metric(group_records, "SGA_OTHER_GB"),
+                "sga_other_gb_max": _max_metric(group_records, "SGA_OTHER_GB"),
+                "pga_aggregate_target_gb_max": _max_metric(
+                    group_records, "PGA_AGGREGATE_TARGET_GB"
+                ),
+                "pga_aggregate_limit_gb_max": _max_metric(
+                    group_records, "PGA_AGGREGATE_LIMIT_GB"
+                ),
+                "pga_allocated_gb_avg": _avg_metric(group_records, "PGA_ALLOCATED_GB"),
+                "pga_allocated_gb_max": _max_metric(group_records, "PGA_ALLOCATED_GB"),
+                "pga_used_gb_avg": _avg_metric(group_records, "PGA_USED_GB"),
+                "pga_used_gb_max": _max_metric(group_records, "PGA_USED_GB"),
+                "pga_used_pct_of_target_avg": _avg_values(pga_pct_values),
+                "pga_used_pct_of_target_max": _max_values(pga_pct_values),
+                "pga_max_allocated_gb_max": _max_metric(
+                    group_records, "PGA_MAX_ALLOCATED_GB"
+                ),
+                "warnings": ";".join(_db_memory_warning_flags(group_records)),
+            }
+        )
+    return rows
+
+
+def build_db_memory_cluster_summary_rows(
+    records: Iterable[DBMemoryHistoryRecord],
+) -> list[dict[str, object]]:
+    """Build cluster-level DB memory summary rows from successful history records."""
+
+    clusters: dict[str, list[DBMemoryHistoryRecord]] = {}
+    for record in _dedupe_db_history_success(records):
+        clusters.setdefault(record.Cluster or "", []).append(record)
+
+    rows: list[dict[str, object]] = []
+    for cluster, cluster_records in sorted(clusters.items()):
+        databases = {
+            r.db_unique_name or r.DB_NAME
+            for r in cluster_records
+            if r.db_unique_name or r.DB_NAME
+        }
+        instances = {
+            (r.db_unique_name or r.DB_NAME, r.INSTANCE_NAME, r.HOST_NAME)
+            for r in cluster_records
+            if r.INSTANCE_NAME or r.HOST_NAME
+        }
+        latest_by_instance: dict[tuple[str, str, str], DBMemoryHistoryRecord] = {}
+        for record in cluster_records:
+            key = (
+                record.db_unique_name or record.DB_NAME,
+                record.INSTANCE_NAME,
+                record.HOST_NAME,
+            )
+            current = latest_by_instance.get(key)
+            if current is None or (record.END_TIME or "") >= (current.END_TIME or ""):
+                latest_by_instance[key] = record
+        latest_records = list(latest_by_instance.values())
+        rows.append(
+            {
+                "Cluster": cluster,
+                "database_count": len(databases),
+                "instance_count": len(instances),
+                "avg_sga_used_gb": _avg_metric(cluster_records, "SGA_USED_GB"),
+                "max_sga_used_gb": _max_metric(cluster_records, "SGA_USED_GB"),
+                "total_latest_sga_used_gb": _sum_metric(latest_records, "SGA_USED_GB"),
+                "total_latest_pga_used_gb": _sum_metric(latest_records, "PGA_USED_GB"),
+                "total_latest_pga_allocated_gb": _sum_metric(
+                    latest_records, "PGA_ALLOCATED_GB"
+                ),
+            }
+        )
+    return rows
+
+
+def _safe_float(value: Any) -> float | None:
+    """Convert numeric collector values, including strings like '.03', to float."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric_values(records: Iterable[DBMemoryHistoryRecord], field: str) -> list[float]:
+    return [
+        value
+        for value in (_safe_float(getattr(record, field, None)) for record in records)
+        if value is not None
+    ]
+
+
+def _avg_metric(records: Iterable[DBMemoryHistoryRecord], field: str) -> float | str:
+    return _avg_values(_metric_values(records, field))
+
+
+def _max_metric(records: Iterable[DBMemoryHistoryRecord], field: str) -> float | str:
+    return _max_values(_metric_values(records, field))
+
+
+def _sum_metric(records: Iterable[DBMemoryHistoryRecord], field: str) -> float:
+    return _round_metric(sum(_metric_values(records, field)))
+
+
+def _ratio_values(
+    records: Iterable[DBMemoryHistoryRecord], numerator: str, denominator: str
+) -> list[float]:
+    values: list[float] = []
+    for record in records:
+        num = _safe_float(getattr(record, numerator, None))
+        den = _safe_float(getattr(record, denominator, None))
+        if num is None or den is None or den <= 0:
+            continue
+        values.append((num / den) * 100)
+    return values
+
+
+def _avg_values(values: list[float]) -> float | str:
+    if not values:
+        return ""
+    return _round_metric(sum(values) / len(values))
+
+
+def _max_values(values: list[float]) -> float | str:
+    if not values:
+        return ""
+    return _round_metric(max(values))
+
+
+def _round_metric(value: float) -> float:
+    rounded = round(value, 4)
+    if rounded == -0.0:
+        return 0.0
+    return rounded
+
+
+def _db_memory_warning_flags(records: Iterable[DBMemoryHistoryRecord]) -> list[str]:
+    warnings: set[str] = set()
+    for record in records:
+        sga_target = _safe_float(record.SGA_TARGET_GB)
+        sga_used = _safe_float(record.SGA_USED_GB)
+        sga_max = _safe_float(record.SGA_MAX_SIZE_GB)
+        pga_target = _safe_float(record.PGA_AGGREGATE_TARGET_GB)
+        pga_limit = _safe_float(record.PGA_AGGREGATE_LIMIT_GB)
+        pga_alloc = _safe_float(record.PGA_ALLOCATED_GB)
+        pga_used = _safe_float(record.PGA_USED_GB)
+        if sga_target == 0 and (sga_used or 0) > 0:
+            warnings.add("SGA_TARGET_ZERO")
+        if (
+            sga_max
+            and sga_max > 0
+            and sga_used is not None
+            and sga_used / sga_max >= 0.9
+        ):
+            warnings.add("SGA_USED_OVER_90_PCT")
+        if pga_target and pga_target > 0:
+            if pga_used is not None and pga_used / pga_target >= 0.8:
+                warnings.add("PGA_USED_OVER_80_PCT_TARGET")
+            if pga_alloc is not None and pga_alloc / pga_target >= 0.9:
+                warnings.add("PGA_ALLOC_OVER_90_PCT_TARGET")
+        if pga_limit == 0:
+            warnings.add("PGA_LIMIT_ZERO")
+    return sorted(warnings)
 
 
 def write_db_memory_history_errors_csv(

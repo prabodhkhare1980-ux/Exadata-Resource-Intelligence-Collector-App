@@ -36,10 +36,14 @@ from reports.writers import (
     write_asm_summary_json,
     write_db_inventory_csv,
     write_db_inventory_json,
+    write_db_memory_cluster_summary_csv,
+    write_db_memory_cluster_summary_json,
     write_db_memory_history_csv,
     write_db_memory_history_errors_csv,
     write_db_memory_history_errors_json,
     write_db_memory_history_json,
+    write_db_memory_history_summary_csv,
+    write_db_memory_history_summary_json,
     write_db_performance_csv,
     write_db_performance_errors_csv,
     write_db_performance_errors_json,
@@ -526,6 +530,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_performance_errors_json(db_performance_records, inventory.output_dir)
     write_db_memory_history_csv(db_memory_records, inventory.output_dir)
     write_db_memory_history_json(db_memory_records, inventory.output_dir)
+    write_db_memory_history_summary_csv(db_memory_records, inventory.output_dir)
+    write_db_memory_history_summary_json(db_memory_records, inventory.output_dir)
+    write_db_memory_cluster_summary_csv(db_memory_records, inventory.output_dir)
+    write_db_memory_cluster_summary_json(db_memory_records, inventory.output_dir)
     write_db_memory_history_errors_csv(db_memory_records, inventory.output_dir)
     write_db_memory_history_errors_json(db_memory_records, inventory.output_dir)
     health_rows = build_health_summary_rows(

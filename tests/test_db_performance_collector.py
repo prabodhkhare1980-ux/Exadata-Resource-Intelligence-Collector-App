@@ -18,11 +18,18 @@ from collectors.db_performance_collector import (
     parse_db_performance_output,
 )
 from reports.writers import (
+    _safe_float,
+    build_db_memory_cluster_summary_rows,
+    build_db_memory_history_summary_rows,
     build_health_summary_rows,
+    write_db_memory_cluster_summary_csv,
+    write_db_memory_cluster_summary_json,
     write_db_memory_history_csv,
     write_db_memory_history_errors_csv,
     write_db_memory_history_errors_json,
     write_db_memory_history_json,
+    write_db_memory_history_summary_csv,
+    write_db_memory_history_summary_json,
     write_db_performance_csv,
     write_db_performance_errors_csv,
     write_db_performance_errors_json,
@@ -521,3 +528,216 @@ def test_memory_writer_removes_duplicate_cluster_db_unique_instance_end_time_row
         rows = list(csv.DictReader(csv_file))
     assert len(rows) == 1
     assert rows[0]["duplicate_count"] == "1"
+
+
+def test_db_memory_summary_safe_numeric_parsing() -> None:
+    assert _safe_float(".03") == 0.03
+    assert _safe_float(" 1.25 ") == 1.25
+    assert _safe_float(2) == 2.0
+    assert _safe_float("") is None
+    assert _safe_float(None) is None
+    assert _safe_float("not numeric") is None
+
+
+def test_db_memory_history_summary_rollup_and_warnings(tmp_path: Path) -> None:
+    records = [
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node1",
+            DB_NAME="DB1",
+            INSTANCE_NAME="DB11",
+            END_TIME="2026-06-01 00:00:00",
+            SGA_TARGET_GB="10",
+            SGA_MAX_SIZE_GB="12",
+            SGA_USED_GB="9",
+            SGA_BUFFER_CACHE_GB=".03",
+            SGA_SHARED_POOL_GB="2",
+            SGA_LARGE_POOL_GB="0.25",
+            SGA_OTHER_GB="1",
+            PGA_AGGREGATE_TARGET_GB="8",
+            PGA_AGGREGATE_LIMIT_GB="0",
+            PGA_ALLOCATED_GB="7.5",
+            PGA_USED_GB="6.5",
+            PGA_MAX_ALLOCATED_GB="7.75",
+            Collected_At="now",
+            db_unique_name="DB1_UNQ",
+        ),
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node1",
+            DB_NAME="DB1",
+            INSTANCE_NAME="DB11",
+            END_TIME="2026-06-01 01:00:00",
+            SGA_TARGET_GB="10",
+            SGA_MAX_SIZE_GB="12",
+            SGA_USED_GB="11",
+            SGA_BUFFER_CACHE_GB="3",
+            SGA_SHARED_POOL_GB="2.5",
+            SGA_LARGE_POOL_GB="0.5",
+            SGA_OTHER_GB="1.5",
+            PGA_AGGREGATE_TARGET_GB="8",
+            PGA_AGGREGATE_LIMIT_GB="16",
+            PGA_ALLOCATED_GB="7.3",
+            PGA_USED_GB="6.4",
+            PGA_MAX_ALLOCATED_GB="8",
+            Collected_At="now",
+            db_unique_name="DB1_UNQ",
+        ),
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node1",
+            DB_NAME="DB1",
+            INSTANCE_NAME="DB11",
+            END_TIME="2026-06-01 02:00:00",
+            SGA_TARGET_GB="0",
+            SGA_MAX_SIZE_GB="12",
+            SGA_USED_GB="1",
+            PGA_AGGREGATE_TARGET_GB="",
+            PGA_AGGREGATE_LIMIT_GB="",
+            Collected_At="now",
+            collection_status="failed",
+            db_unique_name="DB1_UNQ",
+        ),
+    ]
+
+    rows = build_db_memory_history_summary_rows(records)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["snapshot_count"] == 2
+    assert row["begin_time_min"] == "2026-06-01 00:00:00"
+    assert row["end_time_max"] == "2026-06-01 01:00:00"
+    assert row["sga_target_gb_max"] == 10.0
+    assert row["sga_used_gb_avg"] == 10.0
+    assert row["sga_used_gb_max"] == 11.0
+    assert row["sga_used_pct_of_target_avg"] == 100.0
+    assert row["sga_buffer_cache_gb_avg"] == 1.515
+    assert row["pga_used_pct_of_target_max"] == 81.25
+    assert row["pga_max_allocated_gb_max"] == 8.0
+    assert row["warnings"] == ";".join(
+        [
+            "PGA_ALLOC_OVER_90_PCT_TARGET",
+            "PGA_LIMIT_ZERO",
+            "PGA_USED_OVER_80_PCT_TARGET",
+            "SGA_USED_OVER_90_PCT",
+        ]
+    )
+
+    write_db_memory_history_summary_csv(records, tmp_path)
+    write_db_memory_history_summary_json(records, tmp_path)
+    with (tmp_path / "db_memory_history_summary.csv").open(
+        encoding="utf-8"
+    ) as csv_file:
+        csv_rows = list(csv.DictReader(csv_file))
+    assert csv_rows[0]["snapshot_count"] == "2"
+    json_rows = json.loads(
+        (tmp_path / "db_memory_history_summary.json").read_text(encoding="utf-8")
+    )
+    assert json_rows[0]["pga_allocated_gb_max"] == 7.5
+
+
+def test_db_memory_cluster_summary_rollup_and_latest_totals(tmp_path: Path) -> None:
+    records = [
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node1",
+            DB_NAME="DB1",
+            INSTANCE_NAME="DB11",
+            END_TIME="2026-06-01 00:00:00",
+            SGA_USED_GB="9",
+            PGA_USED_GB="5",
+            PGA_ALLOCATED_GB="6",
+            db_unique_name="DB1_UNQ",
+        ),
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node1",
+            DB_NAME="DB1",
+            INSTANCE_NAME="DB11",
+            END_TIME="2026-06-01 01:00:00",
+            SGA_USED_GB="10",
+            PGA_USED_GB="6",
+            PGA_ALLOCATED_GB="7",
+            db_unique_name="DB1_UNQ",
+        ),
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node2",
+            DB_NAME="DB1",
+            INSTANCE_NAME="DB12",
+            END_TIME="2026-06-01 01:00:00",
+            SGA_USED_GB="8",
+            PGA_USED_GB="4",
+            PGA_ALLOCATED_GB="5",
+            db_unique_name="DB1_UNQ",
+        ),
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node3",
+            DB_NAME="DB2",
+            INSTANCE_NAME="DB21",
+            END_TIME="2026-06-01 01:00:00",
+            SGA_USED_GB="",
+            PGA_USED_GB=None,  # type: ignore[arg-type]
+            PGA_ALLOCATED_GB=".03",
+            db_unique_name="DB2_UNQ",
+        ),
+        DBMemoryHistoryRecord(
+            Cluster="c1",
+            HOST_NAME="node4",
+            DB_NAME="DB3",
+            INSTANCE_NAME="DB31",
+            END_TIME="2026-06-01 01:00:00",
+            SGA_USED_GB="100",
+            collection_status="skipped",
+            db_unique_name="DB3_UNQ",
+        ),
+    ]
+
+    rows = build_db_memory_cluster_summary_rows(records)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["database_count"] == 2
+    assert row["instance_count"] == 3
+    assert row["avg_sga_used_gb"] == 9.0
+    assert row["max_sga_used_gb"] == 10.0
+    assert row["total_latest_sga_used_gb"] == 18.0
+    assert row["total_latest_pga_used_gb"] == 10.0
+    assert row["total_latest_pga_allocated_gb"] == 12.03
+
+    write_db_memory_cluster_summary_csv(records, tmp_path)
+    write_db_memory_cluster_summary_json(records, tmp_path)
+    with (tmp_path / "db_memory_cluster_summary.csv").open(
+        encoding="utf-8"
+    ) as csv_file:
+        csv_rows = list(csv.DictReader(csv_file))
+    assert csv_rows[0]["total_latest_pga_allocated_gb"] == "12.03"
+    json_rows = json.loads(
+        (tmp_path / "db_memory_cluster_summary.json").read_text(encoding="utf-8")
+    )
+    assert json_rows[0]["instance_count"] == 3
+
+
+def test_db_memory_summary_warning_logic_includes_zero_target_and_null_safety() -> None:
+    rows = build_db_memory_history_summary_rows(
+        [
+            DBMemoryHistoryRecord(
+                Cluster="c1",
+                HOST_NAME="node1",
+                DB_NAME="DB1",
+                INSTANCE_NAME="DB11",
+                END_TIME="2026-06-01 00:00:00",
+                SGA_TARGET_GB="0",
+                SGA_MAX_SIZE_GB="",
+                SGA_USED_GB="1",
+                PGA_AGGREGATE_TARGET_GB="",
+                PGA_AGGREGATE_LIMIT_GB="0",
+                PGA_ALLOCATED_GB="",
+                PGA_USED_GB="",
+                db_unique_name="DB1_UNQ",
+            )
+        ]
+    )
+
+    assert rows[0]["sga_used_pct_of_target_avg"] == ""
+    assert rows[0]["pga_used_pct_of_target_avg"] == ""
+    assert rows[0]["warnings"] == "PGA_LIMIT_ZERO;SGA_TARGET_ZERO"
