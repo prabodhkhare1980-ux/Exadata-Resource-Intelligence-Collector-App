@@ -435,7 +435,7 @@ def normalize_db_performance(df: pd.DataFrame) -> pd.DataFrame:
         "HOST_CPU_UTIL_PCT_AVG": "host_cpu_util_pct_avg",
         "HOST_CPU_UTIL_PCT_MAX": "host_cpu_util_pct_max",
     }
-    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns}).copy()
+    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}).copy()
     columns = ["cluster", "host_name", "db_name", "instance_name", "end_time", "total_iops_avg", "total_iops_max", "total_mbps_avg", "total_mbps_max", "cpu_usage_per_sec_avg", "cpu_usage_per_sec_max", "host_cpu_util_pct_avg", "host_cpu_util_pct_max"]
     table = ensure_columns(table, columns)[columns].copy()
     table["end_time"] = pd.to_datetime(table["end_time"], errors="coerce")
@@ -462,7 +462,7 @@ def normalize_db_memory_history(df: pd.DataFrame) -> pd.DataFrame:
         "SGA_INMEMORY_AREA_GB": "sga_inmemory_area_gb", "SGA_RESULT_CACHE_GB": "sga_result_cache_gb",
         "SGA_OTHER_GB": "sga_other_gb",
     }
-    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns}).copy()
+    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}).copy()
     identity_columns = ["cluster", "host_name", "db_unique_name", "db_name", "instance_name", "end_time"]
     numeric_columns = [
         "sga_target_gb", "sga_max_size_gb", "sga_used_gb", "pga_aggregate_target_gb",
@@ -472,7 +472,8 @@ def normalize_db_memory_history(df: pd.DataFrame) -> pd.DataFrame:
         "sga_shared_io_pool_gb", "sga_inmemory_area_gb", "sga_result_cache_gb", "sga_other_gb",
     ]
     text_columns = [
-        "warning_severity", "warnings", "info_warnings", "warning_warnings", "critical_warnings",
+        "collection_status", "warning_severity", "warnings", "info_warnings",
+        "warning_warnings", "critical_warnings",
     ]
     columns = identity_columns + numeric_columns + text_columns
     table = ensure_columns(table, columns)[columns].copy()
@@ -491,7 +492,7 @@ def normalize_db_memory_summary(df: pd.DataFrame) -> pd.DataFrame:
         "Cluster": "cluster", "DB_NAME": "db_name", "INSTANCE_NAME": "instance_name",
         "HOST_NAME": "host_name",
     }
-    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns}).copy()
+    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}).copy()
     identity_columns = [
         "cluster", "db_unique_name", "db_name", "instance_name", "host_name",
         "begin_time_min", "end_time_max",
@@ -521,12 +522,17 @@ def normalize_db_memory_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 MEMORY_ANALYTICS_NUMERIC_COLUMNS = [
-    "sga_used_gb_max", "pga_allocated_gb_max", "sga_growth_headroom_gb",
-    "pga_used_pct_of_target_max", "pga_aggregate_target_gb_max",
-    "total_sga_used_gb_max", "total_pga_allocated_gb_max",
-    "total_sga_max_size_gb", "total_pga_target_gb",
-    "database_count", "instance_count", "db_instances",
-    "critical_count", "warning_count", "info_count",
+    "snapshot_count", "sga_target_gb_max", "sga_max_size_gb_max", "sga_used_gb_avg",
+    "sga_used_gb_max", "sga_used_pct_of_target_avg", "sga_used_pct_of_target_max",
+    "sga_growth_headroom_gb", "sga_buffer_cache_gb_avg", "sga_buffer_cache_gb_max",
+    "sga_shared_pool_gb_avg", "sga_shared_pool_gb_max", "sga_large_pool_gb_avg",
+    "sga_other_gb_avg", "sga_other_gb_max", "pga_aggregate_target_gb_max",
+    "pga_aggregate_limit_gb_max", "pga_allocated_gb_avg", "pga_allocated_gb_max",
+    "pga_used_gb_avg", "pga_used_gb_max", "pga_used_pct_of_target_avg",
+    "pga_used_pct_of_target_max", "pga_max_allocated_gb_max", "current_value",
+    "observed_peak", "total_sga_used_gb_max", "total_pga_allocated_gb_max",
+    "total_sga_max_size_gb", "total_pga_target_gb", "database_count",
+    "instance_count", "db_instances", "critical_count", "warning_count", "info_count",
 ]
 
 
@@ -537,7 +543,7 @@ def normalize_memory_analytics(df: pd.DataFrame) -> pd.DataFrame:
         "Cluster": "cluster", "DB_NAME": "db_name", "INSTANCE_NAME": "instance_name",
         "HOST_NAME": "host_name", "WARNING_SEVERITY": "warning_severity",
     }
-    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns}).copy()
+    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}).copy()
     for column in MEMORY_ANALYTICS_NUMERIC_COLUMNS:
         if column in table.columns:
             table[column] = pd.to_numeric(table[column], errors="coerce")
@@ -545,6 +551,30 @@ def normalize_memory_analytics(df: pd.DataFrame) -> pd.DataFrame:
         table["warning_severity"] = table["warning_severity"].map(normalize_severity)
         table["warning_level"] = table["warning_severity"]
     return table
+
+
+def normalize_memory_capacity_top_consumers(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the optional top memory consumers analytics output."""
+
+    return normalize_memory_analytics(df)
+
+
+def normalize_memory_warning_report(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the optional memory warning report output."""
+
+    return normalize_memory_analytics(df)
+
+
+def normalize_memory_rightsizing_candidates(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the optional memory rightsizing candidates output."""
+
+    return normalize_memory_analytics(df)
+
+
+def normalize_memory_cluster_rollup(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the optional cluster memory rollup output."""
+
+    return normalize_memory_analytics(df)
 
 
 def build_memory_cluster_rollup(summary: pd.DataFrame) -> pd.DataFrame:
@@ -697,24 +727,34 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     st.caption("Executive risk, capacity, and action view from local collector output only.")
     render_kpis(health, asm, hugepages, db_resources, db_errors)
 
-    if memory_summary_path is not None and not memory_summary.empty:
-        st.markdown("### Database Memory")
+    st.markdown("### Memory Risk Snapshot")
+    if memory_summary_path is None or memory_summary.empty:
+        st.info("No db_memory_history_summary output found. Run the DB memory history collector to populate memory risk KPIs.")
+    else:
         show_source(memory_summary_path)
-        memory_cols = st.columns(4)
         critical_memory = int((memory_summary["warning_severity"] == "CRITICAL").sum())
         warning_memory = int((memory_summary["warning_severity"] == "WARNING").sum())
-        top_sga = memory_summary.nlargest(1, "sga_used_gb_max")
-        top_pga = memory_summary.nlargest(1, "pga_allocated_gb_max")
-        with memory_cols[0]:
-            card("Critical memory findings", critical_memory, "CRITICAL" if critical_memory else "OK")
-        with memory_cols[1]:
-            card("Warning memory findings", warning_memory, "WARNING" if warning_memory else "OK")
-        with memory_cols[2]:
-            value = f"{top_sga.iloc[0]['db_name']} / {top_sga.iloc[0]['instance_name']} ({top_sga.iloc[0]['sga_used_gb_max']:,.1f} GB)"
-            card("Top SGA consumer", value, "neutral")
-        with memory_cols[3]:
-            value = f"{top_pga.iloc[0]['db_name']} / {top_pga.iloc[0]['instance_name']} ({top_pga.iloc[0]['pga_allocated_gb_max']:,.1f} GB)"
-            card("Top PGA consumer", value, "neutral")
+        info_memory = int((memory_summary["warning_severity"] == "INFO").sum())
+        top_sga = memory_summary.dropna(subset=["sga_used_gb_max"]).nlargest(1, "sga_used_gb_max")
+        top_pga = memory_summary.dropna(subset=["pga_allocated_gb_max"]).nlargest(1, "pga_allocated_gb_max")
+
+        def top_memory_value(top: pd.DataFrame, metric: str) -> str:
+            if top.empty:
+                return "N/A"
+            row = top.iloc[0]
+            database = row["db_unique_name"] if pd.notna(row["db_unique_name"]) else row["db_name"]
+            return f"{database} ({row[metric]:,.1f} GB)"
+
+        memory_metrics = [
+            ("Critical memory findings", critical_memory, "CRITICAL" if critical_memory else "OK"),
+            ("Warning memory findings", warning_memory, "WARNING" if warning_memory else "OK"),
+            ("Info memory findings", info_memory, "INFO" if info_memory else "OK"),
+            ("Top SGA consumer", top_memory_value(top_sga, "sga_used_gb_max"), "neutral"),
+            ("Top PGA consumer", top_memory_value(top_pga, "pga_allocated_gb_max"), "neutral"),
+        ]
+        for container, (label, value, state) in zip(st.columns(5), memory_metrics):
+            with container:
+                card(label, value, state)
 
     st.markdown("### Critical Issues")
     show_source(health_path)
@@ -1139,11 +1179,27 @@ def _render_date_filter(table: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     return table[(table["end_time"].dt.date >= start_date) & (table["end_time"].dt.date <= end_date)]
 
 
-def _render_db_perf_filters(table: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+def _render_db_perf_filters(
+    table: pd.DataFrame,
+    key_prefix: str,
+    include_db_unique_name: bool = False,
+) -> pd.DataFrame:
+    """Render local DB history filters and return matching rows."""
+
     filtered = table.copy()
-    col1, col2, col3 = st.columns(3)
-    for column, label, container in [("cluster", "Cluster", col1), ("db_name", "DB name", col2), ("instance_name", "Instance", col3)]:
-        values = sorted({str(v) for v in filtered[column].dropna() if str(v).strip()}) if column in filtered.columns else []
+    filter_specs = [
+        ("cluster", "Cluster"),
+        ("db_name", "DB name"),
+        ("instance_name", "Instance"),
+    ]
+    if include_db_unique_name and "db_unique_name" in filtered.columns:
+        filter_specs.append(("db_unique_name", "DB unique name"))
+
+    containers = st.columns(len(filter_specs))
+    for (column, label), container in zip(filter_specs, containers):
+        values = sorted(
+            {str(value) for value in filtered[column].dropna() if str(value).strip()}
+        ) if column in filtered.columns else []
         selected = container.multiselect(label, values, default=[], key=f"{key_prefix}_{column}")
         if selected:
             filtered = filtered[filtered[column].astype(str).isin(selected)]
@@ -1190,22 +1246,51 @@ def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     if table.empty:
         st.warning("No db_memory_history output found in output/.")
         return
-    table = _render_db_perf_filters(table, "db_mem")
+    table = _render_db_perf_filters(table, "db_mem", include_db_unique_name=True)
     if table.empty:
-        st.info("No memory history rows match the selected cluster, DB, instance, and date filters.")
+        st.info("No memory history rows match the selected cluster, DB, instance, DB unique name, and date filters.")
         return
 
-    component_columns = ["sga_buffer_cache_gb", "sga_shared_pool_gb", "sga_large_pool_gb", "sga_other_gb"]
-    component_long = table.melt(
-        id_vars=["end_time", "cluster", "db_name", "instance_name"],
-        value_vars=component_columns, var_name="component", value_name="gb",
-    ).dropna(subset=["gb"])
-    if component_long.empty:
+    chart1, chart2, chart3 = st.columns(3)
+    with chart1:
+        st.plotly_chart(
+            px.line(table, x="end_time", y="sga_used_gb", color="db_name", line_dash="instance_name", title="SGA_USED_GB over time"),
+            use_container_width=True,
+        )
+    with chart2:
+        st.plotly_chart(
+            px.line(table, x="end_time", y="pga_allocated_gb", color="db_name", line_dash="instance_name", title="PGA_ALLOCATED_GB over time"),
+            use_container_width=True,
+        )
+    with chart3:
+        st.plotly_chart(
+            px.line(table, x="end_time", y="pga_used_gb", color="db_name", line_dash="instance_name", title="PGA_USED_GB over time"),
+            use_container_width=True,
+        )
+
+    component_candidates = [
+        "sga_buffer_cache_gb", "sga_shared_pool_gb", "sga_large_pool_gb", "sga_other_gb",
+        "sga_fixed_gb", "sga_redo_gb",
+    ]
+    component_columns = [column for column in component_candidates if table[column].notna().any()]
+    if not component_columns:
         st.info("SGA component values are not present in this db_memory_history output.")
     else:
+        component_long = table.melt(
+            id_vars=["end_time", "cluster", "db_name", "instance_name"],
+            value_vars=component_columns,
+            var_name="component",
+            value_name="gb",
+        ).dropna(subset=["gb"])
         st.plotly_chart(
-            px.area(component_long, x="end_time", y="gb", color="component", line_group="instance_name",
-                    title="SGA components over time"),
+            px.line(
+                component_long,
+                x="end_time",
+                y="gb",
+                color="component",
+                line_dash="instance_name",
+                title="SGA Components over time",
+            ),
             use_container_width=True,
         )
 
@@ -1213,42 +1298,60 @@ def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     with c1:
         sga_long = table.melt(
             id_vars=["end_time", "db_name", "instance_name"],
-            value_vars=["sga_used_gb", "sga_max_size_gb"], var_name="metric", value_name="gb",
-        )
-        st.plotly_chart(px.line(sga_long, x="end_time", y="gb", color="metric", line_dash="instance_name", title="SGA used vs max size"), use_container_width=True)
-    with c2:
-        pga_long = table.melt(
-            id_vars=["end_time", "db_name", "instance_name"],
-            value_vars=[
-                "pga_aggregate_target_gb", "pga_aggregate_limit_gb",
-                "pga_allocated_gb", "pga_used_gb",
-            ],
-            var_name="metric", value_name="gb",
-        )
+            value_vars=["sga_target_gb", "sga_used_gb"],
+            var_name="metric",
+            value_name="gb",
+        ).dropna(subset=["gb"])
         st.plotly_chart(
-            px.line(
-                pga_long, x="end_time", y="gb", color="metric", line_dash="instance_name",
-                title="PGA target and limit vs allocated and used",
-            ),
+            px.line(sga_long, x="end_time", y="gb", color="metric", line_dash="instance_name", title="SGA_TARGET_GB vs SGA_USED_GB"),
+            use_container_width=True,
+        )
+    with c2:
+        pga_limit_long = table.melt(
+            id_vars=["end_time", "db_name", "instance_name"],
+            value_vars=["pga_aggregate_limit_gb", "pga_allocated_gb"],
+            var_name="metric",
+            value_name="gb",
+        ).dropna(subset=["gb"])
+        st.plotly_chart(
+            px.line(pga_limit_long, x="end_time", y="gb", color="metric", line_dash="instance_name", title="PGA_AGGREGATE_LIMIT_GB vs PGA_ALLOCATED_GB"),
             use_container_width=True,
         )
 
-    pct_table = table.copy()
-    pct_table["pga_used_pct_of_target"] = (pct_table["pga_used_gb"] / pct_table["pga_aggregate_target_gb"].replace(0, pd.NA)) * 100
+    pga_long = table.melt(
+        id_vars=["end_time", "db_name", "instance_name"],
+        value_vars=[
+            "pga_aggregate_target_gb", "pga_aggregate_limit_gb",
+            "pga_allocated_gb", "pga_used_gb",
+        ],
+        var_name="metric",
+        value_name="gb",
+    ).dropna(subset=["gb"])
     st.plotly_chart(
-        px.line(pct_table, x="end_time", y="pga_used_pct_of_target", color="db_name", line_dash="instance_name",
-                title="PGA used percentage over target", labels={"pga_used_pct_of_target": "% of PGA target"}),
+        px.line(
+            pga_long,
+            x="end_time",
+            y="gb",
+            color="metric",
+            line_dash="instance_name",
+            title="PGA target, limit, allocated, and used over time",
+        ),
         use_container_width=True,
     )
-    st.markdown("### Top memory snapshots")
+
+    st.markdown("### Latest snapshot by instance")
     snapshot_columns = [
-        "cluster", "db_name", "instance_name", "end_time", "sga_used_gb",
-        "sga_buffer_cache_gb", "sga_shared_pool_gb", "pga_allocated_gb", "pga_used_gb",
+        "cluster", "db_unique_name", "db_name", "instance_name", "host_name", "end_time",
+        "sga_used_gb", "sga_max_size_gb", "sga_buffer_cache_gb", "sga_shared_pool_gb",
+        "sga_other_gb", "pga_allocated_gb", "pga_used_gb", "pga_aggregate_target_gb",
     ]
-    top_snapshots = table.sort_values(
-        ["sga_used_gb", "pga_allocated_gb"], ascending=False, na_position="last",
-    ).head(20)
-    st.dataframe(top_snapshots[snapshot_columns], use_container_width=True, hide_index=True)
+    latest = (
+        table.sort_values("end_time", na_position="first")
+        .groupby(["cluster", "db_name", "instance_name"], dropna=False, as_index=False)
+        .tail(1)
+        .sort_values(["cluster", "db_name", "instance_name"], na_position="last")
+    )
+    st.dataframe(latest[snapshot_columns], use_container_width=True, hide_index=True)
 
     with st.expander("All normalized memory history rows"):
         st.dataframe(table, use_container_width=True, hide_index=True)
@@ -1264,14 +1367,19 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     """Render generated DB memory capacity, warning, and rightsizing analytics."""
 
     st.title("Memory Analytics")
-    st.caption("Capacity and risk analytics from local output files only; no collectors or SSH calls are made.")
+    st.caption("SGA/PGA historical summary and capacity recommendations from local output files.")
 
     summary_df, summary_path = read_output("db_memory_history_summary")
+    top_df, top_path = read_output("memory_capacity_top_consumers")
+    warnings_df, warnings_path = read_output("memory_warning_report")
+    rightsizing_df, rightsizing_path = read_output("memory_rightsizing_candidates")
+    cluster_rollup_df, cluster_rollup_path = read_output("memory_cluster_rollup")
+
     summary = apply_global_filters(normalize_db_memory_summary(summary_df), filters)
-    show_source(summary_path)
-    if summary.empty:
-        st.warning("No db_memory_history_summary output found. Generate the memory summary before using this page.")
+    if summary_path is None or summary.empty:
+        st.warning("No db_memory_history_summary output found. Run python main.py --collector db-memory-history --days 7 first.")
         return
+    show_source(summary_path)
 
     critical = int((summary["warning_severity"] == "CRITICAL").sum())
     warning = int((summary["warning_severity"] == "WARNING").sum())
@@ -1286,20 +1394,20 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         ("Total PGA target GB", f"{summary['pga_aggregate_target_gb_max'].sum(skipna=True):,.1f}", "neutral"),
         ("Total PGA allocated max GB", f"{summary['pga_allocated_gb_max'].sum(skipna=True):,.1f}", "neutral"),
     ]
-    for container, (label, value, state) in zip(st.columns(8), metrics):
+    for container, (label, value, state) in zip(st.columns(4), metrics[:4]):
+        with container:
+            card(label, value, state)
+    for container, (label, value, state) in zip(st.columns(4), metrics[4:]):
         with container:
             card(label, value, state)
 
     st.markdown("### Cluster rollup")
-    rollup_df, rollup_path = read_output("memory_cluster_rollup")
-    rollup = apply_global_filters(normalize_memory_analytics(rollup_df), filters)
+    rollup = apply_global_filters(normalize_memory_cluster_rollup(cluster_rollup_df), filters)
     if rollup.empty:
-        st.info("memory_cluster_rollup output is unavailable; calculated this section from db_memory_history_summary.")
+        st.info("memory_cluster_rollup output is unavailable; derived cluster totals from the summary output.")
         rollup = build_memory_cluster_rollup(summary)
     else:
-        show_source(rollup_path)
-    if "instance_count" not in rollup.columns and "db_instances" in rollup.columns:
-        rollup["instance_count"] = rollup["db_instances"]
+        show_source(cluster_rollup_path)
     rollup_columns = [
         "cluster", "database_count", "instance_count", "total_sga_max_size_gb",
         "total_sga_used_gb_max", "total_pga_target_gb", "total_pga_allocated_gb_max",
@@ -1309,45 +1417,61 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     for column in rollup_columns[1:]:
         rollup[column] = pd.to_numeric(rollup[column], errors="coerce")
     st.dataframe(rollup[rollup_columns], use_container_width=True, hide_index=True)
-    rc1, rc2, rc3 = st.columns(3)
+    rc1, rc2 = st.columns(2)
     with rc1:
-        st.plotly_chart(px.bar(rollup, x="cluster", y="total_sga_used_gb_max", title="Total SGA used max by cluster"), use_container_width=True)
+        st.plotly_chart(
+            px.bar(rollup, x="cluster", y="total_sga_used_gb_max", title="Total SGA used max by cluster"),
+            use_container_width=True,
+        )
     with rc2:
-        st.plotly_chart(px.bar(rollup, x="cluster", y="total_pga_allocated_gb_max", title="Total PGA allocated max by cluster"), use_container_width=True)
-    with rc3:
-        finding_long = rollup.melt(id_vars="cluster", value_vars=["critical_count", "warning_count", "info_count"], var_name="severity", value_name="findings")
-        st.plotly_chart(px.bar(finding_long, x="cluster", y="findings", color="severity", barmode="group", title="Memory findings by cluster"), use_container_width=True)
+        st.plotly_chart(
+            px.bar(rollup, x="cluster", y="total_pga_allocated_gb_max", title="Total PGA allocated max by cluster"),
+            use_container_width=True,
+        )
 
     st.markdown("### Top memory consumers")
-    consumers_df, consumers_path = read_output("memory_capacity_top_consumers")
-    consumers = apply_global_filters(normalize_memory_analytics(consumers_df), filters)
+    consumers = apply_global_filters(normalize_memory_capacity_top_consumers(top_df), filters)
     if consumers.empty:
         st.info("memory_capacity_top_consumers output is unavailable; ranked the summary output instead.")
         consumers = summary.copy()
     else:
-        show_source(consumers_path)
-    consumers = ensure_columns(consumers, ["db_unique_name", "db_name", "instance_name", "cluster", "sga_used_gb_max", "pga_allocated_gb_max"])
+        show_source(top_path)
+    consumers = ensure_columns(
+        consumers,
+        ["db_unique_name", "db_name", "instance_name", "cluster", "sga_used_gb_max", "pga_allocated_gb_max"],
+    )
     for column in ["sga_used_gb_max", "pga_allocated_gb_max"]:
         consumers[column] = pd.to_numeric(consumers[column], errors="coerce")
     consumers["db_instance"] = _memory_consumer_label(consumers)
     tc1, tc2 = st.columns(2)
     with tc1:
-        top_sga = consumers.nlargest(20, "sga_used_gb_max")
-        st.plotly_chart(px.bar(top_sga, x="db_instance", y="sga_used_gb_max", color="cluster", title="Top 20 SGA used max by DB/instance"), use_container_width=True)
+        top_sga = consumers.dropna(subset=["sga_used_gb_max"]).nlargest(20, "sga_used_gb_max")
+        if top_sga.empty:
+            st.info("No SGA consumer values are available.")
+        else:
+            st.plotly_chart(
+                px.bar(top_sga, x="db_instance", y="sga_used_gb_max", color="cluster", title="Top 20 SGA consumers by sga_used_gb_max"),
+                use_container_width=True,
+            )
     with tc2:
-        top_pga = consumers.nlargest(20, "pga_allocated_gb_max")
-        st.plotly_chart(px.bar(top_pga, x="db_instance", y="pga_allocated_gb_max", color="cluster", title="Top 20 PGA allocated max by DB/instance"), use_container_width=True)
+        top_pga = consumers.dropna(subset=["pga_allocated_gb_max"]).nlargest(20, "pga_allocated_gb_max")
+        if top_pga.empty:
+            st.info("No PGA consumer values are available.")
+        else:
+            st.plotly_chart(
+                px.bar(top_pga, x="db_instance", y="pga_allocated_gb_max", color="cluster", title="Top 20 PGA consumers by pga_allocated_gb_max"),
+                use_container_width=True,
+            )
 
     st.markdown("### Warning report")
-    warnings_df, warnings_path = read_output("memory_warning_report")
-    warnings = apply_global_filters(normalize_memory_analytics(warnings_df), filters)
+    warnings = apply_global_filters(normalize_memory_warning_report(warnings_df), filters)
     if warnings.empty:
         st.info("memory_warning_report output is unavailable; showing non-OK rows from the summary output.")
         warnings = summary[summary["warning_severity"] != "OK"].copy()
     else:
         show_source(warnings_path)
     warning_columns = [
-        "cluster", "db_unique_name", "instance_name", "host_name", "warning_severity",
+        "cluster", "db_unique_name", "db_name", "instance_name", "host_name", "warning_severity",
         "warnings", "info_warnings", "warning_warnings", "critical_warnings",
         "sga_growth_headroom_gb", "pga_used_pct_of_target_max", "pga_allocated_gb_max",
         "pga_aggregate_target_gb_max",
@@ -1356,20 +1480,30 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     if warnings.empty:
         st.success("No memory warnings found.")
     else:
-        warnings["warning_level"] = warnings["warning_severity"].map(normalize_severity)
-        st.dataframe(warnings[warning_columns + ["warning_level"]].style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True, column_order=warning_columns)
+        warnings["warning_level"] = warnings["warning_severity"].map(normalize_warning_level)
+        styled_warnings = warnings[warning_columns + ["warning_level"]].style.apply(apply_warning_style, axis=None)
+        st.dataframe(styled_warnings, use_container_width=True, hide_index=True, column_order=warning_columns)
 
     st.markdown("### Rightsizing candidates")
-    rightsizing_df, rightsizing_path = read_output("memory_rightsizing_candidates")
-    rightsizing = apply_global_filters(normalize_memory_analytics(rightsizing_df), filters)
+    rightsizing = apply_global_filters(normalize_memory_rightsizing_candidates(rightsizing_df), filters)
     if rightsizing.empty:
         st.info("Run python main.py --analyze memory to generate rightsizing candidates.")
     else:
         show_source(rightsizing_path)
-        rightsizing = ensure_columns(rightsizing, ["recommendation_type"])
-        for recommendation_type, group in rightsizing.groupby("recommendation_type", dropna=False):
-            st.markdown(f"#### {recommendation_type if pd.notna(recommendation_type) else 'Uncategorized'}")
-            st.dataframe(group, use_container_width=True, hide_index=True)
+        rightsizing_columns = [
+            "cluster", "db_unique_name", "db_name", "instance_name", "host_name",
+            "recommendation_type", "current_value", "observed_peak", "suggested_review_action",
+            "confidence", "warning_severity",
+        ]
+        rightsizing = ensure_columns(rightsizing, rightsizing_columns)
+        st.dataframe(rightsizing[rightsizing_columns], use_container_width=True, hide_index=True)
+        recommendation_counts = (
+            rightsizing["recommendation_type"].fillna("Uncategorized").astype(str).value_counts().rename_axis("recommendation_type").reset_index(name="candidate_count")
+        )
+        st.plotly_chart(
+            px.bar(recommendation_counts, x="recommendation_type", y="candidate_count", title="Rightsizing candidates by recommendation type"),
+            use_container_width=True,
+        )
 
 
 def render_raw_data_page() -> None:

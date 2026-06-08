@@ -47,6 +47,7 @@ def test_normalize_db_memory_summary_parses_numeric_dates_and_severity() -> None
 def test_info_severity_is_supported() -> None:
     assert app.HEALTH_LEVELS == ["CRITICAL", "WARNING", "INFO", "OK"]
     assert app.normalize_severity(" info ") == "INFO"
+    assert app.normalize_warning_level(" info ") == "INFO"
     assert app.LEVEL_COLORS["INFO"]
     assert app.LEVEL_BACKGROUNDS["INFO"]
 
@@ -111,3 +112,41 @@ def test_normalize_db_memory_history_includes_sga_components_and_warning_counts(
     assert result.loc[0, "warning_severity"] == "WARNING"
     assert result.loc[0, "info_warnings"] == "SGA_NEAR_MAX"
     assert result.loc[0, "warning_warnings"] == "PGA_TARGET_HIGH"
+
+
+def test_optional_memory_analytics_normalizers_accept_empty_dataframes() -> None:
+    normalizers = [
+        app.normalize_memory_capacity_top_consumers,
+        app.normalize_memory_warning_report,
+        app.normalize_memory_rightsizing_candidates,
+        app.normalize_memory_cluster_rollup,
+    ]
+
+    for normalizer in normalizers:
+        result = normalizer(pd.DataFrame())
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
+
+
+def test_optional_memory_analytics_normalizers_parse_numeric_and_severity() -> None:
+    source = pd.DataFrame(
+        [{
+            "Cluster": "cluster-a",
+            "DB_NAME": "DBA",
+            "INSTANCE_NAME": "DBA1",
+            "HOST_NAME": "db01",
+            "current_value": ".03",
+            "observed_peak": "nan",
+            "warning_severity": "info",
+        }]
+    )
+
+    result = app.normalize_memory_rightsizing_candidates(source)
+
+    assert result.loc[0, "cluster"] == "cluster-a"
+    assert result.loc[0, "db_name"] == "DBA"
+    assert result.loc[0, "instance_name"] == "DBA1"
+    assert result.loc[0, "host_name"] == "db01"
+    assert result.loc[0, "current_value"] == 0.03
+    assert pd.isna(result.loc[0, "observed_peak"])
+    assert result.loc[0, "warning_severity"] == "INFO"
