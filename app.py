@@ -15,6 +15,10 @@ import plotly.express as px
 import streamlit as st
 
 OUTPUT_DIR = Path("output")
+MEMORY_ANALYTICS_REQUIRED_OUTPUTS = (
+    "db_memory_history_summary",
+    "db_memory_cluster_summary",
+)
 HEALTH_LEVELS = ["CRITICAL", "WARNING", "INFO", "OK"]
 LEVEL_COLORS = {
     "CRITICAL": "#d92d20",
@@ -521,68 +525,12 @@ def normalize_db_memory_summary(df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-MEMORY_ANALYTICS_NUMERIC_COLUMNS = [
-    "snapshot_count", "sga_target_gb_max", "sga_max_size_gb_max", "sga_used_gb_avg",
-    "sga_used_gb_max", "sga_used_pct_of_target_avg", "sga_used_pct_of_target_max",
-    "sga_growth_headroom_gb", "sga_buffer_cache_gb_avg", "sga_buffer_cache_gb_max",
-    "sga_shared_pool_gb_avg", "sga_shared_pool_gb_max", "sga_large_pool_gb_avg",
-    "sga_other_gb_avg", "sga_other_gb_max", "pga_aggregate_target_gb_max",
-    "pga_aggregate_limit_gb_max", "pga_allocated_gb_avg", "pga_allocated_gb_max",
-    "pga_used_gb_avg", "pga_used_gb_max", "pga_used_pct_of_target_avg",
-    "pga_used_pct_of_target_max", "pga_max_allocated_gb_max", "current_value",
-    "observed_peak", "total_sga_used_gb_max", "total_pga_allocated_gb_max",
-    "total_sga_max_size_gb", "total_pga_target_gb", "database_count",
-    "instance_count", "db_instances", "critical_count", "warning_count", "info_count",
-]
-
-
-def normalize_memory_analytics(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize shared columns in generated memory analytics reports."""
-
-    rename_map = {
-        "Cluster": "cluster", "DB_NAME": "db_name", "INSTANCE_NAME": "instance_name",
-        "HOST_NAME": "host_name", "WARNING_SEVERITY": "warning_severity",
-    }
-    table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}).copy()
-    for column in MEMORY_ANALYTICS_NUMERIC_COLUMNS:
-        if column in table.columns:
-            table[column] = pd.to_numeric(table[column], errors="coerce")
-    if "warning_severity" in table.columns:
-        table["warning_severity"] = table["warning_severity"].map(normalize_severity)
-        table["warning_level"] = table["warning_severity"]
-    return table
-
-
-def normalize_memory_capacity_top_consumers(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize the optional top memory consumers analytics output."""
-
-    return normalize_memory_analytics(df)
-
-
-def normalize_memory_warning_report(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize the optional memory warning report output."""
-
-    return normalize_memory_analytics(df)
-
-
-def normalize_memory_rightsizing_candidates(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize the optional memory rightsizing candidates output."""
-
-    return normalize_memory_analytics(df)
-
-
-def normalize_memory_cluster_rollup(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize the optional cluster memory rollup output."""
-
-    return normalize_memory_analytics(df)
-
-
 def build_memory_cluster_rollup(summary: pd.DataFrame) -> pd.DataFrame:
-    """Build cluster memory totals and finding counts when rollup output is absent."""
+    """Build cluster memory totals and finding counts from a memory summary frame."""
 
     if summary.empty:
         return pd.DataFrame()
-    table = normalize_db_memory_summary(summary) if "warning_level" not in summary.columns else summary.copy()
+    table = normalize_db_memory_summary(summary)
     table = ensure_columns(
         table,
         [
@@ -1119,6 +1067,30 @@ def render_db_inventory_page(filters: dict[str, list[str]]) -> None:
             st.dataframe(skipped, use_container_width=True, hide_index=True)
 
 
+def apply_version_inventory_health(
+    version_inventory: pd.DataFrame, health_summary: pd.DataFrame
+) -> pd.DataFrame:
+    """Apply collector-owned imageinfo health decisions to version inventory rows."""
+
+    table = version_inventory.copy()
+    health = ensure_columns(
+        health_summary, ["cluster", "host", "category", "metric", "warning_level"]
+    )
+    imageinfo_health = health[
+        (health["category"] == "VERSION_INVENTORY")
+        & (health["metric"] == "imageinfo_available")
+    ][["cluster", "host", "warning_level"]].rename(
+        columns={"warning_level": "imageinfo_warning_level"}
+    )
+    table = table.merge(imageinfo_health, on=["cluster", "host"], how="left")
+    table["missing_imageinfo"] = table["imageinfo_warning_level"].notna()
+    table["warning_level"] = table["imageinfo_warning_level"].fillna(
+        table["warning_level"]
+    )
+    table["warning_level"] = table["warning_level"].map(normalize_warning_level)
+    return table.drop(columns=["imageinfo_warning_level"])
+
+
 def render_version_inventory_page(filters: dict[str, list[str]]) -> None:
     st.title("Version Inventory")
     df, path = read_output("version_inventory")
@@ -1136,12 +1108,9 @@ def render_version_inventory_page(filters: dict[str, list[str]]) -> None:
         st.warning("No version_inventory output found in output/.")
         return
 
-    table = ensure_columns(df, columns + ["imageinfo_path", "imageinfo_json"])[columns + ["imageinfo_path", "imageinfo_json"]].copy()
-    imageinfo_values = table[["imageinfo_path", "imageinfo_json"]].fillna("").astype(str)
-    missing_imageinfo = imageinfo_values.apply(lambda row: all(value.strip() in {"", "{}", "[]", "<NA>", "nan"} for value in row), axis=1)
-    table["missing_imageinfo"] = missing_imageinfo
-    table["warning_level"] = table["warning_level"].where(~missing_imageinfo, "WARNING")
-    table["warning_level"] = table["warning_level"].map(normalize_warning_level)
+    table = ensure_columns(df, columns)[columns].copy()
+    health_df, _ = read_output("health_summary")
+    table = apply_version_inventory_health(table, health_df)
     table = apply_global_filters(table, filters)
 
     st.markdown("### GI Patch Compliance by Cluster")
@@ -1364,20 +1333,19 @@ def _memory_consumer_label(table: pd.DataFrame) -> pd.Series:
 
 
 def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
-    """Render generated DB memory capacity, warning, and rightsizing analytics."""
+    """Render DB memory capacity and warning analytics from canonical outputs."""
 
     st.title("Memory Analytics")
-    st.caption("SGA/PGA historical summary and capacity recommendations from local output files.")
+    st.caption("SGA/PGA historical summary, cluster capacity, and warning analytics from local output files.")
 
-    summary_df, summary_path = read_output("db_memory_history_summary")
-    top_df, top_path = read_output("memory_capacity_top_consumers")
-    warnings_df, warnings_path = read_output("memory_warning_report")
-    rightsizing_df, rightsizing_path = read_output("memory_rightsizing_candidates")
-    cluster_rollup_df, cluster_rollup_path = read_output("memory_cluster_rollup")
+    summary_df, summary_path = read_output(MEMORY_ANALYTICS_REQUIRED_OUTPUTS[0])
+    cluster_rollup_df, cluster_rollup_path = read_output(
+        MEMORY_ANALYTICS_REQUIRED_OUTPUTS[1]
+    )
 
     summary = apply_global_filters(normalize_db_memory_summary(summary_df), filters)
     if summary_path is None or summary.empty:
-        st.warning("No db_memory_history_summary output found. Run python main.py --collector db-memory-history --days 7 first.")
+        st.warning("No db_memory_history_summary output found. Run python main.py to collect DB memory history first.")
         return
     show_source(summary_path)
 
@@ -1402,12 +1370,14 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
             card(label, value, state)
 
     st.markdown("### Cluster rollup")
-    rollup = apply_global_filters(normalize_memory_cluster_rollup(cluster_rollup_df), filters)
-    if rollup.empty:
-        st.info("memory_cluster_rollup output is unavailable; derived cluster totals from the summary output.")
-        rollup = build_memory_cluster_rollup(summary)
-    else:
+    if cluster_rollup_path is not None:
         show_source(cluster_rollup_path)
+    rollup = build_memory_cluster_rollup(summary)
+    if not cluster_rollup_df.empty:
+        st.caption(
+            "Detailed capacity and finding totals below are derived from the summary; "
+            "the collector-generated cluster summary is available as the cited source."
+        )
     rollup_columns = [
         "cluster", "database_count", "instance_count", "total_sga_max_size_gb",
         "total_sga_used_gb_max", "total_pga_target_gb", "total_pga_allocated_gb_max",
@@ -1430,12 +1400,7 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         )
 
     st.markdown("### Top memory consumers")
-    consumers = apply_global_filters(normalize_memory_capacity_top_consumers(top_df), filters)
-    if consumers.empty:
-        st.info("memory_capacity_top_consumers output is unavailable; ranked the summary output instead.")
-        consumers = summary.copy()
-    else:
-        show_source(top_path)
+    consumers = summary.copy()
     consumers = ensure_columns(
         consumers,
         ["db_unique_name", "db_name", "instance_name", "cluster", "sga_used_gb_max", "pga_allocated_gb_max"],
@@ -1464,12 +1429,7 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
             )
 
     st.markdown("### Warning report")
-    warnings = apply_global_filters(normalize_memory_warning_report(warnings_df), filters)
-    if warnings.empty:
-        st.info("memory_warning_report output is unavailable; showing non-OK rows from the summary output.")
-        warnings = summary[summary["warning_severity"] != "OK"].copy()
-    else:
-        show_source(warnings_path)
+    warnings = summary[summary["warning_severity"] != "OK"].copy()
     warning_columns = [
         "cluster", "db_unique_name", "db_name", "instance_name", "host_name", "warning_severity",
         "warnings", "info_warnings", "warning_warnings", "critical_warnings",
@@ -1484,26 +1444,6 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         styled_warnings = warnings[warning_columns + ["warning_level"]].style.apply(apply_warning_style, axis=None)
         st.dataframe(styled_warnings, use_container_width=True, hide_index=True, column_order=warning_columns)
 
-    st.markdown("### Rightsizing candidates")
-    rightsizing = apply_global_filters(normalize_memory_rightsizing_candidates(rightsizing_df), filters)
-    if rightsizing.empty:
-        st.info("Run python main.py --analyze memory to generate rightsizing candidates.")
-    else:
-        show_source(rightsizing_path)
-        rightsizing_columns = [
-            "cluster", "db_unique_name", "db_name", "instance_name", "host_name",
-            "recommendation_type", "current_value", "observed_peak", "suggested_review_action",
-            "confidence", "warning_severity",
-        ]
-        rightsizing = ensure_columns(rightsizing, rightsizing_columns)
-        st.dataframe(rightsizing[rightsizing_columns], use_container_width=True, hide_index=True)
-        recommendation_counts = (
-            rightsizing["recommendation_type"].fillna("Uncategorized").astype(str).value_counts().rename_axis("recommendation_type").reset_index(name="candidate_count")
-        )
-        st.plotly_chart(
-            px.bar(recommendation_counts, x="recommendation_type", y="candidate_count", title="Rightsizing candidates by recommendation type"),
-            use_container_width=True,
-        )
 
 
 def render_raw_data_page() -> None:

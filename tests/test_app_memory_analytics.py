@@ -114,39 +114,38 @@ def test_normalize_db_memory_history_includes_sga_components_and_warning_counts(
     assert result.loc[0, "warning_warnings"] == "PGA_TARGET_HIGH"
 
 
-def test_optional_memory_analytics_normalizers_accept_empty_dataframes() -> None:
-    normalizers = [
-        app.normalize_memory_capacity_top_consumers,
-        app.normalize_memory_warning_report,
-        app.normalize_memory_rightsizing_candidates,
-        app.normalize_memory_cluster_rollup,
-    ]
+def test_memory_analytics_inputs_have_canonical_report_writers() -> None:
+    from reports import writers
 
-    for normalizer in normalizers:
-        result = normalizer(pd.DataFrame())
-        assert isinstance(result, pd.DataFrame)
-        assert result.empty
+    for stem in app.MEMORY_ANALYTICS_REQUIRED_OUTPUTS:
+        assert callable(getattr(writers, f"write_{stem}_csv"))
+        assert callable(getattr(writers, f"write_{stem}_json"))
 
 
-def test_optional_memory_analytics_normalizers_parse_numeric_and_severity() -> None:
-    source = pd.DataFrame(
-        [{
-            "Cluster": "cluster-a",
-            "DB_NAME": "DBA",
-            "INSTANCE_NAME": "DBA1",
-            "HOST_NAME": "db01",
-            "current_value": ".03",
-            "observed_peak": "nan",
-            "warning_severity": "info",
-        }]
+def test_version_inventory_uses_health_feed_for_missing_imageinfo() -> None:
+    version_inventory = pd.DataFrame(
+        [
+            {"cluster": "c1", "host": "h1", "warning_level": "OK"},
+            {"cluster": "c1", "host": "h2", "warning_level": "OK"},
+        ]
+    )
+    health_summary = pd.DataFrame(
+        [
+            {
+                "cluster": "c1",
+                "host": "h1",
+                "category": "VERSION_INVENTORY",
+                "metric": "imageinfo_available",
+                "warning_level": "WARNING",
+            }
+        ]
     )
 
-    result = app.normalize_memory_rightsizing_candidates(source)
+    result = app.apply_version_inventory_health(version_inventory, health_summary)
 
-    assert result.loc[0, "cluster"] == "cluster-a"
-    assert result.loc[0, "db_name"] == "DBA"
-    assert result.loc[0, "instance_name"] == "DBA1"
-    assert result.loc[0, "host_name"] == "db01"
-    assert result.loc[0, "current_value"] == 0.03
-    assert pd.isna(result.loc[0, "observed_peak"])
-    assert result.loc[0, "warning_severity"] == "INFO"
+    h1 = result[result["host"] == "h1"].iloc[0]
+    h2 = result[result["host"] == "h2"].iloc[0]
+    assert bool(h1["missing_imageinfo"]) is True
+    assert h1["warning_level"] == "WARNING"
+    assert bool(h2["missing_imageinfo"]) is False
+    assert h2["warning_level"] == "OK"

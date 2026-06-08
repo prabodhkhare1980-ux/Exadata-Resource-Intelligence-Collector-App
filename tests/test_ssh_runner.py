@@ -85,3 +85,31 @@ def test_run_script_normalizes_crlf_before_communicate(monkeypatch) -> None:
     assert isinstance(streamed, bytes)
     assert b"\r" not in streamed
     assert b"echo one\necho two\n" in streamed
+
+
+def test_remote_script_normalization_handles_empty_input() -> None:
+    from ssh_runner import _normalize_remote_script
+
+    assert _normalize_remote_script("") == "set -eu\nset -o pipefail\nexit 0\n"
+
+
+def test_remote_script_normalization_handles_whitespace_only_input() -> None:
+    from ssh_runner import _normalize_remote_script
+
+    assert _normalize_remote_script("  \n") == "set -eu\nset -o pipefail\nexit 0\n"
+
+
+def test_remote_script_normalization_handles_shebang_only_input() -> None:
+    from ssh_runner import _normalize_remote_script
+
+    assert _normalize_remote_script("#!/usr/bin/env bash") == (
+        "#!/usr/bin/env bash\nset -eu\nset -o pipefail\nexit 0\n"
+    )
+
+
+def test_remote_script_normalization_preserves_strict_header_once() -> None:
+    from ssh_runner import _normalize_remote_script
+
+    normalized = _normalize_remote_script("set -euo pipefail\necho ready\n")
+
+    assert normalized == "set -euo pipefail\necho ready\nexit 0\n"

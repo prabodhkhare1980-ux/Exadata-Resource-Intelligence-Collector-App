@@ -10,12 +10,16 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from collectors.db_inventory_collector import DBInventoryCollector, DBInventoryRecord
-from collectors.db_performance_collector import DBPerformanceCollector
+from collectors.db_performance_collector import (
+    DBMemoryHistoryRecord,
+    DBPerformanceCollector,
+    DBPerformanceRecord,
+)
 from collectors.asm_diskgroups_collector import (
     ASMDiskgroupCollector,
     ASMDiskgroupRecord,
@@ -71,6 +75,19 @@ from reports.writers import (
 from ssh_runner import SSHRunner
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HostCollectionResult:
+    """Typed result returned by the canonical per-host collection pipeline."""
+
+    os_record: OSCollectionRecord
+    db_record: DBInventoryRecord
+    asm_records: list[ASMDiskgroupRecord]
+    hugepages_record: HugePagesRecord
+    version_record: VersionInventoryRecord
+    db_performance_records: list[DBPerformanceRecord]
+    db_memory_records: list[DBMemoryHistoryRecord]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -250,6 +267,7 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
             days_back=inventory.db_performance_days_back,
             timeout_seconds=inventory.db_performance_timeout_seconds,
             collect_cpu_iops=inventory.db_performance_collect_cpu_iops,
+            # Memory history is cluster-scoped and deduplicated by db_unique_name below.
             collect_memory_history=False,
         )
     except Exception as exc:  # noqa: BLE001
@@ -325,81 +343,15 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
             collection_status="failed",
             collection_error=str(exc),
         )
-    return (
-        os_record,
-        db_record,
-        asm_records,
-        hugepages_record,
-        version_record,
-        db_performance_records,
-        db_memory_records,
+    return HostCollectionResult(
+        os_record=os_record,
+        db_record=db_record,
+        asm_records=asm_records,
+        hugepages_record=hugepages_record,
+        version_record=version_record,
+        db_performance_records=db_performance_records,
+        db_memory_records=db_memory_records,
     )
-
-
-def _normalize_collected_tuple(
-    collected, cluster_name: str, host_name: str, address: str
-):
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    if len(collected) == 3:
-        os_record, db_record, host_asm_records = collected
-        hugepages_record = HugePagesRecord(
-            cluster=cluster_name,
-            host=host_name,
-            address=address,
-            collected_at=now,
-            collection_status="skipped",
-            collection_error="not_returned_by_test_stub",
-        )
-        version_record = VersionInventoryRecord(
-            cluster=cluster_name,
-            host=host_name,
-            address=address,
-            collected_at=now,
-            collection_status="skipped",
-            collection_error="not_returned_by_test_stub",
-        )
-        return (
-            os_record,
-            db_record,
-            host_asm_records,
-            hugepages_record,
-            version_record,
-            [],
-            [],
-        )
-    if len(collected) == 4:
-        os_record, db_record, host_asm_records, hugepages_record = collected
-        version_record = VersionInventoryRecord(
-            cluster=cluster_name,
-            host=host_name,
-            address=address,
-            collected_at=now,
-            collection_status="skipped",
-            collection_error="not_returned_by_test_stub",
-        )
-        return (
-            os_record,
-            db_record,
-            host_asm_records,
-            hugepages_record,
-            version_record,
-            [],
-            [],
-        )
-    if len(collected) == 5:
-        os_record, db_record, host_asm_records, hugepages_record, version_record = (
-            collected
-        )
-        return (
-            os_record,
-            db_record,
-            host_asm_records,
-            hugepages_record,
-            version_record,
-            [],
-            [],
-        )
-    return collected
 
 
 def _partition_asm_records(
@@ -449,17 +401,13 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                 collected = _collect_host(
                     cluster, host, runner, inventory.logs_dir, inventory
                 )
-                (
-                    os_record,
-                    db_record,
-                    host_asm_records,
-                    hugepages_record,
-                    version_record,
-                    host_db_performance,
-                    host_db_memory,
-                ) = _normalize_collected_tuple(
-                    collected, cluster.name, host.name, host.address
-                )
+                os_record = collected.os_record
+                db_record = collected.db_record
+                host_asm_records = collected.asm_records
+                hugepages_record = collected.hugepages_record
+                version_record = collected.version_record
+                host_db_performance = collected.db_performance_records
+                host_db_memory = collected.db_memory_records
                 os_records.append(os_record)
                 db_records.append(db_record)
                 asm_records.extend(host_asm_records)
@@ -473,6 +421,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                 else:
                     hosts_failed += 1
                     LOGGER.error("Failed host %s", host.name)
+            # Collect memory once per db_unique_name across this cluster, not per host.
             db_memory_records.extend(
                 DBPerformanceCollector(
                     runner, logger=logging.getLogger("collectors.db_performance")
@@ -737,17 +686,13 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
             timeout_seconds = max(host.timeout_seconds, 1) * 2
             try:
                 collected = future.result(timeout=timeout_seconds)
-                (
-                    os_record,
-                    db_record,
-                    host_asm_records,
-                    hugepages_record,
-                    version_record,
-                    host_db_performance,
-                    host_db_memory,
-                ) = _normalize_collected_tuple(
-                    collected, cluster.name, host.name, host.address
-                )
+                os_record = collected.os_record
+                db_record = collected.db_record
+                host_asm_records = collected.asm_records
+                hugepages_record = collected.hugepages_record
+                version_record = collected.version_record
+                host_db_performance = collected.db_performance_records
+                host_db_memory = collected.db_memory_records
                 os_records.append(os_record)
                 db_records.append(db_record)
                 asm_records.extend(host_asm_records)
@@ -851,6 +796,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
                         collection_error=str(exc),
                     )
                 )
+    # Collect memory once per db_unique_name across this cluster, not per host.
     db_memory_records.extend(
         DBPerformanceCollector(
             runner, logger=logging.getLogger("collectors.db_performance")

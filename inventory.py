@@ -122,7 +122,7 @@ def load_inventory(path: str | Path) -> Inventory:
                     privilege_method=str(privilege_data.get("method", "sudo")),
                     sudo_password_mode=str(privilege_data.get("sudo_password", "same_as_ssh")),
                     force_tty=bool(privilege_data.get("force_tty", False)),
-                    timeout_seconds=int(host_data.get("timeout_seconds", ssh_defaults.get("timeout_seconds", 60))),
+                    timeout_seconds=int(host_data.get("timeout_seconds", ssh_defaults.get("timeout_seconds", 120))),
                 )
             )
         clusters.append(ClusterConfig(name=cluster_name, environment=environment, hosts=hosts))

@@ -65,6 +65,7 @@ collection:
     enabled: false
   ssh:
     port: 22
+    # Inherited by hosts unless overridden; the code default is also 120 seconds.
     timeout_seconds: 120
     strict_host_key_checking: accept-new
 
