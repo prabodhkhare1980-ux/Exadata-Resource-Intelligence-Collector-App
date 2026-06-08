@@ -117,12 +117,54 @@ def test_performance_navigation_pages_follow_db_performance() -> None:
     [app.render_cpu_analytics_page, app.render_iops_analytics_page],
 )
 def test_analytics_pages_handle_missing_db_performance(monkeypatch, renderer) -> None:
-    warning = Mock()
+    intro = Mock()
+    no_data = Mock()
     monkeypatch.setattr(app, "read_output", lambda stem: (pd.DataFrame(), None))
-    monkeypatch.setattr(app.st, "warning", warning)
+    monkeypatch.setattr(app, "render_analytics_intro", intro)
+    monkeypatch.setattr(app, "show_no_data_message", no_data)
 
     renderer({})
 
-    warning.assert_called_once_with(
-        "No db_performance output found. Run the DB performance collector first."
+    intro.assert_called_once_with(None, 0)
+    no_data.assert_called_once_with(
+        "db_performance output",
+        "python main.py --collector db-performance",
     )
+
+
+def test_show_no_data_message_includes_output_and_command(monkeypatch) -> None:
+    warning = Mock()
+    caption = Mock()
+    code = Mock()
+    monkeypatch.setattr(app.st, "warning", warning)
+    monkeypatch.setattr(app.st, "caption", caption)
+    monkeypatch.setattr(app.st, "code", code)
+
+    app.show_no_data_message("sample output", "python main.py --collector sample")
+
+    warning.assert_called_once_with("No data is available from sample output.")
+    caption.assert_called_once()
+    code.assert_called_once_with(
+        "python main.py --collector sample", language="bash"
+    )
+
+
+def test_top_ranking_chart_uses_horizontal_compact_labels() -> None:
+    source = pd.DataFrame(
+        [
+            {"db_instance": "DB1 / DB1A / db01", "value": 10, "cluster": "c1"},
+            {"db_instance": "DB2 / DB2A / db02", "value": 20, "cluster": "c2"},
+        ]
+    )
+
+    figure = app.top_ranking_chart(
+        source,
+        label_column="db_instance",
+        value_column="value",
+        color_column="cluster",
+        title="Top consumers",
+    )
+
+    assert all(trace.orientation == "h" for trace in figure.data)
+    assert figure.layout.xaxis.tickangle == -30
+    assert figure.layout.yaxis.automargin is True

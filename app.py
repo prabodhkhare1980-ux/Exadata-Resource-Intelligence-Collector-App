@@ -6,7 +6,9 @@ open SSH connections, call collectors, or contact Exadata hosts.
 
 from __future__ import annotations
 
+import html
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +95,44 @@ st.markdown(
         padding: 1rem;
         background: #ffffff;
         box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    .analytics-intro-card {
+        background: linear-gradient(135deg, #f8fafc, #eef2ff);
+        border: 1px solid #dbeafe;
+        border-radius: 16px;
+        min-height: 108px;
+        padding: 14px 16px;
+    }
+    .analytics-intro-card .label {
+        color: #475569;
+        font-size: .75rem;
+        font-weight: 700;
+        letter-spacing: .05em;
+        text-transform: uppercase;
+    }
+    .analytics-intro-card .value {
+        color: #0f172a;
+        font-size: 1rem;
+        font-weight: 700;
+        margin-top: .45rem;
+        overflow-wrap: anywhere;
+    }
+    .section-divider {
+        border-top: 1px solid #dbe3ef;
+        margin: 1.75rem 0 .8rem;
+        padding-top: .75rem;
+    }
+    .section-divider h3 {
+        color: #172554;
+        font-size: 1.15rem;
+        margin: 0;
+    }
+    .dashboard-footer {
+        border-top: 1px solid #e2e8f0;
+        color: #64748b;
+        margin-top: 2.5rem;
+        padding-top: 1rem;
+        text-align: center;
     }
     </style>
     """,
@@ -231,6 +271,114 @@ def show_source(path: Path | None) -> None:
         st.info("No local output file found for this section yet.")
     else:
         st.caption(f"Source: {path}")
+
+
+def _output_modified_time(path: Path | None) -> str:
+    """Return a compact local modified timestamp for an output file."""
+
+    if path is None or not path.exists():
+        return "Not available"
+    return datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    )
+
+
+def render_analytics_intro(path: Path | None, rows_loaded: int) -> None:
+    """Render consistent source, modified-time, and row-count intro cards."""
+
+    values = [
+        ("Data source", str(path) if path is not None else "No output file found"),
+        ("Last output modified", _output_modified_time(path)),
+        ("Rows loaded", f"{rows_loaded:,}"),
+    ]
+    for container, (label, value) in zip(st.columns(3), values):
+        container.markdown(
+            f"""
+            <div class="analytics-intro-card">
+              <div class="label">{html.escape(label)}</div>
+              <div class="value">{html.escape(value)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def section_divider(title: str) -> None:
+    """Render a consistent analytics section heading and divider."""
+
+    st.markdown(
+        f'<div class="section-divider"><h3>{html.escape(title)}</h3></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def show_no_data_message(output_name: str, suggested_command: str) -> None:
+    """Explain which local output is missing and how to generate it."""
+
+    st.warning(f"No data is available from {output_name}.")
+    st.caption("Generate or refresh the local output, then use Refresh local output.")
+    st.code(suggested_command, language="bash")
+
+
+def render_downloadable_table(
+    table: pd.DataFrame,
+    *,
+    key: str,
+    filename: str,
+    styled: Any | None = None,
+    column_order: list[str] | None = None,
+) -> None:
+    """Display a dataframe and provide a CSV download for the displayed rows."""
+
+    st.dataframe(
+        styled if styled is not None else table,
+        use_container_width=True,
+        hide_index=True,
+        column_order=column_order,
+    )
+    st.download_button(
+        "Download displayed rows (CSV)",
+        data=table.to_csv(index=False).encode("utf-8"),
+        file_name=filename,
+        mime="text/csv",
+        key=key,
+    )
+
+
+def top_ranking_chart(
+    table: pd.DataFrame,
+    *,
+    label_column: str,
+    value_column: str,
+    color_column: str,
+    title: str,
+) -> Any:
+    """Build a compact horizontal bar chart for a top-consumer ranking."""
+
+    ranked = table.sort_values(value_column, ascending=True)
+    figure = px.bar(
+        ranked,
+        x=value_column,
+        y=label_column,
+        color=color_column,
+        orientation="h",
+        title=title,
+    )
+    figure.update_layout(
+        height=max(420, min(720, 160 + len(ranked) * 24)),
+        margin=dict(l=20, r=20, t=55, b=35),
+        yaxis_title=None,
+    )
+    figure.update_yaxes(tickfont=dict(size=10), automargin=True)
+    figure.update_xaxes(tickangle=-30, automargin=True)
+    return figure
+
+
+def render_dashboard_footer() -> None:
+    """Render the local-only dashboard safety reminder."""
+
+    st.markdown('<div class="dashboard-footer"></div>', unsafe_allow_html=True)
+    st.caption("Local dashboard only. No SSH connections are opened from Streamlit.")
 
 
 def card(label: str, value: Any, state: str = "neutral") -> None:
@@ -1454,10 +1602,14 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
     st.title("CPU Analytics")
     st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
     df, path = read_output("db_performance")
+    render_analytics_intro(path, len(df))
     if path is None or df.empty:
-        st.warning("No db_performance output found. Run the DB performance collector first.")
+        show_no_data_message(
+            "db_performance output",
+            "python main.py --collector db-performance",
+        )
         return
-    show_source(path)
+
     table = apply_global_filters(normalize_db_performance(df), filters)
     table = render_performance_filters(table, "cpu_analytics")
     if table.empty:
@@ -1471,6 +1623,8 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
     summary["warning_level"] = summary["max_host_cpu_util_pct"].map(
         cpu_performance_severity
     )
+
+    section_divider("KPI Overview")
     _render_performance_metrics([
         ("DB instances analyzed", len(summary)),
         ("Avg DB CPU per sec", _metric_number(summary["avg_db_cpu_per_sec"].mean())),
@@ -1481,7 +1635,7 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
         ("Hosts/instances over 90% host CPU", int((summary["max_host_cpu_util_pct"] >= 90).sum())),
     ])
 
-    st.markdown("### CPU trends")
+    section_divider("Trends")
     chart1, chart2 = st.columns(2)
     with chart1:
         st.plotly_chart(
@@ -1496,25 +1650,33 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
             use_container_width=True,
         )
 
-    st.markdown("### Top CPU consumers")
+    section_divider("Top Consumers")
     chart3, chart4 = st.columns(2)
     chart_summary = summary.assign(db_instance=_performance_instance_label(summary))
     with chart3:
         st.plotly_chart(
-            px.bar(chart_summary.nlargest(20, "max_db_cpu_per_sec"), x="db_instance",
-                   y="max_db_cpu_per_sec", color="cluster",
-                   title="Top 20 by max DB CPU per sec"),
+            top_ranking_chart(
+                chart_summary.nlargest(20, "max_db_cpu_per_sec"),
+                label_column="db_instance",
+                value_column="max_db_cpu_per_sec",
+                color_column="cluster",
+                title="Top 20 by max DB CPU per sec",
+            ),
             use_container_width=True,
         )
     with chart4:
         st.plotly_chart(
-            px.bar(chart_summary.nlargest(20, "max_host_cpu_util_pct"), x="db_instance",
-                   y="max_host_cpu_util_pct", color="cluster",
-                   title="Top 20 by max host CPU utilization %"),
+            top_ranking_chart(
+                chart_summary.nlargest(20, "max_host_cpu_util_pct"),
+                label_column="db_instance",
+                value_column="max_host_cpu_util_pct",
+                color_column="cluster",
+                title="Top 20 by max host CPU utilization %",
+            ),
             use_container_width=True,
         )
 
-    st.markdown("### CPU risk table")
+    section_divider("Risk Table")
     cpu_values = summary["max_db_cpu_per_sec"].dropna()
     relative_cpu_threshold = cpu_values.quantile(0.90) if not cpu_values.empty else pd.NA
     if pd.notna(relative_cpu_threshold):
@@ -1540,11 +1702,20 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
     else:
         risk = risk.sort_values(
             ["max_host_cpu_util_pct", "max_db_cpu_per_sec"], ascending=False
+        )[risk_columns]
+        render_downloadable_table(
+            risk,
+            styled=risk.style.apply(apply_warning_style, axis=None),
+            key="cpu-risk-download",
+            filename="cpu_risk_filtered.csv",
         )
-        st.dataframe(
-            risk[risk_columns].style.apply(apply_warning_style, axis=None),
-            use_container_width=True, hide_index=True,
-        )
+
+    section_divider("Raw Data")
+    render_downloadable_table(
+        table,
+        key="cpu-raw-download",
+        filename="cpu_analytics_filtered.csv",
+    )
 
 
 def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
@@ -1553,17 +1724,22 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
     st.title("IOPS Analytics")
     st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
     df, path = read_output("db_performance")
+    render_analytics_intro(path, len(df))
     if path is None or df.empty:
-        st.warning("No db_performance output found. Run the DB performance collector first.")
+        show_no_data_message(
+            "db_performance output",
+            "python main.py --collector db-performance",
+        )
         return
-    show_source(path)
+
     table = apply_global_filters(normalize_db_performance(df), filters)
     table = render_performance_filters(table, "iops_analytics")
     if table.empty:
         st.info("No IOPS performance rows match the selected filters.")
         return
 
-    st.markdown("### Risk thresholds")
+    section_divider("KPI Overview")
+    st.caption("Risk thresholds")
     threshold_columns = st.columns(4)
     warning_iops = threshold_columns[0].number_input(
         "IOPS warning threshold", min_value=0.0, value=5000.0, step=500.0
@@ -1598,7 +1774,7 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
         ("DBs over high MBPS threshold", int((summary["max_total_mbps"] >= warning_mbps).sum())),
     ])
 
-    st.markdown("### IOPS trends")
+    section_divider("Trends")
     chart1, chart2 = st.columns(2)
     with chart1:
         st.plotly_chart(px.line(table, x="end_time", y="total_iops_avg", color="db_name",
@@ -1608,8 +1784,6 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
         st.plotly_chart(px.line(table, x="end_time", y="total_iops_max", color="db_name",
                                 line_dash="instance_name", title="Total IOPS max over time"),
                         use_container_width=True)
-
-    st.markdown("### Throughput trends")
     chart3, chart4 = st.columns(2)
     with chart3:
         st.plotly_chart(px.line(table, x="end_time", y="total_mbps_avg", color="db_name",
@@ -1620,21 +1794,33 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
                                 line_dash="instance_name", title="Total MBPS max over time"),
                         use_container_width=True)
 
-    st.markdown("### Top IO consumers")
+    section_divider("Top Consumers")
     chart_summary = summary.assign(db_instance=_performance_instance_label(summary))
     chart5, chart6 = st.columns(2)
     with chart5:
-        st.plotly_chart(px.bar(chart_summary.nlargest(20, "max_total_iops"),
-                               x="db_instance", y="max_total_iops", color="cluster",
-                               title="Top 20 DB instances by max total IOPS"),
-                        use_container_width=True)
+        st.plotly_chart(
+            top_ranking_chart(
+                chart_summary.nlargest(20, "max_total_iops"),
+                label_column="db_instance",
+                value_column="max_total_iops",
+                color_column="cluster",
+                title="Top 20 DB instances by max total IOPS",
+            ),
+            use_container_width=True,
+        )
     with chart6:
-        st.plotly_chart(px.bar(chart_summary.nlargest(20, "max_total_mbps"),
-                               x="db_instance", y="max_total_mbps", color="cluster",
-                               title="Top 20 DB instances by max total MBPS"),
-                        use_container_width=True)
+        st.plotly_chart(
+            top_ranking_chart(
+                chart_summary.nlargest(20, "max_total_mbps"),
+                label_column="db_instance",
+                value_column="max_total_mbps",
+                color_column="cluster",
+                title="Top 20 DB instances by max total MBPS",
+            ),
+            use_container_width=True,
+        )
 
-    st.markdown("### IOPS risk table")
+    section_divider("Risk Table")
     risk = summary[
         (summary["max_total_iops"] >= warning_iops)
         | (summary["max_total_mbps"] >= warning_mbps)
@@ -1647,11 +1833,22 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
     if risk.empty:
         st.success("No DB instances exceed the selected IOPS or MBPS warning thresholds.")
     else:
-        risk = risk.sort_values(["max_total_iops", "max_total_mbps"], ascending=False)
-        st.dataframe(
-            risk[risk_columns].style.apply(apply_warning_style, axis=None),
-            use_container_width=True, hide_index=True,
+        risk = risk.sort_values(
+            ["max_total_iops", "max_total_mbps"], ascending=False
+        )[risk_columns]
+        render_downloadable_table(
+            risk,
+            styled=risk.style.apply(apply_warning_style, axis=None),
+            key="iops-risk-download",
+            filename="iops_risk_filtered.csv",
         )
+
+    section_divider("Raw Data")
+    render_downloadable_table(
+        table,
+        key="iops-raw-download",
+        filename="iops_analytics_filtered.csv",
+    )
 
 def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     """Render detailed SGA/PGA history for selected DB instances."""
@@ -1795,15 +1992,19 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     rightsizing_df, rightsizing_path = read_output("memory_rightsizing_candidates")
     cluster_rollup_df, cluster_rollup_path = read_output("memory_cluster_rollup")
 
+    render_analytics_intro(summary_path, len(summary_df))
     summary = apply_global_filters(normalize_db_memory_summary(summary_df), filters)
-    if summary_path is None or summary.empty:
-        st.warning(
-            "No db_memory_history_summary output found. Run python main.py --collector "
-            "db-memory-history --days 7 first."
+    if summary_path is None or summary_df.empty:
+        show_no_data_message(
+            "db_memory_history_summary output",
+            "python main.py --collector db-memory-history --days 7",
         )
         return
-    show_source(summary_path)
+    if summary.empty:
+        st.info("No memory summary rows match the selected global filters.")
+        return
 
+    section_divider("KPI Overview")
     critical = int((summary["warning_severity"] == "CRITICAL").sum())
     warning = int((summary["warning_severity"] == "WARNING").sum())
     info = int((summary["warning_severity"] == "INFO").sum())
@@ -1824,14 +2025,13 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         with container:
             card(label, value, state)
 
-    st.markdown("### Cluster rollup")
+    section_divider("Trends")
+    st.caption("Cluster capacity rollup")
     rollup = apply_global_filters(
         normalize_memory_cluster_rollup(cluster_rollup_df), filters
     )
     if rollup.empty:
         rollup = build_memory_cluster_rollup(summary)
-    elif cluster_rollup_path is not None:
-        show_source(cluster_rollup_path)
     rollup_columns = [
         "cluster", "database_count", "instance_count", "total_sga_max_size_gb",
         "total_sga_used_gb_max", "total_pga_target_gb",
@@ -1841,29 +2041,34 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     rollup = ensure_columns(rollup, rollup_columns)
     for column in rollup_columns[1:]:
         rollup[column] = pd.to_numeric(rollup[column], errors="coerce")
-    st.dataframe(rollup[rollup_columns], use_container_width=True, hide_index=True)
+    rollup_display = rollup[rollup_columns]
+    render_downloadable_table(
+        rollup_display,
+        key="memory-rollup-download",
+        filename="memory_cluster_rollup_filtered.csv",
+    )
     rc1, rc2 = st.columns(2)
     with rc1:
-        st.plotly_chart(
-            px.bar(rollup, x="cluster", y="total_sga_used_gb_max",
-                   title="Total SGA used max by cluster"),
-            use_container_width=True,
+        rollup_sga_chart = px.bar(
+            rollup, x="cluster", y="total_sga_used_gb_max",
+            title="Total SGA used max by cluster",
         )
+        rollup_sga_chart.update_xaxes(tickangle=-30, automargin=True)
+        st.plotly_chart(rollup_sga_chart, use_container_width=True)
     with rc2:
-        st.plotly_chart(
-            px.bar(rollup, x="cluster", y="total_pga_allocated_gb_max",
-                   title="Total PGA allocated max by cluster"),
-            use_container_width=True,
+        rollup_pga_chart = px.bar(
+            rollup, x="cluster", y="total_pga_allocated_gb_max",
+            title="Total PGA allocated max by cluster",
         )
+        rollup_pga_chart.update_xaxes(tickangle=-30, automargin=True)
+        st.plotly_chart(rollup_pga_chart, use_container_width=True)
 
-    st.markdown("### Top memory consumers")
+    section_divider("Top Consumers")
     consumers = apply_global_filters(
         normalize_memory_capacity_top_consumers(top_df), filters
     )
     if consumers.empty:
         consumers = summary.copy()
-    elif top_path is not None:
-        show_source(top_path)
     consumers = ensure_columns(
         consumers,
         ["db_unique_name", "db_name", "instance_name", "cluster",
@@ -1879,8 +2084,13 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
             st.info("No SGA consumer values are available.")
         else:
             st.plotly_chart(
-                px.bar(top_sga, x="db_instance", y="sga_used_gb_max",
-                       color="cluster", title="Top 20 SGA consumers by sga_used_gb_max"),
+                top_ranking_chart(
+                    top_sga,
+                    label_column="db_instance",
+                    value_column="sga_used_gb_max",
+                    color_column="cluster",
+                    title="Top 20 SGA consumers by max used GB",
+                ),
                 use_container_width=True,
             )
     with tc2:
@@ -1889,17 +2099,21 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
             st.info("No PGA consumer values are available.")
         else:
             st.plotly_chart(
-                px.bar(top_pga, x="db_instance", y="pga_allocated_gb_max",
-                       color="cluster", title="Top 20 PGA consumers by pga_allocated_gb_max"),
+                top_ranking_chart(
+                    top_pga,
+                    label_column="db_instance",
+                    value_column="pga_allocated_gb_max",
+                    color_column="cluster",
+                    title="Top 20 PGA consumers by max allocated GB",
+                ),
                 use_container_width=True,
             )
 
-    st.markdown("### Warning report")
+    section_divider("Risk Table")
+    st.caption("Memory warnings")
     warnings = apply_global_filters(normalize_memory_warning_report(warnings_df), filters)
     if warnings.empty:
         warnings = summary[summary["warning_severity"] != "OK"].copy()
-    elif warnings_path is not None:
-        show_source(warnings_path)
     warning_columns = [
         "cluster", "db_unique_name", "db_name", "instance_name", "host_name",
         "warning_severity", "warnings", "info_warnings", "warning_warnings",
@@ -1914,43 +2128,54 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
         warnings["warning_level"] = warnings["warning_severity"].map(
             normalize_warning_level
         )
-        styled = warnings[warning_columns + ["warning_level"]].style.apply(
-            apply_warning_style, axis=None
-        )
-        st.dataframe(
-            styled, use_container_width=True, hide_index=True,
-            column_order=warning_columns
+        warning_display = warnings[warning_columns + ["warning_level"]]
+        render_downloadable_table(
+            warning_display,
+            styled=warning_display.style.apply(apply_warning_style, axis=None),
+            column_order=warning_columns,
+            key="memory-warning-download",
+            filename="memory_warnings_filtered.csv",
         )
 
-    st.markdown("### Rightsizing candidates")
+    st.caption("Rightsizing candidates")
     rightsizing = apply_global_filters(
         normalize_memory_rightsizing_candidates(rightsizing_df), filters
     )
     if rightsizing.empty:
         st.info("Run python main.py --analyze memory to generate rightsizing candidates.")
-        return
-    show_source(rightsizing_path)
-    rightsizing_columns = [
-        "cluster", "db_unique_name", "db_name", "instance_name", "host_name",
-        "recommendation_type", "current_value", "observed_peak",
-        "suggested_review_action", "confidence", "warning_severity",
-    ]
-    rightsizing = ensure_columns(rightsizing, rightsizing_columns)
-    st.dataframe(
-        rightsizing[rightsizing_columns], use_container_width=True, hide_index=True
-    )
-    recommendation_counts = (
-        rightsizing["recommendation_type"].dropna().astype(str).value_counts()
-        .rename_axis("recommendation_type").reset_index(name="candidates")
-    )
-    if not recommendation_counts.empty:
-        st.plotly_chart(
-            px.bar(
-                recommendation_counts, x="recommendation_type", y="candidates",
-                title="Rightsizing candidates by recommendation type",
-            ),
-            use_container_width=True,
+    else:
+        rightsizing_columns = [
+            "cluster", "db_unique_name", "db_name", "instance_name", "host_name",
+            "recommendation_type", "current_value", "observed_peak",
+            "suggested_review_action", "confidence", "warning_severity",
+        ]
+        rightsizing = ensure_columns(rightsizing, rightsizing_columns)
+        rightsizing_display = rightsizing[rightsizing_columns]
+        render_downloadable_table(
+            rightsizing_display,
+            key="memory-rightsizing-download",
+            filename="memory_rightsizing_filtered.csv",
         )
+        recommendation_counts = (
+            rightsizing["recommendation_type"].dropna().astype(str).value_counts()
+            .rename_axis("recommendation_type").reset_index(name="candidates")
+        )
+        if not recommendation_counts.empty:
+            rightsizing_chart = px.bar(
+                recommendation_counts,
+                x="recommendation_type",
+                y="candidates",
+                title="Rightsizing candidates by recommendation type",
+            )
+            rightsizing_chart.update_xaxes(tickangle=-30, automargin=True)
+            st.plotly_chart(rightsizing_chart, use_container_width=True)
+
+    section_divider("Raw Data")
+    render_downloadable_table(
+        summary,
+        key="memory-raw-download",
+        filename="memory_analytics_filtered.csv",
+    )
 
 
 def render_raw_data_page() -> None:
@@ -2006,6 +2231,8 @@ def main() -> None:
         render_memory_analytics_page(filters)
     elif page == "Raw Data Explorer":
         render_raw_data_page()
+
+    render_dashboard_footer()
 
 
 if __name__ == "__main__":
