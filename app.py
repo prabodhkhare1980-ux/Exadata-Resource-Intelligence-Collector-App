@@ -37,6 +37,8 @@ NAVIGATION = [
     "Version Inventory",
     "DB Inventory",
     "DB Performance",
+    "CPU Analytics",
+    "IOPS Analytics",
     "DB Memory History",
     "Memory Analytics",
     "Raw Data Explorer",
@@ -438,7 +440,8 @@ def normalize_db_performance(df: pd.DataFrame) -> pd.DataFrame:
 
     rename_map = {
         "Cluster": "cluster", "HOST_NAME": "host_name", "DB_NAME": "db_name",
-        "INSTANCE_NAME": "instance_name", "END_TIME": "end_time",
+        "INSTANCE_NAME": "instance_name", "BEGIN_TIME": "begin_time",
+        "END_TIME": "end_time",
         "TOTAL_IOPS_AVG": "total_iops_avg", "TOTAL_IOPS_MAX": "total_iops_max",
         "TOTAL_MBPS_AVG": "total_mbps_avg", "TOTAL_MBPS_MAX": "total_mbps_max",
         "CPU_USAGE_PER_SEC_AVG": "cpu_usage_per_sec_avg",
@@ -447,12 +450,88 @@ def normalize_db_performance(df: pd.DataFrame) -> pd.DataFrame:
         "HOST_CPU_UTIL_PCT_MAX": "host_cpu_util_pct_max",
     }
     table = df.rename(columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}).copy()
-    columns = ["cluster", "host_name", "db_name", "instance_name", "end_time", "total_iops_avg", "total_iops_max", "total_mbps_avg", "total_mbps_max", "cpu_usage_per_sec_avg", "cpu_usage_per_sec_max", "host_cpu_util_pct_avg", "host_cpu_util_pct_max"]
+    identity_columns = [
+        "cluster", "host_name", "db_name", "instance_name", "begin_time",
+        "end_time",
+    ]
+    numeric_columns = [
+        "total_iops_avg", "total_iops_max", "total_mbps_avg", "total_mbps_max",
+        "cpu_usage_per_sec_avg", "cpu_usage_per_sec_max",
+        "host_cpu_util_pct_avg", "host_cpu_util_pct_max",
+    ]
+    columns = identity_columns + numeric_columns
     table = ensure_columns(table, columns)[columns].copy()
+    table["begin_time"] = pd.to_datetime(table["begin_time"], errors="coerce")
     table["end_time"] = pd.to_datetime(table["end_time"], errors="coerce")
-    for column in columns[5:]:
+    for column in numeric_columns:
         table[column] = pd.to_numeric(table[column], errors="coerce")
     return table
+
+
+def build_performance_summary(table: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate valid DB performance snapshots by database instance and host."""
+
+    group_columns = ["cluster", "db_name", "instance_name", "host_name"]
+    result_columns = group_columns + [
+        "snapshot_count", "begin_time_min", "end_time_max",
+        "avg_total_iops", "max_total_iops", "avg_total_mbps",
+        "max_total_mbps", "avg_db_cpu_per_sec", "max_db_cpu_per_sec",
+        "avg_host_cpu_util_pct", "max_host_cpu_util_pct",
+    ]
+    normalized = normalize_db_performance(table)
+    valid = normalized.dropna(subset=["end_time"]).copy()
+    if valid.empty:
+        return pd.DataFrame(columns=result_columns)
+
+    valid["begin_time"] = valid["begin_time"].fillna(valid["end_time"])
+    summary = valid.groupby(group_columns, dropna=False).agg(
+        snapshot_count=("end_time", "size"),
+        begin_time_min=("begin_time", "min"),
+        end_time_max=("end_time", "max"),
+        avg_total_iops=("total_iops_avg", "mean"),
+        max_total_iops=("total_iops_max", "max"),
+        avg_total_mbps=("total_mbps_avg", "mean"),
+        max_total_mbps=("total_mbps_max", "max"),
+        avg_db_cpu_per_sec=("cpu_usage_per_sec_avg", "mean"),
+        max_db_cpu_per_sec=("cpu_usage_per_sec_max", "max"),
+        avg_host_cpu_util_pct=("host_cpu_util_pct_avg", "mean"),
+        max_host_cpu_util_pct=("host_cpu_util_pct_max", "max"),
+    ).reset_index()
+    return summary[result_columns]
+
+
+def cpu_performance_severity(host_cpu_util_pct_max: Any) -> str:
+    """Classify host CPU utilization for the CPU analytics risk table."""
+
+    value = pd.to_numeric(pd.Series([host_cpu_util_pct_max]), errors="coerce").iloc[0]
+    if pd.notna(value) and float(value) >= 90:
+        return "CRITICAL"
+    if pd.notna(value) and float(value) >= 80:
+        return "WARNING"
+    return "INFO"
+
+
+def iops_performance_severity(
+    max_total_iops: Any,
+    max_total_mbps: Any,
+    warning_iops: float = 5000,
+    critical_iops: float = 10000,
+    warning_mbps: float = 500,
+    critical_mbps: float = 1000,
+) -> str:
+    """Classify I/O risk against page-local IOPS and throughput thresholds."""
+
+    iops = pd.to_numeric(pd.Series([max_total_iops]), errors="coerce").iloc[0]
+    mbps = pd.to_numeric(pd.Series([max_total_mbps]), errors="coerce").iloc[0]
+    if (pd.notna(iops) and float(iops) >= critical_iops) or (
+        pd.notna(mbps) and float(mbps) >= critical_mbps
+    ):
+        return "CRITICAL"
+    if (pd.notna(iops) and float(iops) >= warning_iops) or (
+        pd.notna(mbps) and float(mbps) >= warning_mbps
+    ):
+        return "WARNING"
+    return "OK"
 
 
 def normalize_db_memory_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -748,6 +827,7 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     db_df, _ = read_output("db_resource_details")
     db_errors_df, _ = read_output("db_resource_details_errors")
     memory_summary_df, memory_summary_path = read_output("db_memory_history_summary")
+    performance_df, performance_path = read_output("db_performance")
 
     health = apply_global_filters(normalize_health(health_df), filters)
     asm = apply_global_filters(normalize_asm(asm_df), filters)
@@ -756,6 +836,7 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     db_resources = apply_global_filters(normalize_db_resources(db_df), filters)
     db_errors = apply_global_filters(normalize_db_resource_errors(db_errors_df), filters)
     memory_summary = apply_global_filters(normalize_db_memory_summary(memory_summary_df), filters)
+    performance = apply_global_filters(normalize_db_performance(performance_df), filters)
 
     st.title("Executive Exadata Resource Cockpit")
     st.caption("Executive risk, capacity, and action view from local collector output only.")
@@ -787,6 +868,36 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
             ("Top PGA consumer", top_memory_value(top_pga, "pga_allocated_gb_max"), "neutral"),
         ]
         for container, (label, value, state) in zip(st.columns(5), memory_metrics):
+            with container:
+                card(label, value, state)
+
+    st.markdown("### Performance Risk Snapshot")
+    performance_summary = build_performance_summary(performance)
+    if performance_path is None or performance_summary.empty:
+        st.info("No db_performance output found. Run the DB performance collector to populate performance risk KPIs.")
+    else:
+        show_source(performance_path)
+        top_cpu = performance_summary.dropna(subset=["max_db_cpu_per_sec"]).nlargest(
+            1, "max_db_cpu_per_sec"
+        )
+        top_iops = performance_summary.dropna(subset=["max_total_iops"]).nlargest(
+            1, "max_total_iops"
+        )
+
+        def top_performance_db(top: pd.DataFrame, metric: str) -> str:
+            if top.empty:
+                return "N/A"
+            row = top.iloc[0]
+            return f"{row['db_name']} / {row['instance_name']} ({row[metric]:,.1f})"
+
+        max_host_cpu = performance_summary["max_host_cpu_util_pct"].max()
+        performance_metrics = [
+            ("Max host CPU %", _metric_number(max_host_cpu), cpu_performance_severity(max_host_cpu)),
+            ("Top CPU DB", top_performance_db(top_cpu, "max_db_cpu_per_sec"), "neutral"),
+            ("Max IOPS", _metric_number(performance_summary["max_total_iops"].max()), "neutral"),
+            ("Top IOPS DB", top_performance_db(top_iops, "max_total_iops"), "neutral"),
+        ]
+        for container, (label, value, state) in zip(st.columns(4), performance_metrics):
             with container:
                 card(label, value, state)
 
@@ -1234,6 +1345,29 @@ def _render_date_filter(table: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     return table[(table["end_time"].dt.date >= start_date) & (table["end_time"].dt.date <= end_date)]
 
 
+def render_performance_filters(table: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    """Render cluster, DB, instance, host, and date filters for performance data."""
+
+    filtered = table.copy()
+    filter_specs = [
+        ("cluster", "Cluster"),
+        ("db_name", "DB name"),
+        ("instance_name", "Instance"),
+        ("host_name", "Host"),
+    ]
+    containers = st.columns(len(filter_specs))
+    for (column, label), container in zip(filter_specs, containers):
+        values = sorted(
+            {str(value) for value in filtered[column].dropna() if str(value).strip()}
+        ) if column in filtered.columns else []
+        selected = container.multiselect(
+            label, values, default=[], key=f"{key_prefix}_{column}"
+        )
+        if selected:
+            filtered = filtered[filtered[column].astype(str).isin(selected)]
+    return _render_date_filter(filtered, key_prefix)
+
+
 def _render_db_perf_filters(
     table: pd.DataFrame,
     key_prefix: str,
@@ -1241,24 +1375,45 @@ def _render_db_perf_filters(
 ) -> pd.DataFrame:
     """Render local DB history filters and return matching rows."""
 
-    filtered = table.copy()
-    filter_specs = [
-        ("cluster", "Cluster"),
-        ("db_name", "DB name"),
-        ("instance_name", "Instance"),
-    ]
-    if include_db_unique_name and "db_unique_name" in filtered.columns:
-        filter_specs.append(("db_unique_name", "DB unique name"))
+    if not include_db_unique_name:
+        return render_performance_filters(table, key_prefix)
 
-    containers = st.columns(len(filter_specs))
-    for (column, label), container in zip(filter_specs, containers):
-        values = sorted(
-            {str(value) for value in filtered[column].dropna() if str(value).strip()}
-        ) if column in filtered.columns else []
-        selected = container.multiselect(label, values, default=[], key=f"{key_prefix}_{column}")
-        if selected:
-            filtered = filtered[filtered[column].astype(str).isin(selected)]
-    return _render_date_filter(filtered, key_prefix)
+    filtered = render_performance_filters(table, key_prefix)
+    values = sorted(
+        {str(value) for value in filtered["db_unique_name"].dropna() if str(value).strip()}
+    ) if "db_unique_name" in filtered.columns else []
+    selected = st.multiselect(
+        "DB unique name", values, default=[], key=f"{key_prefix}_db_unique_name"
+    )
+    if selected:
+        filtered = filtered[filtered["db_unique_name"].astype(str).isin(selected)]
+    return filtered
+
+
+def _performance_instance_label(table: pd.DataFrame) -> pd.Series:
+    """Return a readable database/instance/host label for performance charts."""
+
+    return (
+        table["db_name"].fillna("Unknown DB").astype(str)
+        + " / " + table["instance_name"].fillna("Unknown instance").astype(str)
+        + " / " + table["host_name"].fillna("Unknown host").astype(str)
+    )
+
+
+def _render_performance_metrics(metrics: list[tuple[str, Any]]) -> None:
+    """Render compact KPI metrics across one or more four-column rows."""
+
+    for offset in range(0, len(metrics), 4):
+        row = metrics[offset:offset + 4]
+        for container, (label, value) in zip(st.columns(len(row)), row):
+            container.metric(label, value)
+
+
+def _metric_number(value: Any, decimals: int = 1) -> str:
+    """Format an optional numeric KPI without exposing NaN values."""
+
+    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return "N/A" if pd.isna(number) else f"{float(number):,.{decimals}f}"
 
 
 def render_db_performance_page(filters: dict[str, list[str]]) -> None:
@@ -1270,7 +1425,10 @@ def render_db_performance_page(filters: dict[str, list[str]]) -> None:
     if table.empty:
         st.warning("No db_performance output found in output/.")
         return
-    table = _render_db_perf_filters(table, "db_perf")
+    table = render_performance_filters(table, "db_perf")
+    if table.empty:
+        st.info("No DB performance rows match the selected filters.")
+        return
     chart1, chart2 = st.columns(2)
     with chart1:
         st.plotly_chart(px.line(table, x="end_time", y="total_iops_avg", color="db_name", line_dash="instance_name", title="Total IOPS over time"), use_container_width=True)
@@ -1289,6 +1447,211 @@ def render_db_performance_page(filters: dict[str, list[str]]) -> None:
         st.plotly_chart(px.bar(top.nlargest(15, "max_iops"), x="db_name", y="max_iops", color="cluster", title="Top DBs by max IOPS"), use_container_width=True)
     st.dataframe(table, use_container_width=True, hide_index=True)
 
+
+def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render focused database and host CPU analytics from local AWR output."""
+
+    st.title("CPU Analytics")
+    st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
+    df, path = read_output("db_performance")
+    if path is None or df.empty:
+        st.warning("No db_performance output found. Run the DB performance collector first.")
+        return
+    show_source(path)
+    table = apply_global_filters(normalize_db_performance(df), filters)
+    table = render_performance_filters(table, "cpu_analytics")
+    if table.empty:
+        st.info("No CPU performance rows match the selected filters.")
+        return
+
+    summary = build_performance_summary(table)
+    if summary.empty:
+        st.info("No CPU performance rows with a valid end_time match the selected filters.")
+        return
+    summary["warning_level"] = summary["max_host_cpu_util_pct"].map(
+        cpu_performance_severity
+    )
+    _render_performance_metrics([
+        ("DB instances analyzed", len(summary)),
+        ("Avg DB CPU per sec", _metric_number(summary["avg_db_cpu_per_sec"].mean())),
+        ("Max DB CPU per sec", _metric_number(summary["max_db_cpu_per_sec"].max())),
+        ("Avg host CPU %", _metric_number(summary["avg_host_cpu_util_pct"].mean())),
+        ("Max host CPU %", _metric_number(summary["max_host_cpu_util_pct"].max())),
+        ("Hosts/instances over 80% host CPU", int((summary["max_host_cpu_util_pct"] >= 80).sum())),
+        ("Hosts/instances over 90% host CPU", int((summary["max_host_cpu_util_pct"] >= 90).sum())),
+    ])
+
+    st.markdown("### CPU trends")
+    chart1, chart2 = st.columns(2)
+    with chart1:
+        st.plotly_chart(
+            px.line(table, x="end_time", y="cpu_usage_per_sec_avg", color="db_name",
+                    line_dash="instance_name", title="DB CPU usage per sec over time"),
+            use_container_width=True,
+        )
+    with chart2:
+        st.plotly_chart(
+            px.line(table, x="end_time", y="host_cpu_util_pct_avg", color="host_name",
+                    line_dash="instance_name", title="Host CPU utilization % over time"),
+            use_container_width=True,
+        )
+
+    st.markdown("### Top CPU consumers")
+    chart3, chart4 = st.columns(2)
+    chart_summary = summary.assign(db_instance=_performance_instance_label(summary))
+    with chart3:
+        st.plotly_chart(
+            px.bar(chart_summary.nlargest(20, "max_db_cpu_per_sec"), x="db_instance",
+                   y="max_db_cpu_per_sec", color="cluster",
+                   title="Top 20 by max DB CPU per sec"),
+            use_container_width=True,
+        )
+    with chart4:
+        st.plotly_chart(
+            px.bar(chart_summary.nlargest(20, "max_host_cpu_util_pct"), x="db_instance",
+                   y="max_host_cpu_util_pct", color="cluster",
+                   title="Top 20 by max host CPU utilization %"),
+            use_container_width=True,
+        )
+
+    st.markdown("### CPU risk table")
+    cpu_values = summary["max_db_cpu_per_sec"].dropna()
+    relative_cpu_threshold = cpu_values.quantile(0.90) if not cpu_values.empty else pd.NA
+    if pd.notna(relative_cpu_threshold):
+        st.caption(
+            f"Relative DB CPU risk cutoff: 90th percentile "
+            f"({float(relative_cpu_threshold):,.1f} CPU per sec)."
+        )
+    risk = summary[
+        (summary["max_host_cpu_util_pct"] >= 80)
+        | (
+            pd.notna(relative_cpu_threshold)
+            & (summary["max_db_cpu_per_sec"] >= relative_cpu_threshold)
+        )
+    ].copy()
+    risk_columns = [
+        "cluster", "host_name", "db_name", "instance_name", "snapshot_count",
+        "begin_time_min", "end_time_max", "avg_db_cpu_per_sec",
+        "max_db_cpu_per_sec", "avg_host_cpu_util_pct",
+        "max_host_cpu_util_pct", "warning_level",
+    ]
+    if risk.empty:
+        st.success("No host CPU threshold or relative DB CPU risks found.")
+    else:
+        risk = risk.sort_values(
+            ["max_host_cpu_util_pct", "max_db_cpu_per_sec"], ascending=False
+        )
+        st.dataframe(
+            risk[risk_columns].style.apply(apply_warning_style, axis=None),
+            use_container_width=True, hide_index=True,
+        )
+
+
+def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render focused IOPS and throughput analytics from local AWR output."""
+
+    st.title("IOPS Analytics")
+    st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
+    df, path = read_output("db_performance")
+    if path is None or df.empty:
+        st.warning("No db_performance output found. Run the DB performance collector first.")
+        return
+    show_source(path)
+    table = apply_global_filters(normalize_db_performance(df), filters)
+    table = render_performance_filters(table, "iops_analytics")
+    if table.empty:
+        st.info("No IOPS performance rows match the selected filters.")
+        return
+
+    st.markdown("### Risk thresholds")
+    threshold_columns = st.columns(4)
+    warning_iops = threshold_columns[0].number_input(
+        "IOPS warning threshold", min_value=0.0, value=5000.0, step=500.0
+    )
+    critical_iops = threshold_columns[1].number_input(
+        "IOPS critical threshold", min_value=0.0, value=10000.0, step=500.0
+    )
+    warning_mbps = threshold_columns[2].number_input(
+        "MBPS warning threshold", min_value=0.0, value=500.0, step=50.0
+    )
+    critical_mbps = threshold_columns[3].number_input(
+        "MBPS critical threshold", min_value=0.0, value=1000.0, step=50.0
+    )
+    summary = build_performance_summary(table)
+    if summary.empty:
+        st.info("No IOPS performance rows with a valid end_time match the selected filters.")
+        return
+    summary["warning_level"] = summary.apply(
+        lambda row: iops_performance_severity(
+            row["max_total_iops"], row["max_total_mbps"], warning_iops,
+            critical_iops, warning_mbps, critical_mbps
+        ),
+        axis=1,
+    )
+    _render_performance_metrics([
+        ("DB instances analyzed", len(summary)),
+        ("Avg IOPS", _metric_number(summary["avg_total_iops"].mean())),
+        ("Max IOPS", _metric_number(summary["max_total_iops"].max())),
+        ("Avg MBPS", _metric_number(summary["avg_total_mbps"].mean())),
+        ("Max MBPS", _metric_number(summary["max_total_mbps"].max())),
+        ("DBs over high IOPS threshold", int((summary["max_total_iops"] >= warning_iops).sum())),
+        ("DBs over high MBPS threshold", int((summary["max_total_mbps"] >= warning_mbps).sum())),
+    ])
+
+    st.markdown("### IOPS trends")
+    chart1, chart2 = st.columns(2)
+    with chart1:
+        st.plotly_chart(px.line(table, x="end_time", y="total_iops_avg", color="db_name",
+                                line_dash="instance_name", title="Total IOPS avg over time"),
+                        use_container_width=True)
+    with chart2:
+        st.plotly_chart(px.line(table, x="end_time", y="total_iops_max", color="db_name",
+                                line_dash="instance_name", title="Total IOPS max over time"),
+                        use_container_width=True)
+
+    st.markdown("### Throughput trends")
+    chart3, chart4 = st.columns(2)
+    with chart3:
+        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_avg", color="db_name",
+                                line_dash="instance_name", title="Total MBPS avg over time"),
+                        use_container_width=True)
+    with chart4:
+        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_max", color="db_name",
+                                line_dash="instance_name", title="Total MBPS max over time"),
+                        use_container_width=True)
+
+    st.markdown("### Top IO consumers")
+    chart_summary = summary.assign(db_instance=_performance_instance_label(summary))
+    chart5, chart6 = st.columns(2)
+    with chart5:
+        st.plotly_chart(px.bar(chart_summary.nlargest(20, "max_total_iops"),
+                               x="db_instance", y="max_total_iops", color="cluster",
+                               title="Top 20 DB instances by max total IOPS"),
+                        use_container_width=True)
+    with chart6:
+        st.plotly_chart(px.bar(chart_summary.nlargest(20, "max_total_mbps"),
+                               x="db_instance", y="max_total_mbps", color="cluster",
+                               title="Top 20 DB instances by max total MBPS"),
+                        use_container_width=True)
+
+    st.markdown("### IOPS risk table")
+    risk = summary[
+        (summary["max_total_iops"] >= warning_iops)
+        | (summary["max_total_mbps"] >= warning_mbps)
+    ].copy()
+    risk_columns = [
+        "cluster", "host_name", "db_name", "instance_name", "snapshot_count",
+        "begin_time_min", "end_time_max", "avg_total_iops", "max_total_iops",
+        "avg_total_mbps", "max_total_mbps", "warning_level",
+    ]
+    if risk.empty:
+        st.success("No DB instances exceed the selected IOPS or MBPS warning thresholds.")
+    else:
+        risk = risk.sort_values(["max_total_iops", "max_total_mbps"], ascending=False)
+        st.dataframe(
+            risk[risk_columns].style.apply(apply_warning_style, axis=None),
+            use_container_width=True, hide_index=True,
+        )
 
 def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     """Render detailed SGA/PGA history for selected DB instances."""
@@ -1633,6 +1996,10 @@ def main() -> None:
         render_db_inventory_page(filters)
     elif page == "DB Performance":
         render_db_performance_page(filters)
+    elif page == "CPU Analytics":
+        render_cpu_analytics_page(filters)
+    elif page == "IOPS Analytics":
+        render_iops_analytics_page(filters)
     elif page == "DB Memory History":
         render_db_memory_history_page(filters)
     elif page == "Memory Analytics":
