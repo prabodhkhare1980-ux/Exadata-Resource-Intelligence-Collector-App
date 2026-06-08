@@ -52,6 +52,29 @@ def test_info_severity_is_supported() -> None:
     assert app.LEVEL_BACKGROUNDS["INFO"]
 
 
+def test_warning_cell_style_supports_info_severity() -> None:
+    first_column_style = app.warning_cell_style("cluster", "cluster", "INFO")
+    other_column_style = app.warning_cell_style("host", "cluster", "INFO")
+
+    assert first_column_style == (
+        "background-color: #eff6ff; border-left: 4px solid #2563eb"
+    )
+    assert other_column_style == "background-color: #eff6ff"
+
+
+def test_apply_warning_style_supports_info_severity() -> None:
+    source = pd.DataFrame(
+        [{"cluster": "cluster-a", "warning_level": "INFO"}]
+    )
+
+    result = app.apply_warning_style(source)
+
+    assert result.loc[0, "cluster"] == (
+        "background-color: #eff6ff; border-left: 4px solid #2563eb"
+    )
+    assert result.loc[0, "warning_level"] == "background-color: #eff6ff"
+
+
 def test_build_memory_cluster_rollup_provides_missing_file_fallback() -> None:
     summary = app.normalize_db_memory_summary(
         pd.DataFrame(
@@ -114,12 +137,9 @@ def test_normalize_db_memory_history_includes_sga_components_and_warning_counts(
     assert result.loc[0, "warning_warnings"] == "PGA_TARGET_HIGH"
 
 
-def test_memory_analytics_inputs_have_canonical_report_writers() -> None:
-    from reports import writers
-
-    for stem in app.MEMORY_ANALYTICS_REQUIRED_OUTPUTS:
-        assert callable(getattr(writers, f"write_{stem}_csv"))
-        assert callable(getattr(writers, f"write_{stem}_json"))
+def test_unused_memory_analytics_output_constants_are_removed() -> None:
+    assert not hasattr(app, "MEMORY_ANALYTICS_REQUIRED_OUTPUTS")
+    assert not hasattr(app, "MEMORY_ANALYTICS_OPTIONAL_OUTPUTS")
 
 
 def test_version_inventory_uses_health_feed_for_missing_imageinfo() -> None:
@@ -193,14 +213,8 @@ def test_optional_memory_normalizers_convert_numeric_and_severity_fields() -> No
     assert rightsizing.loc[0, "observed_peak"] == 8.25
 
 
-def test_memory_analytics_navigation_and_optional_output_contract() -> None:
+def test_memory_analytics_navigation_follows_db_memory_history() -> None:
     assert "Memory Analytics" in app.NAVIGATION
     assert app.NAVIGATION.index("Memory Analytics") == app.NAVIGATION.index(
         "DB Memory History"
     ) + 1
-    assert app.MEMORY_ANALYTICS_OPTIONAL_OUTPUTS == (
-        "memory_capacity_top_consumers",
-        "memory_warning_report",
-        "memory_rightsizing_candidates",
-        "memory_cluster_rollup",
-    )
