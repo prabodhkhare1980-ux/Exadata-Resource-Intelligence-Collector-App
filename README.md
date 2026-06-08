@@ -48,8 +48,11 @@ Per host preflight validates:
 3. SSH login (`ssh -i <key> srcordma@host hostname`)
 4. sudo non-interactive (`ssh -i <key> srcordma@host "sudo -n hostname"`)
 5. Effective user (`ssh -i <key> srcordma@host "sudo -n whoami"`)
-6. `output/preflight_report.csv`
-7. `output/preflight_report.json`
+
+Preflight writes:
+
+- `output/preflight_report.csv`
+- `output/preflight_report.json`
 
 No scripts are copied to targets and no remote temp files are created.
 
@@ -92,17 +95,31 @@ Run the dashboard from the repository root:
 streamlit run app.py
 ```
 
-Available dashboard tabs:
+Available dashboard pages, grouped in the sidebar:
 
-1. Executive Health
-2. Host Inventory
-3. ASM Capacity
-4. HugePages
-5. DB Inventory
-6. Version Inventory
+**Overview**
+1. Executive Cockpit — cluster/host KPIs, action-required items, data freshness
+
+**Capacity**
+2. ASM Capacity
+3. HugePages
+
+**Inventory**
+4. Host Inventory
+5. Version Inventory
+6. DB Inventory
+
+**Performance**
 7. DB Performance
-8. DB Memory History
-9. Raw Data Explorer
+8. CPU Analytics
+9. IOPS Analytics
+
+**Memory**
+10. DB Memory History
+11. Memory Analytics
+
+**Explore**
+12. Raw Data Explorer — browse any JSON/CSV in `output/`
 
 Generate collector output first with `python main.py` so the dashboard can load files such as `health_summary.json`, `asm_diskgroups.json`, `hugepages.json`, `os_inventory.json`, `db_inventory.json`, `version_inventory.json`, `db_performance.json`, and `db_memory_history.json` from `output/`.
 
