@@ -31,20 +31,111 @@ LEVEL_BACKGROUNDS = {
     "OK": "#f0fdf4",
 }
 LEVEL_ORDER = {level: index for index, level in enumerate(HEALTH_LEVELS)}
-NAVIGATION = [
-    "Executive Cockpit",
-    "ASM Capacity",
-    "HugePages",
-    "Host Inventory",
-    "Version Inventory",
-    "DB Inventory",
-    "DB Performance",
-    "CPU Analytics",
-    "IOPS Analytics",
-    "DB Memory History",
-    "Memory Analytics",
-    "Raw Data Explorer",
+NAV_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
+    # (section header, [(page name, icon, one-line help)])
+    (
+        "Overview",
+        [
+            (
+                "Executive Cockpit",
+                "🛰️",
+                "At-a-glance health: clusters, hosts, ASM, DBs, and action items.",
+            ),
+        ],
+    ),
+    (
+        "Capacity",
+        [
+            (
+                "ASM Capacity",
+                "🗄️",
+                "ASM diskgroups: total, free, used %, and capacity warnings.",
+            ),
+            (
+                "HugePages",
+                "🧱",
+                "HugePages configuration vs. SGA: shortfalls and recommendations.",
+            ),
+        ],
+    ),
+    (
+        "Inventory",
+        [
+            ("Host Inventory", "🖥️", "OS, CPU, memory, and uptime per host."),
+            (
+                "Version Inventory",
+                "🔢",
+                "Grid Infrastructure / Oracle Home versions and drift.",
+            ),
+            (
+                "DB Inventory",
+                "🗂️",
+                "Databases, roles, sizes, and used %.",
+            ),
+        ],
+    ),
+    (
+        "Performance",
+        [
+            (
+                "DB Performance",
+                "📈",
+                "AWR throughput, CPU, and IOPS summary per database instance.",
+            ),
+            ("CPU Analytics", "⚡", "Host & instance CPU utilization, top consumers."),
+            ("IOPS Analytics", "💾", "Read/write IOPS history and top consumers."),
+        ],
+    ),
+    (
+        "Memory",
+        [
+            (
+                "DB Memory History",
+                "🧠",
+                "AWR SGA/PGA history with warning thresholds.",
+            ),
+            (
+                "Memory Analytics",
+                "🧮",
+                "Top memory consumers, warning report, right-sizing candidates.",
+            ),
+        ],
+    ),
+    (
+        "Explore",
+        [
+            (
+                "Raw Data Explorer",
+                "🔍",
+                "Browse any JSON or CSV file under output/.",
+            ),
+        ],
+    ),
 ]
+
+NAVIGATION = [name for _, items in NAV_SECTIONS for name, _, _ in items]
+PAGE_HELP: dict[str, tuple[str, str]] = {
+    name: (icon, help_text)
+    for _, items in NAV_SECTIONS
+    for name, icon, help_text in items
+}
+
+# Output stems that each page primarily reads. Used to compute a
+# "data freshness" indicator that warns users when output is stale.
+PAGE_PRIMARY_OUTPUTS: dict[str, tuple[str, ...]] = {
+    "Executive Cockpit": ("health_summary", "asm_diskgroups", "db_resource_details"),
+    "ASM Capacity": ("asm_diskgroups",),
+    "HugePages": ("hugepages",),
+    "Host Inventory": ("os_inventory",),
+    "Version Inventory": ("version_inventory",),
+    "DB Inventory": ("db_resource_details", "db_inventory"),
+    "DB Performance": ("db_performance",),
+    "CPU Analytics": ("db_performance",),
+    "IOPS Analytics": ("db_performance",),
+    "DB Memory History": ("db_memory_history",),
+    "Memory Analytics": ("db_memory_history_summary", "db_memory_history"),
+    "Raw Data Explorer": (),
+}
 
 
 st.set_page_config(
@@ -133,6 +224,59 @@ st.markdown(
         margin-top: 2.5rem;
         padding-top: 1rem;
         text-align: center;
+    }
+    .page-header {
+        background: linear-gradient(135deg, #eef2ff, #f8fafc);
+        border: 1px solid #dbeafe;
+        border-radius: 14px;
+        margin-bottom: 1rem;
+        padding: 14px 18px;
+    }
+    .page-header .title {
+        align-items: center;
+        color: #0f172a;
+        display: flex;
+        font-size: 1.45rem;
+        font-weight: 800;
+        gap: 10px;
+    }
+    .page-header .subtitle {
+        color: #475569;
+        font-size: .92rem;
+        margin-top: .25rem;
+    }
+    .freshness-pill {
+        border-radius: 999px;
+        font-size: .72rem;
+        font-weight: 700;
+        letter-spacing: .03em;
+        margin-left: auto;
+        padding: 4px 12px;
+        text-transform: uppercase;
+    }
+    .freshness-fresh {background: #dcfce7; color: #15803d;}
+    .freshness-stale {background: #fef3c7; color: #92400e;}
+    .freshness-missing {background: #fee2e2; color: #991b1b;}
+    .sidebar-section-header {
+        color: #475569;
+        font-size: .72rem;
+        font-weight: 800;
+        letter-spacing: .08em;
+        margin: .75rem 0 .35rem;
+        text-transform: uppercase;
+    }
+    .legend-row {
+        align-items: center;
+        display: flex;
+        font-size: .82rem;
+        gap: 8px;
+        margin: 2px 0;
+    }
+    .legend-dot {
+        border-radius: 999px;
+        display: inline-block;
+        height: 10px;
+        width: 10px;
     }
     </style>
     """,
@@ -379,6 +523,92 @@ def render_dashboard_footer() -> None:
 
     st.markdown('<div class="dashboard-footer"></div>', unsafe_allow_html=True)
     st.caption("Local dashboard only. No SSH connections are opened from Streamlit.")
+
+
+def _newest_output_age_hours(stems: tuple[str, ...]) -> float | None:
+    """Return the age in hours of the newest matched output file, or None."""
+
+    newest: float | None = None
+    for stem in stems:
+        path = _preferred_output_path(stem)
+        if path is None or not path.exists():
+            continue
+        mtime = path.stat().st_mtime
+        if newest is None or mtime > newest:
+            newest = mtime
+    if newest is None:
+        return None
+    return max(0.0, (datetime.now().timestamp() - newest) / 3600.0)
+
+
+def _freshness_pill(stems: tuple[str, ...]) -> str:
+    """Build a freshness pill (fresh/stale/missing) for a set of outputs."""
+
+    if not stems:
+        return ""
+    age = _newest_output_age_hours(stems)
+    if age is None:
+        return (
+            '<span class="freshness-pill freshness-missing" '
+            'title="No matching output file in output/. '
+            'Run python main.py to generate data.">Data missing</span>'
+        )
+    if age < 24:
+        label = f"Fresh · {age:.1f}h"
+        css = "freshness-fresh"
+        tip = "Latest output is less than 24 hours old."
+    elif age < 24 * 7:
+        label = f"Stale · {age / 24:.1f}d"
+        css = "freshness-stale"
+        tip = "Output is 1–7 days old. Re-run python main.py for current data."
+    else:
+        label = f"Stale · {age / 24:.0f}d"
+        css = "freshness-stale"
+        tip = "Output is over a week old. Re-run python main.py."
+    return (
+        f'<span class="freshness-pill {css}" title="{html.escape(tip)}">'
+        f"{html.escape(label)}</span>"
+    )
+
+
+def render_page_header(page_name: str) -> None:
+    """Render a consistent page title + 1-line help + freshness pill."""
+
+    icon, help_text = PAGE_HELP.get(page_name, ("", ""))
+    pill_html = _freshness_pill(PAGE_PRIMARY_OUTPUTS.get(page_name, ()))
+    st.markdown(
+        f"""
+        <div class="page-header">
+          <div class="title">
+            <span>{html.escape(icon)}</span>
+            <span>{html.escape(page_name)}</span>
+            {pill_html}
+          </div>
+          <div class="subtitle">{html.escape(help_text)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar_legend() -> None:
+    """Render a status-color legend in the sidebar so card colors are obvious."""
+
+    with st.sidebar.expander("ℹ️ Status legend", expanded=False):
+        rows = [
+            ("CRITICAL", "Immediate action required"),
+            ("WARNING", "Trending toward risk; investigate"),
+            ("INFO", "Informational, no action needed"),
+            ("OK", "Healthy / within thresholds"),
+        ]
+        for level, description in rows:
+            st.markdown(
+                f'<div class="legend-row">'
+                f'<span class="legend-dot" style="background:{LEVEL_COLORS[level]}"></span>'
+                f"<span><b>{level}</b> — {html.escape(description)}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def card(label: str, value: Any, state: str = "neutral") -> None:
@@ -870,15 +1100,56 @@ def build_memory_cluster_rollup(summary: pd.DataFrame) -> pd.DataFrame:
     return rollup
 
 
+def _render_sidebar_navigation() -> str:
+    """Render the grouped navigation and return the selected page name."""
+
+    if "active_page" not in st.session_state:
+        st.session_state["active_page"] = NAVIGATION[0]
+
+    # Render each section as its own radio group so the section headers are
+    # visible and items group naturally. Selecting an item in one group
+    # clears the selection in the others via session state.
+    selected = st.session_state["active_page"]
+    for section_name, items in NAV_SECTIONS:
+        st.sidebar.markdown(
+            f'<div class="sidebar-section-header">{html.escape(section_name)}</div>',
+            unsafe_allow_html=True,
+        )
+        labels = [f"{icon}  {name}" for name, icon, _ in items]
+        names = [name for name, _, _ in items]
+        index = names.index(selected) if selected in names else None
+        choice = st.sidebar.radio(
+            section_name,
+            labels,
+            index=index,
+            key=f"nav_{section_name}",
+            label_visibility="collapsed",
+        )
+        if choice is not None and index is None:
+            # User picked an item in this section — adopt it as active.
+            selected = names[labels.index(choice)]
+            st.session_state["active_page"] = selected
+        elif choice is not None:
+            # Item in active section may have been re-selected.
+            picked = names[labels.index(choice)]
+            if picked != selected:
+                selected = picked
+                st.session_state["active_page"] = selected
+    return selected
+
+
 def build_global_filters() -> tuple[str, dict[str, list[str]]]:
     """Render sidebar navigation, refresh, and global filters."""
 
     st.sidebar.title("🛰️ Exadata Cockpit")
-    if st.sidebar.button("🔄 Refresh local output"):
+    st.sidebar.caption(
+        "Read-only view of `output/`. Click any page below to drill in."
+    )
+    if st.sidebar.button("🔄 Refresh local output", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    page = st.sidebar.radio("Navigation", NAVIGATION, index=0)
+    page = _render_sidebar_navigation()
     st.sidebar.markdown("---")
     st.sidebar.subheader("Global filters")
 
@@ -903,7 +1174,12 @@ def build_global_filters() -> tuple[str, dict[str, list[str]]]:
             values = []
         filters[column] = st.sidebar.multiselect(label, values, default=[])
 
-    st.sidebar.caption("Local mode only: dashboard reads output/ JSON and CSV files and never opens SSH connections.")
+    st.sidebar.markdown("---")
+    render_sidebar_legend()
+    st.sidebar.caption(
+        "Local mode only: dashboard reads output/ JSON and CSV files and "
+        "never opens SSH connections."
+    )
     return page, filters
 
 
@@ -986,7 +1262,7 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     memory_summary = apply_global_filters(normalize_db_memory_summary(memory_summary_df), filters)
     performance = apply_global_filters(normalize_db_performance(performance_df), filters)
 
-    st.title("Executive Exadata Resource Cockpit")
+    # Page title rendered by render_page_header().
     st.caption("Executive risk, capacity, and action view from local collector output only.")
     render_kpis(health, asm, hugepages, db_resources, db_errors)
 
@@ -1125,7 +1401,7 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
 
 
 def render_asm_page(filters: dict[str, list[str]]) -> None:
-    st.title("ASM Capacity")
+    # Page title rendered by render_page_header().
     df, path = read_output("asm_diskgroups")
     show_source(path)
     if df.empty:
@@ -1168,7 +1444,7 @@ def render_asm_page(filters: dict[str, list[str]]) -> None:
 
 
 def render_hugepages_page(filters: dict[str, list[str]]) -> None:
-    st.title("HugePages Risk")
+    # Page title rendered by render_page_header().
     df, path = read_output("hugepages")
     show_source(path)
     if df.empty:
@@ -1203,7 +1479,7 @@ def render_hugepages_page(filters: dict[str, list[str]]) -> None:
 
 
 def render_host_inventory_page(filters: dict[str, list[str]]) -> None:
-    st.title("Host Inventory")
+    # Page title rendered by render_page_header().
     df, path = read_output("os_inventory")
     show_source(path)
     if df.empty:
@@ -1282,7 +1558,7 @@ def summarize_db_inventory(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_db_inventory_page(filters: dict[str, list[str]]) -> None:
-    st.title("DB Inventory")
+    # Page title rendered by render_page_header().
 
     raw_df, path = read_output("db_resource_details")
     errors_df, errors_path = read_output("db_resource_details_errors")
@@ -1437,7 +1713,7 @@ def apply_version_inventory_health(
 
 
 def render_version_inventory_page(filters: dict[str, list[str]]) -> None:
-    st.title("Version Inventory")
+    # Page title rendered by render_page_header().
     df, path = read_output("version_inventory")
     show_source(path)
     columns = [
@@ -1565,7 +1841,7 @@ def _metric_number(value: Any, decimals: int = 1) -> str:
 
 
 def render_db_performance_page(filters: dict[str, list[str]]) -> None:
-    st.title("DB Performance")
+    # Page title rendered by render_page_header().
     st.caption("Uses DBA_HIST_SYSMETRIC_SUMMARY AWR data; ensure Oracle Diagnostics Pack licensing before enabling collection.")
     df, path = read_output("db_performance")
     show_source(path)
@@ -1599,7 +1875,7 @@ def render_db_performance_page(filters: dict[str, list[str]]) -> None:
 def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
     """Render focused database and host CPU analytics from local AWR output."""
 
-    st.title("CPU Analytics")
+    # Page title rendered by render_page_header().
     st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
     df, path = read_output("db_performance")
     render_analytics_intro(path, len(df))
@@ -1721,7 +1997,7 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
 def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
     """Render focused IOPS and throughput analytics from local AWR output."""
 
-    st.title("IOPS Analytics")
+    # Page title rendered by render_page_header().
     st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
     df, path = read_output("db_performance")
     render_analytics_intro(path, len(df))
@@ -1853,7 +2129,7 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
 def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
     """Render detailed SGA/PGA history for selected DB instances."""
 
-    st.title("DB Memory History")
+    # Page title rendered by render_page_header().
     st.caption("Uses DBA_HIST_* AWR memory views; ensure Oracle Diagnostics Pack licensing before enabling collection.")
     df, path = read_output("db_memory_history")
     show_source(path)
@@ -1981,7 +2257,7 @@ def _memory_consumer_label(table: pd.DataFrame) -> pd.Series:
 def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     """Render memory capacity, warning, and rightsizing analytics from local files."""
 
-    st.title("Memory Analytics")
+    # Page title rendered by render_page_header().
     st.caption(
         "SGA/PGA historical summary and capacity recommendations from local output files."
     )
@@ -2179,7 +2455,7 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
 
 
 def render_raw_data_page() -> None:
-    st.title("Raw Data Explorer")
+    # Page title rendered by render_page_header().
     files = sorted(path for path in OUTPUT_DIR.glob("*") if path.is_file() and path.suffix.lower() in {".json", ".csv"})
     if not files:
         st.warning("No JSON or CSV files found in output/.")
@@ -2204,34 +2480,28 @@ def render_raw_data_page() -> None:
         st.json(payload)
 
 
+PAGE_RENDERERS = {
+    "Executive Cockpit": lambda filters: render_executive_cockpit(filters),
+    "ASM Capacity": lambda filters: render_asm_page(filters),
+    "HugePages": lambda filters: render_hugepages_page(filters),
+    "Host Inventory": lambda filters: render_host_inventory_page(filters),
+    "Version Inventory": lambda filters: render_version_inventory_page(filters),
+    "DB Inventory": lambda filters: render_db_inventory_page(filters),
+    "DB Performance": lambda filters: render_db_performance_page(filters),
+    "CPU Analytics": lambda filters: render_cpu_analytics_page(filters),
+    "IOPS Analytics": lambda filters: render_iops_analytics_page(filters),
+    "DB Memory History": lambda filters: render_db_memory_history_page(filters),
+    "Memory Analytics": lambda filters: render_memory_analytics_page(filters),
+    "Raw Data Explorer": lambda _filters: render_raw_data_page(),
+}
+
+
 def main() -> None:
     page, filters = build_global_filters()
-
-    if page == "Executive Cockpit":
-        render_executive_cockpit(filters)
-    elif page == "ASM Capacity":
-        render_asm_page(filters)
-    elif page == "HugePages":
-        render_hugepages_page(filters)
-    elif page == "Host Inventory":
-        render_host_inventory_page(filters)
-    elif page == "Version Inventory":
-        render_version_inventory_page(filters)
-    elif page == "DB Inventory":
-        render_db_inventory_page(filters)
-    elif page == "DB Performance":
-        render_db_performance_page(filters)
-    elif page == "CPU Analytics":
-        render_cpu_analytics_page(filters)
-    elif page == "IOPS Analytics":
-        render_iops_analytics_page(filters)
-    elif page == "DB Memory History":
-        render_db_memory_history_page(filters)
-    elif page == "Memory Analytics":
-        render_memory_analytics_page(filters)
-    elif page == "Raw Data Explorer":
-        render_raw_data_page()
-
+    render_page_header(page)
+    renderer = PAGE_RENDERERS.get(page)
+    if renderer is not None:
+        renderer(filters)
     render_dashboard_footer()
 
 

@@ -354,6 +354,62 @@ def _collect_host(cluster, host, runner, logs_dir, inventory):
     )
 
 
+def _failure_records_for(
+    cluster_name: str,
+    host,
+    error: str,
+    when: str | None = None,
+) -> tuple[
+    OSCollectionRecord,
+    DBInventoryRecord,
+    HugePagesRecord,
+    VersionInventoryRecord,
+]:
+    """Build matching failure records across collectors for a single host.
+
+    Used when a host (or its entire cluster) never produced real collector
+    output — e.g. host timed out, host raised, or the cluster future itself
+    failed. Keeps every collector's downstream output consistent.
+    """
+
+    timestamp = when or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return (
+        OSCollectionRecord(
+            cluster=cluster_name,
+            host=host.name,
+            address=host.address,
+            collected_at=timestamp,
+            status="failed",
+            error=error,
+        ),
+        DBInventoryRecord(
+            cluster=cluster_name,
+            host=host.name,
+            address=host.address,
+            collected_at=timestamp,
+            status="failed",
+            error=error,
+        ),
+        HugePagesRecord(
+            cluster=cluster_name,
+            host=host.name,
+            address=host.address,
+            collected_at=timestamp,
+            warning_level="ERROR",
+            collection_status="failed",
+            collection_error=error,
+        ),
+        VersionInventoryRecord(
+            cluster=cluster_name,
+            host=host.name,
+            address=host.address,
+            collected_at=timestamp,
+            collection_status="failed",
+            collection_error=error,
+        ),
+    )
+
+
 def _partition_asm_records(
     records: list[ASMDiskgroupRecord],
 ) -> tuple[list[ASMDiskgroupRecord], list[ASMDiskgroupRecord], list[ASMDiskgroupRecord]]:
@@ -444,6 +500,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                     _collect_cluster_parallel, cluster, inventory, runner
                 )
                 cluster_futures[future] = cluster.name
+            cluster_by_name = {cluster.name: cluster for cluster in inventory.clusters}
             for future in as_completed(cluster_futures):
                 cluster_name = cluster_futures[future]
                 try:
@@ -471,6 +528,21 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                     LOGGER.exception(
                         "Cluster execution failed for %s: %s", cluster_name, exc
                     )
+                    # Emit a per-host failure record for every host in the
+                    # failed cluster so the summary, dashboards, and downstream
+                    # writers don't silently drop those hosts.
+                    failed_cluster = cluster_by_name.get(cluster_name)
+                    if failed_cluster is not None:
+                        error_message = f"Cluster execution failed: {exc}"
+                        for host in failed_cluster.hosts:
+                            os_rec, db_rec, hp_rec, ver_rec = _failure_records_for(
+                                cluster_name, host, error_message
+                            )
+                            os_records.append(os_rec)
+                            db_records.append(db_rec)
+                            hugepages_records.append(hp_rec)
+                            version_records.append(ver_rec)
+                            hosts_failed += 1
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
     write_db_inventory_csv(db_records, inventory.output_dir)
@@ -709,93 +781,25 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
             except TimeoutError:
                 failed += 1
                 LOGGER.error("Failed host %s", host.name)
-                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                os_records.append(
-                    OSCollectionRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        status="failed",
-                        error=f"Host timed out after {timeout_seconds} seconds",
-                    )
+                os_rec, db_rec, hp_rec, ver_rec = _failure_records_for(
+                    cluster.name,
+                    host,
+                    f"Host timed out after {timeout_seconds} seconds",
                 )
-                db_records.append(
-                    DBInventoryRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        status="failed",
-                        error=f"Host timed out after {timeout_seconds} seconds",
-                    )
-                )
-                hugepages_records.append(
-                    HugePagesRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        warning_level="ERROR",
-                        collection_status="failed",
-                        collection_error=f"Host timed out after {timeout_seconds} seconds",
-                    )
-                )
-                version_records.append(
-                    VersionInventoryRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        collection_status="failed",
-                        collection_error=f"Host timed out after {timeout_seconds} seconds",
-                    )
-                )
+                os_records.append(os_rec)
+                db_records.append(db_rec)
+                hugepages_records.append(hp_rec)
+                version_records.append(ver_rec)
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 LOGGER.exception("Failed host %s", host.name)
-                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                os_records.append(
-                    OSCollectionRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        status="failed",
-                        error=str(exc),
-                    )
+                os_rec, db_rec, hp_rec, ver_rec = _failure_records_for(
+                    cluster.name, host, str(exc)
                 )
-                db_records.append(
-                    DBInventoryRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        status="failed",
-                        error=str(exc),
-                    )
-                )
-                hugepages_records.append(
-                    HugePagesRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        warning_level="ERROR",
-                        collection_status="failed",
-                        collection_error=str(exc),
-                    )
-                )
-                version_records.append(
-                    VersionInventoryRecord(
-                        cluster=cluster.name,
-                        host=host.name,
-                        address=host.address,
-                        collected_at=now,
-                        collection_status="failed",
-                        collection_error=str(exc),
-                    )
-                )
+                os_records.append(os_rec)
+                db_records.append(db_rec)
+                hugepages_records.append(hp_rec)
+                version_records.append(ver_rec)
     # Collect memory once per db_unique_name across this cluster, not per host.
     db_memory_records.extend(
         DBPerformanceCollector(
