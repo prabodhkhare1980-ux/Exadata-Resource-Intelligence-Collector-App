@@ -6,6 +6,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 from collectors.asm_diskgroups_collector import ASMDiskgroupRecord
 from collectors.db_inventory_collector import DBInventoryRecord
+from collectors.hugepages_collector import HugePagesRecord
+from collectors.version_inventory_collector import VersionInventoryRecord
 from collectors.os_collector import OSCollectionRecord
 from inventory import ClusterConfig, HostConfig, Inventory
 
@@ -40,7 +42,27 @@ def test_run_writes_asm_outputs(monkeypatch, tmp_path: Path) -> None:
         os = OSCollectionRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at="now", status="ok")
         db = DBInventoryRecord(cluster=cluster.name, host=host.name, address=host.address, collected_at="now", status="ok")
         asm = [ASMDiskgroupRecord(cluster=cluster.name, host=host.name, address=host.address, diskgroup_name="DATA", state="MOUNTED", type="EXTERN", total_mb=1000, free_mb=200, usable_file_mb=180, used_pct=80.0, warning_level="OK", asm_collection_status="success")]
-        return os, db, asm
+        return main.HostCollectionResult(
+            os_record=os,
+            db_record=db,
+            asm_records=asm,
+            hugepages_record=HugePagesRecord(
+                cluster=cluster.name,
+                host=host.name,
+                address=host.address,
+                collected_at="now",
+                collection_status="skipped",
+            ),
+            version_record=VersionInventoryRecord(
+                cluster=cluster.name,
+                host=host.name,
+                address=host.address,
+                collected_at="now",
+                collection_status="skipped",
+            ),
+            db_performance_records=[],
+            db_memory_records=[],
+        )
 
     monkeypatch.setattr(main, "_collect_host", fake_collect_host)
 
