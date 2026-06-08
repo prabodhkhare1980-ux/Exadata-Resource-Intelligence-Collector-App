@@ -15,16 +15,6 @@ import plotly.express as px
 import streamlit as st
 
 OUTPUT_DIR = Path("output")
-MEMORY_ANALYTICS_REQUIRED_OUTPUTS = (
-    "db_memory_history_summary",
-    "db_memory_cluster_summary",
-)
-MEMORY_ANALYTICS_OPTIONAL_OUTPUTS = (
-    "memory_capacity_top_consumers",
-    "memory_warning_report",
-    "memory_rightsizing_candidates",
-    "memory_cluster_rollup",
-)
 HEALTH_LEVELS = ["CRITICAL", "WARNING", "INFO", "OK"]
 LEVEL_COLORS = {
     "CRITICAL": "#d92d20",
@@ -201,20 +191,31 @@ def warning_from_pct(value: Any, critical: float = 90.0, warning: float = 80.0) 
     return "OK"
 
 
+def warning_cell_style(column: str, first_column: str, level: str) -> str:
+    """Return the cell style for a warning level and column position."""
+
+    background = LEVEL_BACKGROUNDS.get(level, "")
+    if not background:
+        return ""
+    if column == first_column:
+        border = LEVEL_COLORS.get(level, "")
+        return f"background-color: {background}; border-left: 4px solid {border}"
+    return f"background-color: {background}"
+
+
 def apply_warning_style(df: pd.DataFrame) -> pd.DataFrame:
     """Return a dataframe style map for warning levels."""
 
     if "warning_level" not in df.columns:
         return pd.DataFrame("", index=df.index, columns=df.columns)
 
+    first_column = df.columns[0]
     styles = []
     for _, row in df.iterrows():
         level = normalize_warning_level(row.get("warning_level"))
-        background = LEVEL_BACKGROUNDS.get(level, "")
-        border = LEVEL_COLORS.get(level, "")
         styles.append(
             [
-                f"background-color: {background}; border-left: 4px solid {border}" if background and column == df.columns[0] else f"background-color: {background}" if background else ""
+                warning_cell_style(column, first_column, level)
                 for column in df.columns
             ]
         )
