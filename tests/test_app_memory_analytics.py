@@ -149,3 +149,58 @@ def test_version_inventory_uses_health_feed_for_missing_imageinfo() -> None:
     assert h1["warning_level"] == "WARNING"
     assert bool(h2["missing_imageinfo"]) is False
     assert h2["warning_level"] == "OK"
+
+
+def test_optional_memory_normalizers_handle_empty_and_partial_frames() -> None:
+    normalizers = [
+        app.normalize_memory_capacity_top_consumers,
+        app.normalize_memory_warning_report,
+        app.normalize_memory_rightsizing_candidates,
+        app.normalize_memory_cluster_rollup,
+    ]
+
+    for normalizer in normalizers:
+        assert normalizer(pd.DataFrame()).empty
+        partial = normalizer(pd.DataFrame([{"Cluster": "cluster-a"}]))
+        assert partial.loc[0, "cluster"] == "cluster-a"
+
+
+def test_optional_memory_normalizers_convert_numeric_and_severity_fields() -> None:
+    consumers = app.normalize_memory_capacity_top_consumers(
+        pd.DataFrame(
+            [
+                {
+                    "Cluster": "cluster-a",
+                    "DB_NAME": "DBA",
+                    "INSTANCE_NAME": "DBA1",
+                    "HOST_NAME": "db01",
+                    "sga_used_gb_max": ".03",
+                    "pga_allocated_gb_max": "4.5",
+                    "warning_severity": "info",
+                }
+            ]
+        )
+    )
+    rightsizing = app.normalize_memory_rightsizing_candidates(
+        pd.DataFrame([{"current_value": "16", "observed_peak": "8.25"}])
+    )
+
+    assert consumers.loc[0, "sga_used_gb_max"] == 0.03
+    assert consumers.loc[0, "pga_allocated_gb_max"] == 4.5
+    assert consumers.loc[0, "warning_severity"] == "INFO"
+    assert consumers.loc[0, "host_name"] == "db01"
+    assert rightsizing.loc[0, "current_value"] == 16
+    assert rightsizing.loc[0, "observed_peak"] == 8.25
+
+
+def test_memory_analytics_navigation_and_optional_output_contract() -> None:
+    assert "Memory Analytics" in app.NAVIGATION
+    assert app.NAVIGATION.index("Memory Analytics") == app.NAVIGATION.index(
+        "DB Memory History"
+    ) + 1
+    assert app.MEMORY_ANALYTICS_OPTIONAL_OUTPUTS == (
+        "memory_capacity_top_consumers",
+        "memory_warning_report",
+        "memory_rightsizing_candidates",
+        "memory_cluster_rollup",
+    )
