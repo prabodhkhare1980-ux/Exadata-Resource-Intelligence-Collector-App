@@ -31,109 +31,107 @@ LEVEL_BACKGROUNDS = {
     "OK": "#f0fdf4",
 }
 LEVEL_ORDER = {level: index for index, level in enumerate(HEALTH_LEVELS)}
-NAV_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
-    # (section header, [(page name, icon, one-line help)])
-    (
-        "Overview",
-        [
-            (
-                "Executive Cockpit",
-                "🛰️",
-                "At-a-glance health: clusters, hosts, ASM, DBs, and action items.",
-            ),
-        ],
-    ),
-    (
-        "Capacity",
-        [
-            (
-                "ASM Capacity",
-                "🗄️",
-                "ASM diskgroups: total, free, used %, and capacity warnings.",
-            ),
-            (
-                "HugePages",
-                "🧱",
-                "HugePages configuration vs. SGA: shortfalls and recommendations.",
-            ),
-        ],
-    ),
-    (
-        "Inventory",
-        [
-            ("Host Inventory", "🖥️", "OS, CPU, memory, and uptime per host."),
-            (
-                "Version Inventory",
-                "🔢",
-                "Grid Infrastructure / Oracle Home versions and drift.",
-            ),
-            (
-                "DB Inventory",
-                "🗂️",
-                "Databases, roles, sizes, and used %.",
-            ),
-        ],
-    ),
-    (
-        "Performance",
-        [
-            (
-                "DB Performance",
-                "📈",
-                "AWR throughput, CPU, and IOPS summary per database instance.",
-            ),
-            ("CPU Analytics", "⚡", "Host & instance CPU utilization, top consumers."),
-            ("IOPS Analytics", "💾", "Read/write IOPS history and top consumers."),
-        ],
-    ),
-    (
-        "Memory",
-        [
-            (
-                "DB Memory History",
-                "🧠",
-                "AWR SGA/PGA history with warning thresholds.",
-            ),
-            (
-                "Memory Analytics",
-                "🧮",
-                "Top memory consumers, warning report, right-sizing candidates.",
-            ),
-        ],
-    ),
-    (
-        "Explore",
-        [
-            (
-                "Raw Data Explorer",
-                "🔍",
-                "Browse any JSON or CSV file under output/.",
-            ),
-        ],
-    ),
-]
+NAVIGATION_GROUPS: dict[str, list[str]] = {
+    "Overview": ["Executive Cockpit"],
+    "DB Resource Analytics": [
+        "DB Memory Analytics",
+        "DB CPU Analytics",
+        "DB IOPS Analytics",
+        "DB Throughput Analytics",
+    ],
+    "OS Resource Analytics": [
+        "OS CPU Analytics",
+        "OS Memory Analytics",
+        "HugePages Analytics",
+        "Filesystem Analytics",
+    ],
+    "Storage Analytics": ["ASM Analytics"],
+    "Inventory": ["Host Inventory", "Version Inventory", "DB Inventory"],
+    "Explore": ["Raw Data Explorer"],
+}
 
-NAVIGATION = [name for _, items in NAV_SECTIONS for name, _, _ in items]
+
+def flatten_navigation_groups(groups: dict[str, list[str]]) -> list[str]:
+    """Return a flat ordered list of page names from a grouped navigation map."""
+
+    return [page for pages in groups.values() for page in pages]
+
+
+NAVIGATION = flatten_navigation_groups(NAVIGATION_GROUPS)
+
 PAGE_HELP: dict[str, tuple[str, str]] = {
-    name: (icon, help_text)
-    for _, items in NAV_SECTIONS
-    for name, icon, help_text in items
+    "Executive Cockpit": (
+        "🛰️",
+        "At-a-glance DB, OS, and storage risk from local collector output.",
+    ),
+    "DB Memory Analytics": (
+        "🧠",
+        "Top memory consumers, warning report, right-sizing candidates.",
+    ),
+    "DB CPU Analytics": (
+        "⚡",
+        "DB CPU per sec and host CPU % from AWR; top consumers and risk.",
+    ),
+    "DB IOPS Analytics": (
+        "💾",
+        "Total IOPS avg/max history with configurable risk thresholds.",
+    ),
+    "DB Throughput Analytics": (
+        "📈",
+        "Total MBPS avg/max history with configurable risk thresholds.",
+    ),
+    "OS CPU Analytics": (
+        "🖥️",
+        "OS CPU inventory and host collection health from os_inventory.",
+    ),
+    "OS Memory Analytics": (
+        "🧮",
+        "OS memory and swap snapshot from /proc/meminfo via os_inventory.",
+    ),
+    "HugePages Analytics": (
+        "🧱",
+        "HugePages configuration vs. SGA: shortfalls and THP findings.",
+    ),
+    "Filesystem Analytics": (
+        "📂",
+        "Filesystem capacity, used %, and risk from os_inventory.",
+    ),
+    "ASM Analytics": (
+        "🗄️",
+        "ASM diskgroups: total, free, used %, and capacity warnings.",
+    ),
+    "Host Inventory": ("🖥️", "OS, CPU, memory, and uptime per host."),
+    "Version Inventory": (
+        "🔢",
+        "Grid Infrastructure / Oracle Home versions and drift.",
+    ),
+    "DB Inventory": ("🗂️", "Databases, roles, sizes, and used %."),
+    "Raw Data Explorer": ("🔍", "Browse any JSON or CSV file under output/."),
 }
 
 # Output stems that each page primarily reads. Used to compute a
 # "data freshness" indicator that warns users when output is stale.
 PAGE_PRIMARY_OUTPUTS: dict[str, tuple[str, ...]] = {
-    "Executive Cockpit": ("health_summary", "asm_diskgroups", "db_resource_details"),
-    "ASM Capacity": ("asm_diskgroups",),
-    "HugePages": ("hugepages",),
+    "Executive Cockpit": (
+        "health_summary",
+        "asm_diskgroups",
+        "db_resource_details",
+        "db_performance",
+        "os_inventory",
+        "hugepages",
+    ),
+    "DB Memory Analytics": ("db_memory_history_summary", "db_memory_history"),
+    "DB CPU Analytics": ("db_performance",),
+    "DB IOPS Analytics": ("db_performance",),
+    "DB Throughput Analytics": ("db_performance",),
+    "OS CPU Analytics": ("os_inventory",),
+    "OS Memory Analytics": ("os_inventory",),
+    "HugePages Analytics": ("hugepages",),
+    "Filesystem Analytics": ("os_inventory",),
+    "ASM Analytics": ("asm_diskgroups",),
     "Host Inventory": ("os_inventory",),
     "Version Inventory": ("version_inventory",),
     "DB Inventory": ("db_resource_details", "db_inventory"),
-    "DB Performance": ("db_performance",),
-    "CPU Analytics": ("db_performance",),
-    "IOPS Analytics": ("db_performance",),
-    "DB Memory History": ("db_memory_history",),
-    "Memory Analytics": ("db_memory_history_summary", "db_memory_history"),
     "Raw Data Explorer": (),
 }
 
@@ -571,7 +569,7 @@ def _freshness_pill(stems: tuple[str, ...]) -> str:
     )
 
 
-def render_page_header(page_name: str) -> None:
+def render_page_banner(page_name: str) -> None:
     """Render a consistent page title + 1-line help + freshness pill."""
 
     icon, help_text = PAGE_HELP.get(page_name, ("", ""))
@@ -589,6 +587,96 @@ def render_page_header(page_name: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_page_header(
+    title: str, caption: str | None = None, source_path: Path | None = None
+) -> None:
+    """Render an in-page header with optional caption and source file."""
+
+    st.markdown(f"### {title}")
+    if caption:
+        st.caption(caption)
+    if source_path is not None:
+        show_source(source_path)
+
+
+def render_section(title: str, caption: str | None = None) -> None:
+    """Render a consistent analytics section heading with optional caption."""
+
+    section_divider(title)
+    if caption:
+        st.caption(caption)
+
+
+def render_kpi_grid(
+    metrics: list[tuple[str, Any, str]] | list[tuple[str, Any]],
+    columns: int = 4,
+) -> None:
+    """Render colored KPI cards across one or more rows of N columns."""
+
+    if not metrics:
+        return
+    normalized: list[tuple[str, Any, str]] = []
+    for metric in metrics:
+        if len(metric) == 2:
+            label, value = metric
+            normalized.append((label, value, "neutral"))
+        else:
+            normalized.append(metric)  # type: ignore[arg-type]
+    for offset in range(0, len(normalized), columns):
+        row = normalized[offset:offset + columns]
+        for container, (label, value, state) in zip(st.columns(len(row)), row):
+            with container:
+                card(label, value, state)
+
+
+def render_no_data(output_name: str, suggested_command: str) -> None:
+    """Friendly no-data message explaining how to generate the missing output."""
+
+    show_no_data_message(output_name, suggested_command)
+
+
+def render_csv_download(
+    df: pd.DataFrame, filename: str, label: str = "Download CSV"
+) -> None:
+    """Provide a CSV download button for the supplied dataframe."""
+
+    st.download_button(
+        label,
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=filename,
+        mime="text/csv",
+        key=f"download_{filename}",
+    )
+
+
+def severity_from_pct(
+    value: Any, warning: float = 80.0, critical: float = 90.0
+) -> str:
+    """Return CRITICAL/WARNING/OK from a used percentage value."""
+
+    pct = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(pct):
+        return "OK"
+    if float(pct) >= critical:
+        return "CRITICAL"
+    if float(pct) >= warning:
+        return "WARNING"
+    return "OK"
+
+
+def add_pct_columns(
+    df: pd.DataFrame, used_col: str, total_col: str, pct_col: str
+) -> pd.DataFrame:
+    """Return a copy of ``df`` with ``pct_col`` populated from used/total columns."""
+
+    table = df.copy()
+    used = pd.to_numeric(table.get(used_col), errors="coerce")
+    total = pd.to_numeric(table.get(total_col), errors="coerce")
+    pct = (used / total * 100).where(total > 0)
+    table[pct_col] = pct.round(2)
+    return table
 
 
 def render_sidebar_legend() -> None:
@@ -878,6 +966,12 @@ def build_performance_summary(table: pd.DataFrame) -> pd.DataFrame:
     return summary[result_columns]
 
 
+def build_db_performance_summary(table: pd.DataFrame) -> pd.DataFrame:
+    """Alias for build_performance_summary used by DB analytics pages."""
+
+    return build_performance_summary(table)
+
+
 def cpu_performance_severity(host_cpu_util_pct_max: Any) -> str:
     """Classify host CPU utilization for the CPU analytics risk table."""
 
@@ -1106,18 +1200,17 @@ def _render_sidebar_navigation() -> str:
     if "active_page" not in st.session_state:
         st.session_state["active_page"] = NAVIGATION[0]
 
-    # Render each section as its own radio group so the section headers are
-    # visible and items group naturally. Selecting an item in one group
-    # clears the selection in the others via session state.
     selected = st.session_state["active_page"]
-    for section_name, items in NAV_SECTIONS:
+    for section_name, page_names in NAVIGATION_GROUPS.items():
         st.sidebar.markdown(
             f'<div class="sidebar-section-header">{html.escape(section_name)}</div>',
             unsafe_allow_html=True,
         )
-        labels = [f"{icon}  {name}" for name, icon, _ in items]
-        names = [name for name, _, _ in items]
-        index = names.index(selected) if selected in names else None
+        labels = [
+            f"{PAGE_HELP.get(name, ('', ''))[0]}  {name}".strip()
+            for name in page_names
+        ]
+        index = page_names.index(selected) if selected in page_names else None
         choice = st.sidebar.radio(
             section_name,
             labels,
@@ -1125,13 +1218,8 @@ def _render_sidebar_navigation() -> str:
             key=f"nav_{section_name}",
             label_visibility="collapsed",
         )
-        if choice is not None and index is None:
-            # User picked an item in this section — adopt it as active.
-            selected = names[labels.index(choice)]
-            st.session_state["active_page"] = selected
-        elif choice is not None:
-            # Item in active section may have been re-selected.
-            picked = names[labels.index(choice)]
+        if choice is not None:
+            picked = page_names[labels.index(choice)]
             if picked != selected:
                 selected = picked
                 st.session_state["active_page"] = selected
@@ -1266,64 +1354,106 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
     st.caption("Executive risk, capacity, and action view from local collector output only.")
     render_kpis(health, asm, hugepages, db_resources, db_errors)
 
-    st.markdown("### Memory Risk Snapshot")
-    if memory_summary_path is None or memory_summary.empty:
-        st.info("No db_memory_history_summary output found. Run the DB memory history collector to populate memory risk KPIs.")
-    else:
-        show_source(memory_summary_path)
+    st.markdown("### DB Resource Risk Snapshot")
+    critical_memory = warning_memory = 0
+    if memory_summary_path is not None and not memory_summary.empty:
         critical_memory = int((memory_summary["warning_severity"] == "CRITICAL").sum())
         warning_memory = int((memory_summary["warning_severity"] == "WARNING").sum())
-        info_memory = int((memory_summary["warning_severity"] == "INFO").sum())
-        top_sga = memory_summary.dropna(subset=["sga_used_gb_max"]).nlargest(1, "sga_used_gb_max")
-        top_pga = memory_summary.dropna(subset=["pga_allocated_gb_max"]).nlargest(1, "pga_allocated_gb_max")
-
-        def top_memory_value(top: pd.DataFrame, metric: str) -> str:
-            if top.empty:
-                return "N/A"
-            row = top.iloc[0]
-            database = row["db_unique_name"] if pd.notna(row["db_unique_name"]) else row["db_name"]
-            return f"{database} ({row[metric]:,.1f} GB)"
-
-        memory_metrics = [
-            ("Critical memory findings", critical_memory, "CRITICAL" if critical_memory else "OK"),
-            ("Warning memory findings", warning_memory, "WARNING" if warning_memory else "OK"),
-            ("Info memory findings", info_memory, "INFO" if info_memory else "OK"),
-            ("Top SGA consumer", top_memory_value(top_sga, "sga_used_gb_max"), "neutral"),
-            ("Top PGA consumer", top_memory_value(top_pga, "pga_allocated_gb_max"), "neutral"),
-        ]
-        for container, (label, value, state) in zip(st.columns(5), memory_metrics):
-            with container:
-                card(label, value, state)
-
-    st.markdown("### Performance Risk Snapshot")
-    performance_summary = build_performance_summary(performance)
-    if performance_path is None or performance_summary.empty:
-        st.info("No db_performance output found. Run the DB performance collector to populate performance risk KPIs.")
-    else:
-        show_source(performance_path)
-        top_cpu = performance_summary.dropna(subset=["max_db_cpu_per_sec"]).nlargest(
-            1, "max_db_cpu_per_sec"
-        )
-        top_iops = performance_summary.dropna(subset=["max_total_iops"]).nlargest(
-            1, "max_total_iops"
+    performance_summary = build_db_performance_summary(performance)
+    max_db_cpu = (
+        performance_summary["max_db_cpu_per_sec"].max()
+        if not performance_summary.empty else float("nan")
+    )
+    max_iops = (
+        performance_summary["max_total_iops"].max()
+        if not performance_summary.empty else float("nan")
+    )
+    max_mbps = (
+        performance_summary["max_total_mbps"].max()
+        if not performance_summary.empty else float("nan")
+    )
+    render_kpi_grid(
+        [
+            ("DB memory critical", critical_memory,
+             "CRITICAL" if critical_memory else "OK"),
+            ("DB memory warning", warning_memory,
+             "WARNING" if warning_memory else "OK"),
+            ("Max DB CPU per sec", _metric_number(max_db_cpu), "neutral"),
+            ("Max DB IOPS", _metric_number(max_iops), "neutral"),
+            ("Max DB MBPS", _metric_number(max_mbps), "neutral"),
+        ],
+        columns=5,
+    )
+    if memory_summary_path is None and performance_path is None:
+        st.info(
+            "No db_memory_history_summary or db_performance output found. "
+            "Run the DB collectors to populate DB risk KPIs."
         )
 
-        def top_performance_db(top: pd.DataFrame, metric: str) -> str:
-            if top.empty:
-                return "N/A"
-            row = top.iloc[0]
-            return f"{row['db_name']} / {row['instance_name']} ({row[metric]:,.1f})"
+    st.markdown("### OS Resource Risk Snapshot")
+    failed_hosts = 0
+    if not os_df.empty and "status" in os_df.columns:
+        failed_hosts = int(
+            (os_df["status"].astype(str).str.lower() != "ok").sum()
+        )
+    fs_critical = fs_warning = 0
+    if not filesystems.empty and "warning_level" in filesystems.columns:
+        fs_critical = int((filesystems["warning_level"] == "CRITICAL").sum())
+        fs_warning = int((filesystems["warning_level"] == "WARNING").sum())
+    hp_critical = hp_warning = 0
+    if not hugepages.empty and "warning_level" in hugepages.columns:
+        hp_critical = int((hugepages["warning_level"] == "CRITICAL").sum())
+        hp_warning = int((hugepages["warning_level"] == "WARNING").sum())
+    thp_not_disabled = 0
+    raw_huge = huge_df if huge_df is not None else pd.DataFrame()
+    if not raw_huge.empty:
+        for column in ("transparent_hugepage", "thp_enabled", "thp"):
+            if column in raw_huge.columns:
+                series = raw_huge[column].astype(str).str.lower()
+                thp_not_disabled = int(
+                    series.apply(lambda v: "never" not in v and v not in ("", "nan")).sum()
+                )
+                break
+    render_kpi_grid(
+        [
+            ("Failed host collections", failed_hosts,
+             "CRITICAL" if failed_hosts else "OK"),
+            ("Filesystem critical", fs_critical,
+             "CRITICAL" if fs_critical else "OK"),
+            ("Filesystem warning", fs_warning,
+             "WARNING" if fs_warning else "OK"),
+            ("HugePages critical", hp_critical,
+             "CRITICAL" if hp_critical else "OK"),
+            ("HugePages warning", hp_warning,
+             "WARNING" if hp_warning else "OK"),
+            ("THP not disabled hosts", thp_not_disabled,
+             "WARNING" if thp_not_disabled else "OK"),
+        ],
+        columns=6,
+    )
 
-        max_host_cpu = performance_summary["max_host_cpu_util_pct"].max()
-        performance_metrics = [
-            ("Max host CPU %", _metric_number(max_host_cpu), cpu_performance_severity(max_host_cpu)),
-            ("Top CPU DB", top_performance_db(top_cpu, "max_db_cpu_per_sec"), "neutral"),
-            ("Max IOPS", _metric_number(performance_summary["max_total_iops"].max()), "neutral"),
-            ("Top IOPS DB", top_performance_db(top_iops, "max_total_iops"), "neutral"),
-        ]
-        for container, (label, value, state) in zip(st.columns(4), performance_metrics):
-            with container:
-                card(label, value, state)
+    st.markdown("### Storage Risk Snapshot")
+    asm_critical = asm_warning = 0
+    if not asm.empty and "warning_level" in asm.columns:
+        asm_critical = int((asm["warning_level"] == "CRITICAL").sum())
+        asm_warning = int((asm["warning_level"] == "WARNING").sum())
+    max_asm_used = asm["used_pct"].max() if not asm.empty else float("nan")
+    lowest_usable_tb = (
+        asm["usable_tb"].min()
+        if not asm.empty and "usable_tb" in asm.columns else float("nan")
+    )
+    render_kpi_grid(
+        [
+            ("ASM critical", asm_critical,
+             "CRITICAL" if asm_critical else "OK"),
+            ("ASM warning", asm_warning,
+             "WARNING" if asm_warning else "OK"),
+            ("Max ASM used %", _metric_number(max_asm_used),
+             severity_from_pct(max_asm_used)),
+            ("Lowest usable TB", _metric_number(lowest_usable_tb, 2), "neutral"),
+        ],
+        columns=4,
+    )
 
     st.markdown("### Critical Issues")
     show_source(health_path)
@@ -1872,10 +2002,10 @@ def render_db_performance_page(filters: dict[str, list[str]]) -> None:
     st.dataframe(table, use_container_width=True, hide_index=True)
 
 
-def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
+def render_db_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
     """Render focused database and host CPU analytics from local AWR output."""
 
-    # Page title rendered by render_page_header().
+    # Page title rendered by render_page_banner().
     st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
     df, path = read_output("db_performance")
     render_analytics_intro(path, len(df))
@@ -1892,7 +2022,7 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
         st.info("No CPU performance rows match the selected filters.")
         return
 
-    summary = build_performance_summary(table)
+    summary = build_db_performance_summary(table)
     if summary.empty:
         st.info("No CPU performance rows with a valid end_time match the selected filters.")
         return
@@ -1994,10 +2124,23 @@ def render_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
     )
 
 
-def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
-    """Render focused IOPS and throughput analytics from local AWR output."""
+def _threshold_severity(value: Any, warning: float, critical: float) -> str:
+    """Classify a single metric against page-local warning/critical thresholds."""
 
-    # Page title rendered by render_page_header().
+    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(number):
+        return "OK"
+    if float(number) >= critical:
+        return "CRITICAL"
+    if float(number) >= warning:
+        return "WARNING"
+    return "OK"
+
+
+def render_db_iops_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render focused IOPS analytics from local AWR output."""
+
+    # Page title rendered by render_page_banner().
     st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
     df, path = read_output("db_performance")
     render_analytics_intro(path, len(df))
@@ -2016,38 +2159,26 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
 
     section_divider("KPI Overview")
     st.caption("Risk thresholds")
-    threshold_columns = st.columns(4)
+    threshold_columns = st.columns(2)
     warning_iops = threshold_columns[0].number_input(
         "IOPS warning threshold", min_value=0.0, value=5000.0, step=500.0
     )
     critical_iops = threshold_columns[1].number_input(
         "IOPS critical threshold", min_value=0.0, value=10000.0, step=500.0
     )
-    warning_mbps = threshold_columns[2].number_input(
-        "MBPS warning threshold", min_value=0.0, value=500.0, step=50.0
-    )
-    critical_mbps = threshold_columns[3].number_input(
-        "MBPS critical threshold", min_value=0.0, value=1000.0, step=50.0
-    )
-    summary = build_performance_summary(table)
+    summary = build_db_performance_summary(table)
     if summary.empty:
         st.info("No IOPS performance rows with a valid end_time match the selected filters.")
         return
-    summary["warning_level"] = summary.apply(
-        lambda row: iops_performance_severity(
-            row["max_total_iops"], row["max_total_mbps"], warning_iops,
-            critical_iops, warning_mbps, critical_mbps
-        ),
-        axis=1,
+    summary["warning_level"] = summary["max_total_iops"].map(
+        lambda value: _threshold_severity(value, warning_iops, critical_iops)
     )
     _render_performance_metrics([
         ("DB instances analyzed", len(summary)),
         ("Avg IOPS", _metric_number(summary["avg_total_iops"].mean())),
         ("Max IOPS", _metric_number(summary["max_total_iops"].max())),
-        ("Avg MBPS", _metric_number(summary["avg_total_mbps"].mean())),
-        ("Max MBPS", _metric_number(summary["max_total_mbps"].max())),
-        ("DBs over high IOPS threshold", int((summary["max_total_iops"] >= warning_iops).sum())),
-        ("DBs over high MBPS threshold", int((summary["max_total_mbps"] >= warning_mbps).sum())),
+        ("DBs over IOPS warning", int((summary["max_total_iops"] >= warning_iops).sum())),
+        ("DBs over IOPS critical", int((summary["max_total_iops"] >= critical_iops).sum())),
     ])
 
     section_divider("Trends")
@@ -2060,23 +2191,16 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
         st.plotly_chart(px.line(table, x="end_time", y="total_iops_max", color="db_name",
                                 line_dash="instance_name", title="Total IOPS max over time"),
                         use_container_width=True)
-    chart3, chart4 = st.columns(2)
-    with chart3:
-        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_avg", color="db_name",
-                                line_dash="instance_name", title="Total MBPS avg over time"),
-                        use_container_width=True)
-    with chart4:
-        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_max", color="db_name",
-                                line_dash="instance_name", title="Total MBPS max over time"),
-                        use_container_width=True)
 
     section_divider("Top Consumers")
     chart_summary = summary.assign(db_instance=_performance_instance_label(summary))
-    chart5, chart6 = st.columns(2)
-    with chart5:
+    top_iops = chart_summary.nlargest(20, "max_total_iops")
+    if top_iops.empty:
+        st.info("No max IOPS values are available.")
+    else:
         st.plotly_chart(
             top_ranking_chart(
-                chart_summary.nlargest(20, "max_total_iops"),
+                top_iops,
                 label_column="db_instance",
                 value_column="max_total_iops",
                 color_column="cluster",
@@ -2084,34 +2208,18 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
             ),
             use_container_width=True,
         )
-    with chart6:
-        st.plotly_chart(
-            top_ranking_chart(
-                chart_summary.nlargest(20, "max_total_mbps"),
-                label_column="db_instance",
-                value_column="max_total_mbps",
-                color_column="cluster",
-                title="Top 20 DB instances by max total MBPS",
-            ),
-            use_container_width=True,
-        )
 
     section_divider("Risk Table")
-    risk = summary[
-        (summary["max_total_iops"] >= warning_iops)
-        | (summary["max_total_mbps"] >= warning_mbps)
-    ].copy()
+    risk = summary[summary["max_total_iops"] >= warning_iops].copy()
     risk_columns = [
         "cluster", "host_name", "db_name", "instance_name", "snapshot_count",
         "begin_time_min", "end_time_max", "avg_total_iops", "max_total_iops",
-        "avg_total_mbps", "max_total_mbps", "warning_level",
+        "warning_level",
     ]
     if risk.empty:
-        st.success("No DB instances exceed the selected IOPS or MBPS warning thresholds.")
+        st.success("No DB instances exceed the selected IOPS warning threshold.")
     else:
-        risk = risk.sort_values(
-            ["max_total_iops", "max_total_mbps"], ascending=False
-        )[risk_columns]
+        risk = risk.sort_values("max_total_iops", ascending=False)[risk_columns]
         render_downloadable_table(
             risk,
             styled=risk.style.apply(apply_warning_style, axis=None),
@@ -2124,6 +2232,104 @@ def render_iops_analytics_page(filters: dict[str, list[str]]) -> None:
         table,
         key="iops-raw-download",
         filename="iops_analytics_filtered.csv",
+    )
+
+
+def render_db_throughput_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render focused throughput (MBPS) analytics from local AWR output."""
+
+    # Page title rendered by render_page_banner().
+    st.caption("Uses local db_performance output only; Oracle Diagnostics Pack licensing may apply to the source AWR data.")
+    df, path = read_output("db_performance")
+    render_analytics_intro(path, len(df))
+    if path is None or df.empty:
+        show_no_data_message(
+            "db_performance output",
+            "python main.py --collector db-performance",
+        )
+        return
+
+    table = apply_global_filters(normalize_db_performance(df), filters)
+    table = render_performance_filters(table, "throughput_analytics")
+    if table.empty:
+        st.info("No throughput performance rows match the selected filters.")
+        return
+
+    section_divider("KPI Overview")
+    st.caption("Risk thresholds")
+    threshold_columns = st.columns(2)
+    warning_mbps = threshold_columns[0].number_input(
+        "MBPS warning threshold", min_value=0.0, value=500.0, step=50.0
+    )
+    critical_mbps = threshold_columns[1].number_input(
+        "MBPS critical threshold", min_value=0.0, value=1000.0, step=50.0
+    )
+    summary = build_db_performance_summary(table)
+    if summary.empty:
+        st.info("No throughput rows with a valid end_time match the selected filters.")
+        return
+    summary["warning_level"] = summary["max_total_mbps"].map(
+        lambda value: _threshold_severity(value, warning_mbps, critical_mbps)
+    )
+    _render_performance_metrics([
+        ("DB instances analyzed", len(summary)),
+        ("Avg MBPS", _metric_number(summary["avg_total_mbps"].mean())),
+        ("Max MBPS", _metric_number(summary["max_total_mbps"].max())),
+        ("DBs over MBPS warning", int((summary["max_total_mbps"] >= warning_mbps).sum())),
+        ("DBs over MBPS critical", int((summary["max_total_mbps"] >= critical_mbps).sum())),
+    ])
+
+    section_divider("Trends")
+    chart1, chart2 = st.columns(2)
+    with chart1:
+        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_avg", color="db_name",
+                                line_dash="instance_name", title="Total MBPS avg over time"),
+                        use_container_width=True)
+    with chart2:
+        st.plotly_chart(px.line(table, x="end_time", y="total_mbps_max", color="db_name",
+                                line_dash="instance_name", title="Total MBPS max over time"),
+                        use_container_width=True)
+
+    section_divider("Top Consumers")
+    chart_summary = summary.assign(db_instance=_performance_instance_label(summary))
+    top_mbps = chart_summary.nlargest(20, "max_total_mbps")
+    if top_mbps.empty:
+        st.info("No max MBPS values are available.")
+    else:
+        st.plotly_chart(
+            top_ranking_chart(
+                top_mbps,
+                label_column="db_instance",
+                value_column="max_total_mbps",
+                color_column="cluster",
+                title="Top 20 DB instances by max total MBPS",
+            ),
+            use_container_width=True,
+        )
+
+    section_divider("Risk Table")
+    risk = summary[summary["max_total_mbps"] >= warning_mbps].copy()
+    risk_columns = [
+        "cluster", "host_name", "db_name", "instance_name", "snapshot_count",
+        "begin_time_min", "end_time_max", "avg_total_mbps", "max_total_mbps",
+        "warning_level",
+    ]
+    if risk.empty:
+        st.success("No DB instances exceed the selected MBPS warning threshold.")
+    else:
+        risk = risk.sort_values("max_total_mbps", ascending=False)[risk_columns]
+        render_downloadable_table(
+            risk,
+            styled=risk.style.apply(apply_warning_style, axis=None),
+            key="throughput-risk-download",
+            filename="throughput_risk_filtered.csv",
+        )
+
+    section_divider("Raw Data")
+    render_downloadable_table(
+        table,
+        key="throughput-raw-download",
+        filename="throughput_analytics_filtered.csv",
     )
 
 def render_db_memory_history_page(filters: dict[str, list[str]]) -> None:
@@ -2254,7 +2460,7 @@ def _memory_consumer_label(table: pd.DataFrame) -> pd.Series:
     return db + " / " + instance
 
 
-def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
+def render_db_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     """Render memory capacity, warning, and rightsizing analytics from local files."""
 
     # Page title rendered by render_page_header().
@@ -2454,6 +2660,350 @@ def render_memory_analytics_page(filters: dict[str, list[str]]) -> None:
     )
 
 
+def _parse_meminfo(value: Any) -> dict[str, Any]:
+    """Return a /proc/meminfo dict from a JSON string, dict, or colon-separated text."""
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return {}
+    if isinstance(value, dict):
+        return value
+    parsed = parse_json_value(value)
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(value, str):
+        result: dict[str, Any] = {}
+        for line in value.splitlines():
+            if ":" in line:
+                key, _, val = line.partition(":")
+                result[key.strip()] = val.strip()
+        return result
+    return {}
+
+
+def _coalesce_meminfo(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a /proc/meminfo dict from an os_inventory record, preferring JSON."""
+
+    for key in ("meminfo_json", "meminfo"):
+        if key in record:
+            parsed = _parse_meminfo(record.get(key))
+            if parsed:
+                return parsed
+    return {}
+
+
+def _meminfo_kb(meminfo: dict[str, Any], key: str) -> float:
+    """Return a /proc/meminfo value in kilobytes (raw values include ' kB' suffix)."""
+
+    raw = meminfo.get(key)
+    if raw is None:
+        return float("nan")
+    text = str(raw).strip().lower().replace(" kb", "")
+    try:
+        return float(text)
+    except ValueError:
+        return float("nan")
+
+
+def os_memory_from_meminfo(record: dict[str, Any]) -> dict[str, float]:
+    """Return per-host memory totals in GB from an os_inventory row."""
+
+    meminfo = _coalesce_meminfo(record)
+    mem_total_kb = _meminfo_kb(meminfo, "MemTotal")
+    mem_free_kb = _meminfo_kb(meminfo, "MemFree")
+    mem_available_kb = _meminfo_kb(meminfo, "MemAvailable")
+    swap_total_kb = _meminfo_kb(meminfo, "SwapTotal")
+    swap_free_kb = _meminfo_kb(meminfo, "SwapFree")
+    return {
+        "mem_total_gb": mem_total_kb / 1024 / 1024,
+        "mem_free_gb": mem_free_kb / 1024 / 1024,
+        "mem_available_gb": mem_available_kb / 1024 / 1024,
+        "swap_total_gb": swap_total_kb / 1024 / 1024,
+        "swap_free_gb": swap_free_kb / 1024 / 1024,
+    }
+
+
+def build_os_memory_table(os_inventory: pd.DataFrame) -> pd.DataFrame:
+    """Build per-host OS memory snapshot table from os_inventory output."""
+
+    rows: list[dict[str, Any]] = []
+    for _, record in os_inventory.iterrows():
+        memory = os_memory_from_meminfo(record.to_dict())
+        rows.append(
+            {
+                "cluster": record.get("cluster"),
+                "host": record.get("host"),
+                "hostname": record.get("hostname"),
+                "status": record.get("status"),
+                **memory,
+            }
+        )
+    table = pd.DataFrame(rows)
+    if table.empty:
+        return table
+    table["mem_used_gb"] = (table["mem_total_gb"] - table["mem_available_gb"]).where(
+        table["mem_available_gb"].notna(), table["mem_total_gb"] - table["mem_free_gb"]
+    )
+    used_pct = (table["mem_used_gb"] / table["mem_total_gb"] * 100).where(
+        table["mem_total_gb"] > 0
+    )
+    table["mem_used_pct"] = used_pct.round(1)
+    swap_used = table["swap_total_gb"] - table["swap_free_gb"]
+    table["swap_used_gb"] = swap_used
+    swap_pct = (swap_used / table["swap_total_gb"] * 100).where(
+        table["swap_total_gb"] > 0
+    )
+    table["swap_used_pct"] = swap_pct.round(1)
+    return table
+
+
+def os_cpu_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Return CPU inventory facts from an os_inventory row."""
+
+    cpu_data: Any = {}
+    for key in ("cpu_json", "cpu"):
+        if key not in record:
+            continue
+        candidate = parse_json_value(record.get(key))
+        if isinstance(candidate, dict) and candidate:
+            cpu_data = candidate
+            break
+    cpus = cpu_data.get("CPU(s)") or cpu_data.get("CPUs")
+    cores_per_socket = cpu_data.get("Core(s) per socket") or cpu_data.get(
+        "Cores per socket"
+    )
+    sockets = cpu_data.get("Socket(s)") or cpu_data.get("Sockets")
+    threads_per_core = cpu_data.get("Thread(s) per core")
+    model = cpu_data.get("Model name") or cpu_data.get("Model")
+    return {
+        "cpus": cpus,
+        "cores_per_socket": cores_per_socket,
+        "sockets": sockets,
+        "threads_per_core": threads_per_core,
+        "cpu_model": model,
+        "uptime": record.get("uptime"),
+    }
+
+
+def build_os_cpu_table(os_inventory: pd.DataFrame) -> pd.DataFrame:
+    """Build per-host OS CPU inventory table from os_inventory output."""
+
+    rows: list[dict[str, Any]] = []
+    for _, record in os_inventory.iterrows():
+        cpu = os_cpu_from_record(record.to_dict())
+        rows.append(
+            {
+                "cluster": record.get("cluster"),
+                "host": record.get("host"),
+                "hostname": record.get("hostname"),
+                "status": record.get("status"),
+                **cpu,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_os_cpu_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render static CPU inventory and host collection health from os_inventory."""
+
+    df, path = read_output("os_inventory")
+    render_analytics_intro(path, len(df))
+    if path is None or df.empty:
+        show_no_data_message(
+            "os_inventory output",
+            "python main.py --collector os",
+        )
+        return
+
+    table = apply_global_filters(
+        ensure_columns(df, ["cluster", "host", "status", "hostname"]), filters
+    )
+    cpu_table = build_os_cpu_table(table)
+
+    st.info(
+        "OS CPU utilization history is not collected yet. This page shows "
+        "static CPU inventory and host collection health."
+    )
+
+    section_divider("KPI Overview")
+    total_hosts = len(table)
+    failed = table[table["status"].astype(str).str.lower() != "ok"]
+    failed_count = len(failed)
+    cpu_values = pd.to_numeric(cpu_table["cpus"], errors="coerce")
+    metrics = [
+        ("Hosts collected", total_hosts, "neutral"),
+        ("Failed hosts", failed_count, "CRITICAL" if failed_count else "OK"),
+        ("Total vCPUs (sum)", _metric_number(cpu_values.sum(), 0), "neutral"),
+        ("Max vCPUs on host", _metric_number(cpu_values.max(), 0), "neutral"),
+    ]
+    render_kpi_grid(metrics, columns=4)
+
+    section_divider("Failed Host Collections")
+    if failed.empty:
+        st.success("All hosts in os_inventory report OK status.")
+    else:
+        st.dataframe(failed, use_container_width=True, hide_index=True)
+
+    section_divider("CPU Inventory")
+    cpu_columns = [
+        "cluster", "host", "hostname", "status", "cpus", "cores_per_socket",
+        "sockets", "threads_per_core", "cpu_model", "uptime",
+    ]
+    cpu_display = ensure_columns(cpu_table, cpu_columns)[cpu_columns]
+    render_downloadable_table(
+        cpu_display, key="os-cpu-inventory-download",
+        filename="os_cpu_inventory_filtered.csv",
+    )
+
+
+def render_os_memory_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render OS memory snapshot from os_inventory /proc/meminfo data."""
+
+    df, path = read_output("os_inventory")
+    render_analytics_intro(path, len(df))
+    if path is None or df.empty:
+        show_no_data_message(
+            "os_inventory output",
+            "python main.py --collector os",
+        )
+        return
+
+    table = apply_global_filters(
+        ensure_columns(df, ["cluster", "host", "status", "hostname"]), filters
+    )
+    memory = build_os_memory_table(table)
+
+    st.info(
+        "OS memory analytics are based on the latest /proc/meminfo snapshot, "
+        "not AWR history."
+    )
+
+    if memory.empty:
+        st.warning("No OS memory rows are available.")
+        return
+
+    section_divider("KPI Overview")
+    total_tb = memory["mem_total_gb"].sum(skipna=True) / 1024
+    avail_gb = memory["mem_available_gb"].sum(skipna=True)
+    swap_total_gb = memory["swap_total_gb"].sum(skipna=True)
+    swap_used_gb = memory["swap_used_gb"].sum(skipna=True)
+    low_mem_hosts = int((memory["mem_used_pct"] >= 90).sum())
+    render_kpi_grid(
+        [
+            ("Total OS memory TB", f"{total_tb:,.2f}", "neutral"),
+            ("Available memory GB (sum)", f"{avail_gb:,.1f}", "neutral"),
+            ("Swap total GB", f"{swap_total_gb:,.1f}", "neutral"),
+            ("Swap used GB", f"{swap_used_gb:,.1f}", "WARNING" if swap_used_gb > 0 else "OK"),
+            ("Hosts with mem used % over 90", low_mem_hosts,
+             "CRITICAL" if low_mem_hosts else "OK"),
+        ],
+        columns=5,
+    )
+
+    section_divider("Top Hosts by Total Memory")
+    top = memory.dropna(subset=["mem_total_gb"]).nlargest(20, "mem_total_gb")
+    if top.empty:
+        st.info("No host memory totals are available.")
+    else:
+        figure = px.bar(
+            top.assign(host_label=top["host"].astype(str)),
+            x="host_label", y="mem_total_gb", color="cluster",
+            title="Top 20 hosts by total memory GB",
+        )
+        figure.update_xaxes(tickangle=-30, automargin=True)
+        st.plotly_chart(figure, use_container_width=True)
+
+    section_divider("Hosts With Low Available Memory")
+    low = memory[memory["mem_used_pct"] >= 80].copy()
+    if low.empty:
+        st.success("No hosts report memory used % at or above 80.")
+    else:
+        low = low.sort_values("mem_used_pct", ascending=False)
+        st.dataframe(low, use_container_width=True, hide_index=True)
+
+    section_divider("Memory Detail")
+    detail_columns = [
+        "cluster", "host", "hostname", "status", "mem_total_gb", "mem_available_gb",
+        "mem_free_gb", "mem_used_gb", "mem_used_pct", "swap_total_gb",
+        "swap_used_gb", "swap_used_pct",
+    ]
+    render_downloadable_table(
+        ensure_columns(memory, detail_columns)[detail_columns],
+        key="os-memory-detail-download",
+        filename="os_memory_filtered.csv",
+    )
+
+
+def render_filesystem_analytics_page(filters: dict[str, list[str]]) -> None:
+    """Render filesystem capacity, used %, and risk from os_inventory."""
+
+    df, path = read_output("os_inventory")
+    render_analytics_intro(path, len(df))
+    if path is None or df.empty:
+        show_no_data_message(
+            "os_inventory output",
+            "python main.py --collector os",
+        )
+        return
+
+    filesystems = apply_global_filters(explode_filesystems(df), filters)
+    if filesystems.empty:
+        st.warning("No filesystem details were available in os_inventory.")
+        return
+
+    section_divider("KPI Overview")
+    over_80 = int((filesystems["used_pct"] >= 80).sum())
+    over_90 = int((filesystems["used_pct"] >= 90).sum())
+    critical = int((filesystems["warning_level"] == "CRITICAL").sum())
+    warning = int((filesystems["warning_level"] == "WARNING").sum())
+    render_kpi_grid(
+        [
+            ("Filesystems", len(filesystems), "neutral"),
+            ("Over 80% used", over_80, "WARNING" if over_80 else "OK"),
+            ("Over 90% used", over_90, "CRITICAL" if over_90 else "OK"),
+            ("CRITICAL filesystems", critical, "CRITICAL" if critical else "OK"),
+            ("WARNING filesystems", warning, "WARNING" if warning else "OK"),
+        ],
+        columns=5,
+    )
+
+    section_divider("Top 20 Filesystems by Used %")
+    top = filesystems.dropna(subset=["used_pct"]).nlargest(20, "used_pct")
+    if top.empty:
+        st.info("No used_pct values are available.")
+    else:
+        top = top.assign(
+            label=top["host"].astype(str) + " : " + top["mount"].astype(str)
+        )
+        figure = px.bar(
+            top, x="label", y="used_pct", color="warning_level",
+            color_discrete_map=LEVEL_COLORS,
+            title="Top 20 filesystems by used %",
+        )
+        figure.update_xaxes(tickangle=-45, automargin=True)
+        st.plotly_chart(figure, use_container_width=True)
+
+    section_divider("Used % by Mount")
+    by_mount = filesystems.dropna(subset=["mount", "used_pct"])
+    if not by_mount.empty:
+        figure = px.box(
+            by_mount, x="mount", y="used_pct", title="Used % distribution by mount",
+        )
+        figure.update_xaxes(tickangle=-30, automargin=True)
+        st.plotly_chart(figure, use_container_width=True)
+
+    section_divider("Filesystem Detail")
+    detail_columns = [
+        "cluster", "host", "filesystem", "mount", "used_pct", "warning_level",
+    ]
+    detail = ensure_columns(filesystems, detail_columns)[detail_columns]
+    render_downloadable_table(
+        detail,
+        styled=detail.style.apply(apply_warning_style, axis=None),
+        key="filesystem-detail-download",
+        filename="filesystem_filtered.csv",
+    )
+
+
 def render_raw_data_page() -> None:
     # Page title rendered by render_page_header().
     files = sorted(path for path in OUTPUT_DIR.glob("*") if path.is_file() and path.suffix.lower() in {".json", ".csv"})
@@ -2480,25 +3030,34 @@ def render_raw_data_page() -> None:
         st.json(payload)
 
 
+# Back-compat aliases preserved so existing imports/tests keep resolving even
+# though the user-facing navigation now uses the new page names.
+render_cpu_analytics_page = render_db_cpu_analytics_page
+render_iops_analytics_page = render_db_iops_analytics_page
+render_memory_analytics_page = render_db_memory_analytics_page
+
+
 PAGE_RENDERERS = {
     "Executive Cockpit": lambda filters: render_executive_cockpit(filters),
-    "ASM Capacity": lambda filters: render_asm_page(filters),
-    "HugePages": lambda filters: render_hugepages_page(filters),
+    "DB Memory Analytics": lambda filters: render_db_memory_analytics_page(filters),
+    "DB CPU Analytics": lambda filters: render_db_cpu_analytics_page(filters),
+    "DB IOPS Analytics": lambda filters: render_db_iops_analytics_page(filters),
+    "DB Throughput Analytics": lambda filters: render_db_throughput_analytics_page(filters),
+    "OS CPU Analytics": lambda filters: render_os_cpu_analytics_page(filters),
+    "OS Memory Analytics": lambda filters: render_os_memory_analytics_page(filters),
+    "HugePages Analytics": lambda filters: render_hugepages_page(filters),
+    "Filesystem Analytics": lambda filters: render_filesystem_analytics_page(filters),
+    "ASM Analytics": lambda filters: render_asm_page(filters),
     "Host Inventory": lambda filters: render_host_inventory_page(filters),
     "Version Inventory": lambda filters: render_version_inventory_page(filters),
     "DB Inventory": lambda filters: render_db_inventory_page(filters),
-    "DB Performance": lambda filters: render_db_performance_page(filters),
-    "CPU Analytics": lambda filters: render_cpu_analytics_page(filters),
-    "IOPS Analytics": lambda filters: render_iops_analytics_page(filters),
-    "DB Memory History": lambda filters: render_db_memory_history_page(filters),
-    "Memory Analytics": lambda filters: render_memory_analytics_page(filters),
     "Raw Data Explorer": lambda _filters: render_raw_data_page(),
 }
 
 
 def main() -> None:
     page, filters = build_global_filters()
-    render_page_header(page)
+    render_page_banner(page)
     renderer = PAGE_RENDERERS.get(page)
     if renderer is not None:
         renderer(filters)
