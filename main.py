@@ -432,6 +432,123 @@ def _partition_asm_records(
     return diskgroup_records, metadata_records, failure_records
 
 
+HOST_STATUS_SUCCESS = "success"
+HOST_STATUS_PARTIAL = "partial_success"
+HOST_STATUS_FAILED = "failed"
+
+
+def _compute_host_status(
+    os_record: OSCollectionRecord,
+    db_record: DBInventoryRecord,
+    asm_records: list[ASMDiskgroupRecord],
+    hugepages_record: HugePagesRecord,
+    version_record: VersionInventoryRecord,
+) -> str:
+    """Classify host outcome as success / partial_success / failed.
+
+    Failure is reserved for situations where the host is effectively
+    unreachable or unusable for collection (SSH/sudo failure, or every
+    required host-level collector failed). DB-level SQL warnings (e.g.,
+    ORA-01034 / ORA-01219 on individual databases) are row-level
+    warnings, not host-level failures.
+    """
+
+    os_failed = str(os_record.status).lower() == "failed"
+    if os_failed:
+        return HOST_STATUS_FAILED
+
+    db_status = str(getattr(db_record, "collection_status", "") or "").lower()
+    db_failed = db_status == "failed" or str(db_record.status).lower() == "failed"
+    db_partial = db_status == "partial"
+
+    hp_status = str(getattr(hugepages_record, "collection_status", "") or "").lower()
+    hp_failed = hp_status in {"failed", "skipped"}
+
+    version_status = str(getattr(version_record, "collection_status", "") or "").lower()
+    version_failed = version_status in {"failed", "skipped"}
+
+    if asm_records:
+        non_metadata = [r for r in asm_records if r.record_type != "host_metadata"]
+        if non_metadata:
+            asm_failed = all(
+                str(r.asm_collection_status).lower() != "success"
+                for r in non_metadata
+            )
+            asm_partial = (
+                not asm_failed
+                and any(
+                    str(r.asm_collection_status).lower() != "success"
+                    for r in non_metadata
+                )
+            )
+        else:
+            asm_failed = False
+            asm_partial = False
+    else:
+        asm_failed = False
+        asm_partial = False
+
+    if db_failed and hp_failed and version_failed and asm_failed:
+        # OS succeeded but every other required collector failed -> still failed.
+        return HOST_STATUS_FAILED
+
+    if db_failed or db_partial or hp_failed or version_failed or asm_failed or asm_partial:
+        return HOST_STATUS_PARTIAL
+    return HOST_STATUS_SUCCESS
+
+
+def _host_worker_deadline_seconds(host, inventory: Inventory) -> int:
+    """Generous safety-net timeout for waiting on a host worker future.
+
+    Each collector enforces its own per-command timeout (OS/DB inventory
+    use ``host.timeout_seconds``; ASM/HugePages/DB-performance use their
+    configured ``*_timeout_seconds``). This orchestrator-level deadline is
+    sized larger than the sum of all per-collector timeouts so it only
+    fires as a last-resort safety net when a collector hangs past its
+    internal timeout. It should not fire just because a host happens to
+    have many databases or large collection footprints.
+    """
+
+    components = [
+        max(int(getattr(host, "timeout_seconds", 0) or 0), 1),
+        max(int(getattr(inventory, "asm_timeout_seconds", 0) or 0), 1),
+        max(int(getattr(inventory, "hugepages_timeout_seconds", 0) or 0), 1),
+        max(int(getattr(inventory, "db_performance_timeout_seconds", 0) or 0), 1),
+    ]
+    return max(sum(components) * 3, 600)
+
+
+def _summarize_collector_outcomes(
+    os_record: OSCollectionRecord,
+    db_record: DBInventoryRecord,
+    asm_records: list[ASMDiskgroupRecord],
+    hugepages_record: HugePagesRecord,
+    version_record: VersionInventoryRecord,
+) -> str:
+    """Return a short string describing each collector's outcome."""
+
+    parts = [
+        f"os={os_record.status}",
+        f"db={getattr(db_record, 'collection_status', '') or db_record.status}",
+        f"hugepages={getattr(hugepages_record, 'collection_status', '') or 'unknown'}",
+        f"version={getattr(version_record, 'collection_status', '') or 'unknown'}",
+    ]
+    if asm_records:
+        non_metadata = [r for r in asm_records if r.record_type != "host_metadata"]
+        if non_metadata:
+            successes = sum(
+                1
+                for r in non_metadata
+                if str(r.asm_collection_status).lower() == "success"
+            )
+            parts.append(f"asm={successes}/{len(non_metadata)}")
+        else:
+            parts.append("asm=metadata_only")
+    else:
+        parts.append("asm=none")
+    return " ".join(parts)
+
+
 def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     inventory.output_dir.mkdir(parents=True, exist_ok=True)
     inventory.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -446,6 +563,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     clusters_total = len(inventory.clusters)
     hosts_total = sum(len(cluster.hosts) for cluster in inventory.clusters)
     hosts_success = 0
+    hosts_partial = 0
     hosts_failed = 0
     start_time = time.perf_counter()
 
@@ -471,12 +589,33 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                 version_records.append(version_record)
                 db_performance_records.extend(host_db_performance)
                 db_memory_records.extend(host_db_memory)
-                if os_record.status == "ok" and db_record.status == "ok":
+                host_status = _compute_host_status(
+                    os_record,
+                    db_record,
+                    host_asm_records,
+                    hugepages_record,
+                    version_record,
+                )
+                outcome_detail = _summarize_collector_outcomes(
+                    os_record,
+                    db_record,
+                    host_asm_records,
+                    hugepages_record,
+                    version_record,
+                )
+                if host_status == HOST_STATUS_SUCCESS:
                     hosts_success += 1
-                    LOGGER.info("Completed host %s", host.name)
+                    LOGGER.info("Completed host %s status=success %s", host.name, outcome_detail)
+                elif host_status == HOST_STATUS_PARTIAL:
+                    hosts_partial += 1
+                    LOGGER.warning(
+                        "Completed host %s status=partial_success %s",
+                        host.name,
+                        outcome_detail,
+                    )
                 else:
                     hosts_failed += 1
-                    LOGGER.error("Failed host %s", host.name)
+                    LOGGER.error("Failed host %s status=failed %s", host.name, outcome_detail)
             # Collect memory once per db_unique_name across this cluster, not per host.
             db_memory_records.extend(
                 DBPerformanceCollector(
@@ -513,6 +652,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                         cluster_db_performance,
                         cluster_db_memory,
                         cluster_success,
+                        cluster_partial,
                         cluster_failed,
                     ) = future.result()
                     os_records.extend(cluster_os)
@@ -523,6 +663,7 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                     db_performance_records.extend(cluster_db_performance)
                     db_memory_records.extend(cluster_db_memory)
                     hosts_success += cluster_success
+                    hosts_partial += cluster_partial
                     hosts_failed += cluster_failed
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.exception(
@@ -646,16 +787,18 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     _print_health_summary(health_rows)
     duration_seconds = round(time.perf_counter() - start_time, 2)
     LOGGER.info(
-        "Summary: clusters_total=%s hosts_total=%s hosts_success=%s hosts_failed=%s duration_seconds=%s",
+        "Summary: clusters_total=%s hosts_total=%s hosts_success=%s hosts_partial=%s hosts_failed=%s duration_seconds=%s",
         clusters_total,
         hosts_total,
         hosts_success,
+        hosts_partial,
         hosts_failed,
         duration_seconds,
     )
-    failures = [record for record in os_records if record.status != "ok"] + [
-        record for record in db_records if record.status != "ok"
-    ]
+    # Exit non-zero only when at least one host is truly unreachable (OS
+    # collection failed). DB-level SQL warnings on individual databases are
+    # surfaced via the health summary and do not fail the run as a whole.
+    failures = [record for record in os_records if str(record.status).lower() == "failed"]
     return 2 if failures else 0
 
 
@@ -745,6 +888,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
     db_performance_records = []
     db_memory_records = []
     success = 0
+    partial = 0
     failed = 0
     with ThreadPoolExecutor(max_workers=inventory.max_hosts_per_cluster) as host_pool:
         host_futures = {}
@@ -755,9 +899,15 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
             )
             host_futures[future] = host
         for future, host in host_futures.items():
-            timeout_seconds = max(host.timeout_seconds, 1) * 2
+            # Each collector enforces its own per-command timeout. This
+            # orchestrator-level deadline is sized generously over the sum of
+            # the per-collector timeouts so it only fires as a last-resort
+            # safety net. This prevents the host being marked failed at the
+            # orchestrator while the worker thread is still running and the
+            # underlying collectors continue to complete.
+            worker_deadline = _host_worker_deadline_seconds(host, inventory)
             try:
-                collected = future.result(timeout=timeout_seconds)
+                collected = future.result(timeout=worker_deadline)
                 os_record = collected.os_record
                 db_record = collected.db_record
                 host_asm_records = collected.asm_records
@@ -772,19 +922,52 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
                 version_records.append(version_record)
                 db_performance_records.extend(host_db_performance)
                 db_memory_records.extend(host_db_memory)
-                if os_record.status == "ok" and db_record.status == "ok":
+                host_status = _compute_host_status(
+                    os_record,
+                    db_record,
+                    host_asm_records,
+                    hugepages_record,
+                    version_record,
+                )
+                outcome_detail = _summarize_collector_outcomes(
+                    os_record,
+                    db_record,
+                    host_asm_records,
+                    hugepages_record,
+                    version_record,
+                )
+                if host_status == HOST_STATUS_SUCCESS:
                     success += 1
-                    LOGGER.info("Completed host %s", host.name)
+                    LOGGER.info(
+                        "Completed host %s status=success %s",
+                        host.name,
+                        outcome_detail,
+                    )
+                elif host_status == HOST_STATUS_PARTIAL:
+                    partial += 1
+                    LOGGER.warning(
+                        "Completed host %s status=partial_success %s",
+                        host.name,
+                        outcome_detail,
+                    )
                 else:
                     failed += 1
-                    LOGGER.error("Failed host %s", host.name)
+                    LOGGER.error(
+                        "Failed host %s status=failed %s",
+                        host.name,
+                        outcome_detail,
+                    )
             except TimeoutError:
                 failed += 1
-                LOGGER.error("Failed host %s", host.name)
+                LOGGER.error(
+                    "Failed host %s status=failed reason=worker_timeout deadline_seconds=%s; remaining collector results may exist in the per-host log but were not aggregated",
+                    host.name,
+                    worker_deadline,
+                )
                 os_rec, db_rec, hp_rec, ver_rec = _failure_records_for(
                     cluster.name,
                     host,
-                    f"Host timed out after {timeout_seconds} seconds",
+                    f"Host worker timed out after {worker_deadline} seconds",
                 )
                 os_records.append(os_rec)
                 db_records.append(db_rec)
@@ -792,7 +975,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
                 version_records.append(ver_rec)
             except Exception as exc:  # noqa: BLE001
                 failed += 1
-                LOGGER.exception("Failed host %s", host.name)
+                LOGGER.exception("Failed host %s status=failed", host.name)
                 os_rec, db_rec, hp_rec, ver_rec = _failure_records_for(
                     cluster.name, host, str(exc)
                 )
@@ -823,6 +1006,7 @@ def _collect_cluster_parallel(cluster, inventory: Inventory, runner: SSHRunner):
         db_performance_records,
         db_memory_records,
         success,
+        partial,
         failed,
     )
 
