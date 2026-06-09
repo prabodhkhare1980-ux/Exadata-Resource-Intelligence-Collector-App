@@ -104,17 +104,58 @@ def test_iops_performance_severity_thresholds(
     assert app.iops_performance_severity(iops, mbps) == expected
 
 
-def test_performance_navigation_pages_follow_db_performance() -> None:
-    db_performance_index = app.NAVIGATION.index("DB Performance")
-    assert app.NAVIGATION[db_performance_index + 1:db_performance_index + 3] == [
-        "CPU Analytics",
-        "IOPS Analytics",
+def test_navigation_groups_flatten_to_expected_pages() -> None:
+    expected_groups = [
+        "Overview",
+        "DB Resource Analytics",
+        "OS Resource Analytics",
+        "Storage Analytics",
+        "Inventory",
+        "Explore",
     ]
+    assert list(app.NAVIGATION_GROUPS.keys()) == expected_groups
+    assert app.NAVIGATION_GROUPS["DB Resource Analytics"] == [
+        "DB Memory Analytics",
+        "DB CPU Analytics",
+        "DB IOPS Analytics",
+        "DB Throughput Analytics",
+    ]
+    assert app.NAVIGATION_GROUPS["OS Resource Analytics"] == [
+        "OS CPU Analytics",
+        "OS Memory Analytics",
+        "HugePages Analytics",
+        "Filesystem Analytics",
+    ]
+    assert app.NAVIGATION_GROUPS["Storage Analytics"] == ["ASM Analytics"]
+    assert app.flatten_navigation_groups(app.NAVIGATION_GROUPS) == app.NAVIGATION
+
+
+def test_db_performance_summary_alias_matches_legacy_helper() -> None:
+    table = pd.DataFrame(
+        [
+            {
+                "Cluster": "c1", "DB_NAME": "DB1", "INSTANCE_NAME": "DB1A",
+                "HOST_NAME": "h1", "BEGIN_TIME": "2026-06-01 00:00:00",
+                "END_TIME": "2026-06-01 01:00:00",
+                "TOTAL_IOPS_AVG": "100", "TOTAL_IOPS_MAX": "200",
+                "TOTAL_MBPS_AVG": "5", "TOTAL_MBPS_MAX": "9",
+                "CPU_USAGE_PER_SEC_AVG": "1", "CPU_USAGE_PER_SEC_MAX": "2",
+                "HOST_CPU_UTIL_PCT_AVG": "10", "HOST_CPU_UTIL_PCT_MAX": "20",
+            }
+        ]
+    )
+    legacy = app.build_performance_summary(table)
+    alias = app.build_db_performance_summary(table)
+    pd.testing.assert_frame_equal(legacy, alias)
 
 
 @pytest.mark.parametrize(
     "renderer",
-    [app.render_cpu_analytics_page, app.render_iops_analytics_page],
+    [
+        app.render_db_cpu_analytics_page,
+        app.render_db_iops_analytics_page,
+        app.render_db_throughput_analytics_page,
+    ],
 )
 def test_analytics_pages_handle_missing_db_performance(monkeypatch, renderer) -> None:
     intro = Mock()

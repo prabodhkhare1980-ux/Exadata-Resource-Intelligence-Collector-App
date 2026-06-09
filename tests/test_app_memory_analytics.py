@@ -213,8 +213,7 @@ def test_optional_memory_normalizers_convert_numeric_and_severity_fields() -> No
     assert rightsizing.loc[0, "observed_peak"] == 8.25
 
 
-def test_memory_analytics_navigation_follows_db_memory_history() -> None:
-    assert "Memory Analytics" in app.NAVIGATION
-    assert app.NAVIGATION.index("Memory Analytics") == app.NAVIGATION.index(
-        "DB Memory History"
-    ) + 1
+def test_db_memory_analytics_is_first_in_db_resource_group() -> None:
+    db_group = app.NAVIGATION_GROUPS["DB Resource Analytics"]
+    assert db_group[0] == "DB Memory Analytics"
+    assert "DB Memory Analytics" in app.NAVIGATION
