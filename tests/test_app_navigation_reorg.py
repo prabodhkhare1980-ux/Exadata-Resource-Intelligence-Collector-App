@@ -136,3 +136,41 @@ def test_back_compat_aliases_resolve_to_new_renderers() -> None:
     assert app.render_cpu_analytics_page is app.render_db_cpu_analytics_page
     assert app.render_iops_analytics_page is app.render_db_iops_analytics_page
     assert app.render_memory_analytics_page is app.render_db_memory_analytics_page
+
+
+@pytest.mark.parametrize(
+    ("pct", "expected_severity"),
+    [(None, "OK"), (10, "OK"), (80, "WARNING"), (90, "CRITICAL"), (99, "CRITICAL")],
+)
+def test_asm_severity_color_matches_severity_thresholds(
+    pct: object, expected_severity: str
+) -> None:
+    expected_color = (
+        "#64748b" if pct is None else app.LEVEL_COLORS[expected_severity]
+    )
+    assert app._asm_severity_color(pct) == expected_color
+
+
+def test_render_asm_page_handles_missing_asm_output(monkeypatch) -> None:
+    intro = Mock()
+    no_data = Mock()
+    monkeypatch.setattr(app, "read_output", lambda stem: (pd.DataFrame(), None))
+    monkeypatch.setattr(app, "render_analytics_intro", intro)
+    monkeypatch.setattr(app, "show_no_data_message", no_data)
+
+    app.render_asm_page({})
+
+    intro.assert_called_once_with(None, 0)
+    no_data.assert_called_once_with(
+        "asm_diskgroups output",
+        "python main.py --collector asm",
+    )
+
+
+def test_used_pct_progress_renders_severity_color() -> None:
+    high = app._render_used_pct_progress(95)
+    low = app._render_used_pct_progress(10)
+    missing = app._render_used_pct_progress(None)
+    assert app.LEVEL_COLORS["CRITICAL"].lower() in high.lower()
+    assert app.LEVEL_COLORS["OK"].lower() in low.lower()
+    assert missing == "—"

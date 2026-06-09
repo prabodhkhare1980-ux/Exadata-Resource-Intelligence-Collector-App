@@ -276,6 +276,50 @@ st.markdown(
         height: 10px;
         width: 10px;
     }
+    .asm-chip-row {
+        align-items: center;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: .25rem 0 1rem;
+        padding: 10px 12px;
+    }
+    .asm-chip {
+        align-items: center;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 999px;
+        color: #0f172a;
+        display: inline-flex;
+        font-family: ui-monospace, Menlo, monospace;
+        font-size: .82rem;
+        gap: 8px;
+        padding: 4px 12px;
+    }
+    .asm-chip b {
+        font-family: inherit;
+        font-weight: 700;
+    }
+    .asm-chip-dot {
+        border-radius: 999px;
+        display: inline-block;
+        height: 8px;
+        width: 8px;
+    }
+    .asm-pct-bar {
+        background: #e2e8f0;
+        border-radius: 999px;
+        height: 8px;
+        overflow: hidden;
+        width: 100%;
+    }
+    .asm-pct-bar-fill {
+        border-radius: 999px;
+        height: 100%;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1530,47 +1574,265 @@ def render_executive_cockpit(filters: dict[str, list[str]]) -> None:
         st.dataframe(hugepages.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
 
 
+def _asm_severity_color(pct: Any) -> str:
+    """Return a hex color for an ASM used % chip based on severity thresholds."""
+
+    number = pd.to_numeric(pd.Series([pct]), errors="coerce").iloc[0]
+    if pd.isna(number):
+        return "#64748b"
+    if float(number) >= 90:
+        return LEVEL_COLORS["CRITICAL"]
+    if float(number) >= 80:
+        return LEVEL_COLORS["WARNING"]
+    return LEVEL_COLORS["OK"]
+
+
+def render_asm_cluster_ribbon(table: pd.DataFrame) -> None:
+    """Render colored cluster chips with max used % per cluster."""
+
+    if table.empty:
+        return
+    by_cluster = (
+        table.dropna(subset=["cluster"])
+        .groupby("cluster", dropna=False)
+        .agg(max_used_pct=("used_pct", "max"))
+        .reset_index()
+        .sort_values("max_used_pct", ascending=False, na_position="last")
+    )
+    chips: list[str] = []
+    for _, row in by_cluster.iterrows():
+        pct = row["max_used_pct"]
+        color = _asm_severity_color(pct)
+        pct_text = f"{float(pct):.0f}%" if pd.notna(pct) else "—"
+        chips.append(
+            '<span class="asm-chip">'
+            f'<span class="asm-chip-dot" style="background:{color}"></span>'
+            f'{html.escape(str(row["cluster"]))} <b>{pct_text}</b>'
+            '</span>'
+        )
+    st.markdown(
+        '<div class="asm-chip-row">' + "".join(chips) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_used_pct_progress(value: Any) -> str:
+    """Return an inline HTML progress bar string for a used % value."""
+
+    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(number):
+        return "—"
+    pct = max(0.0, min(100.0, float(number)))
+    color = _asm_severity_color(number)
+    return (
+        f'<div style="display:flex;align-items:center;gap:8px;">'
+        f'<div class="asm-pct-bar"><div class="asm-pct-bar-fill" '
+        f'style="background:{color};width:{pct:.1f}%"></div></div>'
+        f'<span style="min-width:46px;text-align:right;">{pct:.1f}%</span>'
+        f'</div>'
+    )
+
+
 def render_asm_page(filters: dict[str, list[str]]) -> None:
-    # Page title rendered by render_page_header().
+    """Render the ASM Analytics page with KPIs, cluster ribbon, charts, and table."""
+
     df, path = read_output("asm_diskgroups")
-    show_source(path)
-    if df.empty:
-        st.warning("No asm_diskgroups output found in output/.")
+    render_analytics_intro(path, len(df))
+    if path is None or df.empty:
+        show_no_data_message(
+            "asm_diskgroups output",
+            "python main.py --collector asm",
+        )
         return
 
     table = apply_global_filters(normalize_asm(df), filters)
-    st.markdown("### Cluster-level Summary")
-    summary = table.groupby("cluster", dropna=False).agg(
-        diskgroups=("diskgroup_name", "nunique"),
-        hosts=("host", "nunique"),
-        total_tb=("total_tb", "sum"),
-        free_tb=("free_tb", "sum"),
-        usable_tb=("usable_tb", "sum"),
-        max_used_pct=("used_pct", "max"),
-    ).reset_index()
-    summary["warning_level"] = summary["max_used_pct"].map(warning_from_pct)
-    st.dataframe(summary.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+    if table.empty:
+        st.info("No ASM diskgroup rows match the selected global filters.")
+        return
 
-    st.markdown("### Diskgroup Used %")
-    chart = table.dropna(subset=["diskgroup_name", "used_pct"])
-    if chart.empty:
-        st.info("No diskgroup used_pct values available.")
-    else:
-        fig = px.bar(
-            chart,
-            x="diskgroup_name",
-            y="used_pct",
-            color="warning_level",
-            facet_col="cluster" if chart["cluster"].nunique(dropna=True) > 1 else None,
-            color_discrete_map=LEVEL_COLORS,
-            hover_data=["host", "total_tb", "free_tb", "usable_tb"],
-            title="ASM diskgroup used_pct",
+    db_df, _ = read_output("db_resource_details")
+    db_resources = apply_global_filters(
+        normalize_db_resources(db_df) if not db_df.empty else pd.DataFrame(),
+        filters,
+    )
+    db_deduped = dedupe_db_resources(db_resources) if not db_resources.empty else pd.DataFrame()
+
+    # KPI strip
+    cluster_count = int(table["cluster"].dropna().astype(str).nunique())
+    diskgroup_count = int(
+        table[["cluster", "diskgroup_name"]].dropna().drop_duplicates().shape[0]
+    )
+    used_tb = (table["total_tb"] - table["free_tb"]).sum(skipna=True)
+    usable_tb = table["usable_tb"].sum(skipna=True)
+    db_count = int(len(db_deduped)) if not db_deduped.empty else 0
+    dgs_over_90 = int((table["used_pct"] >= 90).sum())
+    render_kpi_grid(
+        [
+            ("Clusters", cluster_count, "neutral"),
+            ("Diskgroups", diskgroup_count, "neutral"),
+            ("Used TB", _metric_number(used_tb, 2), "neutral"),
+            ("Usable TB", _metric_number(usable_tb, 2), "neutral"),
+            ("Databases", db_count, "neutral"),
+            ("DGs ≥ 90% used", dgs_over_90,
+             "CRITICAL" if dgs_over_90 else "OK"),
+        ],
+        columns=6,
+    )
+
+    # Cluster ribbon
+    render_asm_cluster_ribbon(table)
+
+    # Filters
+    section_divider("Filters")
+    filter_cols = st.columns([1, 2])
+    cluster_values = ["All clusters"] + sorted(
+        {str(value) for value in table["cluster"].dropna() if str(value).strip()}
+    )
+    selected_cluster = filter_cols[0].selectbox(
+        "Cluster", cluster_values, key="asm_cluster_filter"
+    )
+    query = filter_cols[1].text_input(
+        "Search diskgroup or host", key="asm_search_filter",
+        placeholder="Filter by diskgroup name or host…",
+    )
+    filtered = table.copy()
+    if selected_cluster != "All clusters":
+        filtered = filtered[filtered["cluster"].astype(str) == selected_cluster]
+    if query:
+        needle = query.strip().lower()
+        mask = (
+            filtered["diskgroup_name"].astype(str).str.lower().str.contains(needle, na=False)
+            | filtered["host"].astype(str).str.lower().str.contains(needle, na=False)
         )
-        fig.update_yaxes(range=[0, max(100, float(chart["used_pct"].max()))])
-        st.plotly_chart(fig, use_container_width=True)
+        filtered = filtered[mask]
+    if filtered.empty:
+        st.info("No diskgroups match the selected filters.")
+        return
 
-    st.markdown("### Host-level Detail")
-    st.dataframe(table.style.apply(apply_warning_style, axis=None), use_container_width=True, hide_index=True)
+    # Three side-by-side charts
+    section_divider("Capacity Charts")
+    chart_cols = st.columns(3)
+
+    with chart_cols[0]:
+        st.caption("Used TB by cluster")
+        used_by_cluster = (
+            filtered.assign(used_tb=filtered["total_tb"] - filtered["free_tb"])
+            .groupby("cluster", dropna=False)
+            .agg(used_tb=("used_tb", "sum"))
+            .reset_index()
+            .sort_values("used_tb", ascending=True)
+        )
+        if used_by_cluster.empty or used_by_cluster["used_tb"].dropna().empty:
+            st.info("No used TB values available.")
+        else:
+            figure = px.bar(
+                used_by_cluster, x="used_tb", y="cluster", orientation="h",
+                color_discrete_sequence=["#2563eb"],
+            )
+            figure.update_layout(
+                height=max(260, 30 * len(used_by_cluster) + 80),
+                margin=dict(l=4, r=4, t=4, b=30),
+                yaxis_title=None, xaxis_title="Used TB", showlegend=False,
+            )
+            figure.update_yaxes(automargin=True, tickfont=dict(size=10))
+            st.plotly_chart(figure, use_container_width=True)
+
+    with chart_cols[1]:
+        st.caption("Top diskgroups by % used")
+        top_dgs = filtered.dropna(subset=["used_pct"]).copy()
+        if top_dgs.empty:
+            st.info("No diskgroup used_pct values available.")
+        else:
+            top_dgs["dg_label"] = (
+                top_dgs["cluster"].astype(str) + "/" + top_dgs["diskgroup_name"].astype(str)
+            )
+            top_dgs = top_dgs.nlargest(15, "used_pct").sort_values(
+                "used_pct", ascending=True
+            )
+            figure = px.bar(
+                top_dgs, x="used_pct", y="dg_label", orientation="h",
+                color="warning_level", color_discrete_map=LEVEL_COLORS,
+            )
+            figure.update_layout(
+                height=max(260, 26 * len(top_dgs) + 80),
+                margin=dict(l=4, r=4, t=4, b=30),
+                yaxis_title=None, xaxis_title="Used %",
+                showlegend=False,
+            )
+            figure.update_xaxes(range=[0, max(100, float(top_dgs["used_pct"].max()))])
+            figure.update_yaxes(automargin=True, tickfont=dict(size=10))
+            st.plotly_chart(figure, use_container_width=True)
+
+    with chart_cols[2]:
+        st.caption("Top databases by used GB")
+        if db_deduped.empty or "used_db_size_gb" not in db_deduped.columns:
+            st.info("No db_resource_details output found for top databases.")
+        else:
+            top_dbs = db_deduped.dropna(subset=["used_db_size_gb"]).nlargest(
+                15, "used_db_size_gb"
+            )
+            if top_dbs.empty:
+                st.info("No used_db_size_gb values available.")
+            else:
+                top_dbs = top_dbs.assign(
+                    db_label=top_dbs["cluster"].astype(str) + "/"
+                    + top_dbs["db_unique_name"].fillna(top_dbs["db_name"]).astype(str)
+                ).sort_values("used_db_size_gb", ascending=True)
+                figure = px.bar(
+                    top_dbs, x="used_db_size_gb", y="db_label", orientation="h",
+                    color_discrete_sequence=["#7c3aed"],
+                )
+                figure.update_layout(
+                    height=max(260, 26 * len(top_dbs) + 80),
+                    margin=dict(l=4, r=4, t=4, b=30),
+                    yaxis_title=None, xaxis_title="Used GB",
+                    showlegend=False,
+                )
+                figure.update_yaxes(automargin=True, tickfont=dict(size=10))
+                st.plotly_chart(figure, use_container_width=True)
+
+    # Diskgroups detail table
+    section_divider("Diskgroups")
+    detail = filtered.assign(
+        used_tb=(filtered["total_tb"] - filtered["free_tb"]).round(2)
+    )
+    detail_columns = [
+        "cluster", "diskgroup_name", "host", "used_tb", "free_tb",
+        "usable_tb", "total_tb", "used_pct", "warning_level",
+    ]
+    detail = ensure_columns(detail, detail_columns)[detail_columns].sort_values(
+        ["cluster", "diskgroup_name"], na_position="last"
+    )
+    progress_html = detail["used_pct"].map(_render_used_pct_progress)
+    display = detail.copy()
+    display["used_pct"] = progress_html
+
+    table_html = display.to_html(escape=False, index=False, classes="asm-detail-table")
+    st.markdown(table_html, unsafe_allow_html=True)
+    render_csv_download(detail, filename="asm_diskgroups_filtered.csv")
+
+    # Cluster rollup
+    section_divider("Cluster Rollup")
+    rollup = (
+        detail.groupby("cluster", dropna=False)
+        .agg(
+            diskgroups=("diskgroup_name", "nunique"),
+            hosts=("host", "nunique"),
+            total_tb=("total_tb", "sum"),
+            free_tb=("free_tb", "sum"),
+            usable_tb=("usable_tb", "sum"),
+            used_tb=("used_tb", "sum"),
+            max_used_pct=("used_pct", "max"),
+        )
+        .reset_index()
+    )
+    rollup["warning_level"] = rollup["max_used_pct"].map(severity_from_pct)
+    render_downloadable_table(
+        rollup,
+        styled=rollup.style.apply(apply_warning_style, axis=None),
+        key="asm-rollup-download",
+        filename="asm_cluster_rollup_filtered.csv",
+    )
 
 
 def render_hugepages_page(filters: dict[str, list[str]]) -> None:
