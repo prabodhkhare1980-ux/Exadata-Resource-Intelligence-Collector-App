@@ -454,22 +454,20 @@ ASM_SUMMARY_FIELDS = [
 ]
 
 HUGEPAGES_FIELDS = [
-    "cluster",
-    "host",
-    "address",
-    "collected_at",
-    "hugepages_total",
-    "hugepages_free",
-    "hugepages_rsvd",
-    "hugepages_surp",
-    "hugepagesize_kb",
-    "hugetlb_kb",
-    "hugepages_used",
-    "hugepages_used_pct",
-    "hugepages_free_pct",
-    "warning_level",
-    "collection_status",
-    "collection_error",
+    "Cluster",
+    "Host",
+    "MemTotal",
+    "HP_Size_KB",
+    "HP_Total",
+    "HP_Free",
+    "HP_Rsvd",
+    "HP_Surp",
+    "HP_Used",
+    "HP_Used_GB",
+    "HP_Total_GB",
+    "HP_Pct_of_MemTotal",
+    "THP_Status",
+    "Timestamp",
 ]
 
 VERSION_INVENTORY_FIELDS = [

@@ -138,112 +138,191 @@ def os_memory_gb_lookup(os_df: pd.DataFrame) -> dict[tuple[str, str], float]:
     return lookup
 
 
+HUGEPAGES_COLUMN_MAP = {
+    "Cluster": "cluster",
+    "Host": "host",
+    "MemTotal": "mem_gb",
+    "HP_Size_KB": "hp_size_kb",
+    "HP_Total": "hp_total",
+    "HP_Free": "hp_free",
+    "HP_Rsvd": "hp_rsvd",
+    "HP_Surp": "hp_surp",
+    "HP_Used": "hp_used",
+    "HP_Used_GB": "hp_used_gb",
+    "HP_Total_GB": "hp_total_gb",
+    "HP_Pct_of_MemTotal": "hp_alloc_pct_ram",
+    "THP_Status": "thp_status",
+    "Timestamp": "timestamp",
+}
+
+HUGEPAGES_LEGACY_MAP = {
+    "hugepages_total": "hp_total",
+    "hugepages_free": "hp_free",
+    "hugepages_rsvd": "hp_rsvd",
+    "hugepages_surp": "hp_surp",
+    "hugepages_used": "hp_used",
+    "hugepagesize_kb": "hp_size_kb",
+    "transparent_hugepages": "thp_status",
+    "collected_at": "timestamp",
+}
+
+
+def selected_thp_mode(thp_status: Any) -> str:
+    """Return the currently-selected THP mode parsed from the raw status."""
+
+    if thp_status is None or (isinstance(thp_status, float) and pd.isna(thp_status)):
+        return "unknown"
+    text = str(thp_status).strip()
+    if not text or text.upper() == "UNKNOWN":
+        return "unknown"
+    lowered = text.lower()
+    if "[always]" in lowered:
+        return "always"
+    if "[madvise]" in lowered:
+        return "madvise"
+    if "[never]" in lowered:
+        return "never"
+    if lowered == "never":
+        return "never"
+    return "unknown"
+
+
+def thp_severity(thp_status: Any) -> str:
+    """Map a raw THP status string to a severity level."""
+
+    mode = selected_thp_mode(thp_status)
+    if mode == "never":
+        return "OK"
+    if mode == "madvise":
+        return "WARNING"
+    if mode == "always":
+        return "CRITICAL"
+    return "INFO"
+
+
+def hugepages_severity(used_pct: Any, alloc_pct_ram: Any, thp_status: Any) -> str:
+    """Combined HugePages severity, honoring used %, allocation, and THP."""
+
+    used = pd.to_numeric(pd.Series([used_pct]), errors="coerce").iloc[0]
+    alloc = pd.to_numeric(pd.Series([alloc_pct_ram]), errors="coerce").iloc[0]
+    if not pd.isna(used) and float(used) >= 95:
+        base = "CRITICAL"
+    elif not pd.isna(used) and float(used) >= 80:
+        base = "WARNING"
+    elif not pd.isna(alloc) and (float(alloc) < 40 or float(alloc) > 80):
+        base = "INFO"
+    else:
+        base = "OK"
+    thp_level = thp_severity(thp_status)
+    return _max_severity(base, thp_level)
+
+
+def _max_severity(a: str, b: str) -> str:
+    return a if LEVEL_ORDER.get(a, 99) <= LEVEL_ORDER.get(b, 99) else b
+
+
+def _coerce_hugepages_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename PascalCase / legacy columns to the canonical snake_case schema."""
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=list(HUGEPAGES_COLUMN_MAP.values()))
+    renamed = df.rename(
+        columns={old: new for old, new in HUGEPAGES_COLUMN_MAP.items() if old in df.columns and new not in df.columns}
+    )
+    renamed = renamed.rename(
+        columns={old: new for old, new in HUGEPAGES_LEGACY_MAP.items() if old in renamed.columns and new not in renamed.columns}
+    )
+    return renamed
+
+
 def build_hugepages_node_detail(
     hugepages_df: pd.DataFrame, os_df: pd.DataFrame | None = None
 ) -> pd.DataFrame:
     """Build the HugePages node-detail table matching the dashboard layout.
 
     Columns: cluster, host, mem_gb, hp_total_gb, hp_used_gb, hp_free_gb,
-    hp_used_pct, hp_alloc_pct_ram, transparent_hugepages, timestamp.
+    hp_used_pct, hp_alloc_pct_ram, thp_status, timestamp, severity.
     """
 
+    base_columns = [
+        "cluster",
+        "host",
+        "mem_gb",
+        "hp_size_kb",
+        "hp_total",
+        "hp_free",
+        "hp_rsvd",
+        "hp_surp",
+        "hp_used",
+        "hp_total_gb",
+        "hp_used_gb",
+        "hp_free_gb",
+        "hp_used_pct",
+        "hp_alloc_pct_ram",
+        "thp_status",
+        "thp_mode",
+        "timestamp",
+        "severity",
+    ]
     if hugepages_df is None or hugepages_df.empty:
-        return pd.DataFrame(
-            columns=[
-                "cluster",
-                "host",
-                "mem_gb",
-                "hp_total_gb",
-                "hp_used_gb",
-                "hp_free_gb",
-                "hp_used_pct",
-                "hp_alloc_pct_ram",
-                "transparent_hugepages",
-                "timestamp",
-                "warning_level",
-            ]
-        )
-    table = ensure_columns(
-        hugepages_df,
-        [
-            "cluster",
-            "host",
-            "hugepages_total",
-            "hugepages_free",
-            "hugepages_used",
-            "hugepages_used_pct",
-            "hugepagesize_kb",
-            "hugepages_allocated_pct_of_ram",
-            "transparent_hugepages",
-            "collected_at",
-            "warning_level",
-        ],
-    ).copy()
+        return pd.DataFrame(columns=base_columns)
+
+    table = _coerce_hugepages_columns(hugepages_df)
+    table = ensure_columns(table, base_columns).copy()
 
     numeric_cols = [
-        "hugepages_total",
-        "hugepages_free",
-        "hugepages_used",
-        "hugepages_used_pct",
-        "hugepagesize_kb",
-        "hugepages_allocated_pct_of_ram",
+        "mem_gb",
+        "hp_size_kb",
+        "hp_total",
+        "hp_free",
+        "hp_used",
+        "hp_used_gb",
+        "hp_total_gb",
+        "hp_alloc_pct_ram",
     ]
     for column in numeric_cols:
         table[column] = pd.to_numeric(table[column], errors="coerce")
 
-    page_size_kb = table["hugepagesize_kb"].where(table["hugepagesize_kb"] > 0, 2048).fillna(2048)
-    table["hp_total_gb"] = (table["hugepages_total"] * page_size_kb / 1024 / 1024).round(2)
-    table["hp_free_gb"] = (table["hugepages_free"] * page_size_kb / 1024 / 1024).round(2)
-    derived_used = table["hugepages_total"] - table["hugepages_free"]
-    used_pages = table["hugepages_used"].where(table["hugepages_used"].notna(), derived_used)
-    table["hp_used_gb"] = (used_pages * page_size_kb / 1024 / 1024).round(2)
+    page_size_kb = table["hp_size_kb"].where(table["hp_size_kb"] > 0, 2048).fillna(2048)
+    needs_total_gb = table["hp_total_gb"].isna() & table["hp_total"].notna()
+    derived_total = (table["hp_total"] * page_size_kb / 1024 / 1024).round()
+    table.loc[needs_total_gb, "hp_total_gb"] = derived_total[needs_total_gb]
 
-    needs_used_pct = (
-        table["hugepages_used_pct"].isna()
-        & table["hugepages_total"].notna()
-        & table["hugepages_free"].notna()
-    )
-    if needs_used_pct.any():
-        derived = (
-            (table["hugepages_total"] - table["hugepages_free"])
-            / table["hugepages_total"]
-            * 100
-        ).where(table["hugepages_total"] > 0)
-        table.loc[needs_used_pct, "hugepages_used_pct"] = derived[needs_used_pct].round(2)
-    table["hp_used_pct"] = table["hugepages_used_pct"]
+    derived_free_gb = (table["hp_free"] * page_size_kb / 1024 / 1024).round()
+    table["hp_free_gb"] = derived_free_gb
 
-    mem_lookup = os_memory_gb_lookup(os_df) if os_df is not None else {}
-    table["mem_gb"] = [
-        mem_lookup.get((str(c or ""), str(h or "")))
-        for c, h in zip(table["cluster"], table["host"])
-    ]
+    derived_used_pages = table["hp_total"] - table["hp_free"]
+    used_pages = table["hp_used"].where(table["hp_used"].notna(), derived_used_pages)
+    needs_used_gb = table["hp_used_gb"].isna()
+    derived_used_gb = (used_pages * page_size_kb / 1024 / 1024).round()
+    table.loc[needs_used_gb, "hp_used_gb"] = derived_used_gb[needs_used_gb]
 
-    needs_alloc_pct = table["hugepages_allocated_pct_of_ram"].isna() & table["mem_gb"].notna()
+    used_pct_series = (used_pages / table["hp_total"] * 100).where(table["hp_total"] > 0)
+    table["hp_used_pct"] = used_pct_series.round(2)
+
+    if os_df is not None and not os_df.empty:
+        mem_lookup = os_memory_gb_lookup(os_df)
+        needs_mem = table["mem_gb"].isna()
+        if needs_mem.any():
+            fallback = [
+                mem_lookup.get((str(c or ""), str(h or "")))
+                for c, h in zip(table["cluster"], table["host"])
+            ]
+            fallback_series = pd.Series(fallback, index=table.index)
+            table.loc[needs_mem, "mem_gb"] = fallback_series[needs_mem]
+
+    needs_alloc_pct = table["hp_alloc_pct_ram"].isna() & table["mem_gb"].notna()
     if needs_alloc_pct.any():
         derived = (table["hp_total_gb"] / table["mem_gb"] * 100).where(table["mem_gb"] > 0)
-        table.loc[needs_alloc_pct, "hugepages_allocated_pct_of_ram"] = (
-            derived[needs_alloc_pct].round(2)
-        )
-    table["hp_alloc_pct_ram"] = table["hugepages_allocated_pct_of_ram"]
+        table.loc[needs_alloc_pct, "hp_alloc_pct_ram"] = derived[needs_alloc_pct].round(1)
 
-    table["timestamp"] = table["collected_at"]
-    table["warning_level"] = table["warning_level"].map(normalize_severity)
-
-    return table[
-        [
-            "cluster",
-            "host",
-            "mem_gb",
-            "hp_total_gb",
-            "hp_used_gb",
-            "hp_free_gb",
-            "hp_used_pct",
-            "hp_alloc_pct_ram",
-            "transparent_hugepages",
-            "timestamp",
-            "warning_level",
-        ]
+    table["thp_mode"] = table["thp_status"].map(selected_thp_mode)
+    table["severity"] = [
+        hugepages_severity(u, a, t)
+        for u, a, t in zip(table["hp_used_pct"], table["hp_alloc_pct_ram"], table["thp_status"])
     ]
+
+    return table[base_columns]
 
 
 def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
@@ -325,48 +404,103 @@ def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_hugepages(df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare HugePages rows with consistent used/free percent columns."""
+    """Normalize HugePages rows into canonical snake_case analytics columns.
 
-    columns = [
+    Accepts the analytics-ready collector schema (Cluster, Host, MemTotal,
+    HP_*, THP_Status, Timestamp) and renames into the snake_case schema used
+    by the Dash app. Calculates ``hp_free_gb`` and ``hp_used_pct`` when
+    missing from the input.
+    """
+
+    canonical_columns = [
         "cluster",
         "host",
-        "hugepages_total",
-        "hugepages_free",
-        "hugepages_free_pct",
-        "hugepages_used_pct",
-        "hugepages_allocated_pct_of_ram",
-        "transparent_hugepages",
-        "warning_level",
+        "mem_gb",
+        "hp_size_kb",
+        "hp_total",
+        "hp_free",
+        "hp_rsvd",
+        "hp_surp",
+        "hp_used",
+        "hp_used_gb",
+        "hp_total_gb",
+        "hp_free_gb",
+        "hp_alloc_pct_ram",
+        "hp_used_pct",
+        "thp_status",
+        "thp_mode",
+        "timestamp",
+        "severity",
     ]
-    table = ensure_columns(df, columns)[columns].copy()
+    if df is None or df.empty:
+        return pd.DataFrame(columns=canonical_columns)
+
+    table = _coerce_hugepages_columns(df)
+    table = ensure_columns(table, canonical_columns).copy()
+
     numeric = [
-        "hugepages_total",
-        "hugepages_free",
-        "hugepages_free_pct",
-        "hugepages_used_pct",
-        "hugepages_allocated_pct_of_ram",
+        "mem_gb",
+        "hp_size_kb",
+        "hp_total",
+        "hp_free",
+        "hp_rsvd",
+        "hp_surp",
+        "hp_used",
+        "hp_used_gb",
+        "hp_total_gb",
+        "hp_free_gb",
+        "hp_alloc_pct_ram",
+        "hp_used_pct",
     ]
     for column in numeric:
         table[column] = pd.to_numeric(table[column], errors="coerce")
+
+    page_size_kb = table["hp_size_kb"].where(table["hp_size_kb"] > 0, 2048).fillna(2048)
+
+    needs_hp_used = table["hp_used"].isna() & table["hp_total"].notna() & table["hp_free"].notna()
+    if needs_hp_used.any():
+        derived = (table["hp_total"] - table["hp_free"]).clip(lower=0)
+        table.loc[needs_hp_used, "hp_used"] = derived[needs_hp_used]
+
+    needs_total_gb = table["hp_total_gb"].isna() & table["hp_total"].notna()
+    if needs_total_gb.any():
+        derived = (table["hp_total"] * page_size_kb / 1024 / 1024).round()
+        table.loc[needs_total_gb, "hp_total_gb"] = derived[needs_total_gb]
+
+    needs_used_gb = table["hp_used_gb"].isna() & table["hp_used"].notna()
+    if needs_used_gb.any():
+        derived = (table["hp_used"] * page_size_kb / 1024 / 1024).round()
+        table.loc[needs_used_gb, "hp_used_gb"] = derived[needs_used_gb]
+
+    needs_free_gb = table["hp_free_gb"].isna() & table["hp_free"].notna()
+    if needs_free_gb.any():
+        derived = (table["hp_free"] * page_size_kb / 1024 / 1024).round()
+        table.loc[needs_free_gb, "hp_free_gb"] = derived[needs_free_gb]
+
     needs_used_pct = (
-        table["hugepages_used_pct"].isna()
-        & table["hugepages_total"].notna()
-        & table["hugepages_free"].notna()
+        table["hp_used_pct"].isna()
+        & table["hp_total"].notna()
+        & table["hp_used"].notna()
     )
     if needs_used_pct.any():
-        derived = (
-            (table["hugepages_total"] - table["hugepages_free"])
-            / table["hugepages_total"]
-            * 100
-        ).where(table["hugepages_total"] > 0)
-        table.loc[needs_used_pct, "hugepages_used_pct"] = derived[needs_used_pct].round(2)
-    needs_free_pct = table["hugepages_free_pct"].isna() & table["hugepages_used_pct"].notna()
-    if needs_free_pct.any():
-        table.loc[needs_free_pct, "hugepages_free_pct"] = (
-            100 - table.loc[needs_free_pct, "hugepages_used_pct"]
-        )
-    table["warning_level"] = table["warning_level"].map(normalize_severity)
-    return table
+        derived = (table["hp_used"] / table["hp_total"] * 100).where(table["hp_total"] > 0)
+        table.loc[needs_used_pct, "hp_used_pct"] = derived[needs_used_pct].round(2)
+
+    needs_alloc_pct = (
+        table["hp_alloc_pct_ram"].isna()
+        & table["mem_gb"].notna()
+        & table["hp_total_gb"].notna()
+    )
+    if needs_alloc_pct.any():
+        derived = (table["hp_total_gb"] / table["mem_gb"] * 100).where(table["mem_gb"] > 0)
+        table.loc[needs_alloc_pct, "hp_alloc_pct_ram"] = derived[needs_alloc_pct].round(1)
+
+    table["thp_mode"] = table["thp_status"].map(selected_thp_mode)
+    table["severity"] = [
+        hugepages_severity(u, a, t)
+        for u, a, t in zip(table["hp_used_pct"], table["hp_alloc_pct_ram"], table["thp_status"])
+    ]
+    return table[canonical_columns]
 
 
 def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:

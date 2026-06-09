@@ -11,14 +11,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.normalizers import (  # noqa: E402
     build_db_performance_summary,
+    build_hugepages_node_detail,
     explode_filesystems,
+    hugepages_severity,
     normalize_asm,
     normalize_db_memory_history,
     normalize_db_memory_summary,
     normalize_db_performance,
     normalize_hugepages,
     normalize_severity,
+    selected_thp_mode,
     severity_from_pct,
+    thp_severity,
 )
 
 
@@ -71,22 +75,149 @@ def test_normalize_asm_fills_used_pct_when_missing() -> None:
     assert df["used_pct"].iloc[0] == 80.0
 
 
-def test_normalize_hugepages_derives_pct() -> None:
+def test_normalize_hugepages_renames_pascalcase_columns() -> None:
     raw = pd.DataFrame(
         [
             {
-                "cluster": "c1",
-                "host": "h1",
-                "hugepages_total": 1000,
-                "hugepages_free": 250,
-                "warning_level": "ok",
+                "Cluster": "iad1px01v1-gngym1",
+                "Host": "iad1px01v1-gngym1",
+                "MemTotal": 1367,
+                "HP_Size_KB": 2048,
+                "HP_Total": 355840,
+                "HP_Free": 269126,
+                "HP_Rsvd": 1,
+                "HP_Surp": 0,
+                "HP_Used": 86714,
+                "HP_Used_GB": 169,
+                "HP_Total_GB": 695,
+                "HP_Pct_of_MemTotal": 50.8,
+                "THP_Status": "always [madvise] never",
+                "Timestamp": "2026-03-04 16:50:48",
             }
         ]
     )
     df = normalize_hugepages(raw)
-    assert df["hugepages_used_pct"].iloc[0] == 75.0
-    assert df["hugepages_free_pct"].iloc[0] == 25.0
-    assert df["warning_level"].iloc[0] == "OK"
+    row = df.iloc[0]
+    assert row["cluster"] == "iad1px01v1-gngym1"
+    assert row["host"] == "iad1px01v1-gngym1"
+    assert row["mem_gb"] == 1367
+    assert row["hp_total_gb"] == 695
+    assert row["hp_used_gb"] == 169
+    assert row["hp_free_gb"] == 526  # 269126 * 2048 / 1024 / 1024 = 525.6 -> 526
+    # hp_used_pct = 86714 / 355840 * 100 = 24.37 -> 24.37
+    assert abs(row["hp_used_pct"] - 24.37) < 0.01
+    assert row["hp_alloc_pct_ram"] == 50.8
+    assert row["thp_status"] == "always [madvise] never"
+    assert row["thp_mode"] == "madvise"
+    assert row["severity"] == "WARNING"  # THP madvise overrides
+    assert row["timestamp"] == "2026-03-04 16:50:48"
+
+
+def test_normalize_hugepages_calculates_missing_used_and_free_gb() -> None:
+    raw = pd.DataFrame(
+        [
+            {
+                "Cluster": "c1",
+                "Host": "h1",
+                "HP_Size_KB": 2048,
+                "HP_Total": 1000,
+                "HP_Free": 250,
+                "MemTotal": 100,
+                "THP_Status": "always madvise [never]",
+            }
+        ]
+    )
+    df = normalize_hugepages(raw)
+    row = df.iloc[0]
+    assert row["hp_used"] == 750
+    # 750 * 2048 / 1024 / 1024 = 1.46 -> 1
+    assert row["hp_used_gb"] == 1
+    # 250 * 2048 / 1024 / 1024 = 0.488 -> 0
+    assert row["hp_free_gb"] == 0
+    assert row["hp_used_pct"] == 75.0
+    assert row["thp_mode"] == "never"
+    # hp_total_gb=2 / mem_gb=100 = 2% allocation, < 40% -> INFO
+    assert row["severity"] == "INFO"
+
+
+def test_selected_thp_mode_variants() -> None:
+    assert selected_thp_mode("always [madvise] never") == "madvise"
+    assert selected_thp_mode("[always] madvise never") == "always"
+    assert selected_thp_mode("always madvise [never]") == "never"
+    assert selected_thp_mode("never") == "never"
+    assert selected_thp_mode("UNKNOWN") == "unknown"
+    assert selected_thp_mode("") == "unknown"
+    assert selected_thp_mode(None) == "unknown"
+
+
+def test_thp_severity_levels() -> None:
+    assert thp_severity("always madvise [never]") == "OK"
+    assert thp_severity("always [madvise] never") == "WARNING"
+    assert thp_severity("[always] madvise never") == "CRITICAL"
+    assert thp_severity("UNKNOWN") == "INFO"
+
+
+def test_hugepages_severity_thresholds() -> None:
+    assert hugepages_severity(95, 50, "always madvise [never]") == "CRITICAL"
+    assert hugepages_severity(80, 50, "always madvise [never]") == "WARNING"
+    assert hugepages_severity(30, 30, "always madvise [never]") == "INFO"
+    assert hugepages_severity(30, 50, "always madvise [never]") == "OK"
+    # THP critical overrides OK
+    assert hugepages_severity(30, 50, "[always] madvise never") == "CRITICAL"
+
+
+def test_build_hugepages_node_detail_includes_calculated_fields() -> None:
+    raw = pd.DataFrame(
+        [
+            {
+                "Cluster": "iad1px01v1-gngym1",
+                "Host": "iad1px01v1-gngym1",
+                "MemTotal": 1367,
+                "HP_Size_KB": 2048,
+                "HP_Total": 355840,
+                "HP_Free": 269126,
+                "HP_Rsvd": 1,
+                "HP_Surp": 0,
+                "HP_Used": 86714,
+                "HP_Used_GB": 169,
+                "HP_Total_GB": 695,
+                "HP_Pct_of_MemTotal": 50.8,
+                "THP_Status": "always [madvise] never",
+                "Timestamp": "2026-03-04 16:50:48",
+            }
+        ]
+    )
+    df = build_hugepages_node_detail(raw)
+    row = df.iloc[0]
+    assert row["mem_gb"] == 1367
+    assert row["hp_total_gb"] == 695
+    assert row["hp_used_gb"] == 169
+    assert row["hp_free_gb"] == 526
+    assert abs(row["hp_used_pct"] - 24.37) < 0.01
+    assert row["hp_alloc_pct_ram"] == 50.8
+    assert row["thp_status"] == "always [madvise] never"
+    assert row["thp_mode"] == "madvise"
+    assert row["severity"] == "WARNING"
+
+
+def test_build_hugepages_node_detail_empty_input() -> None:
+    df = build_hugepages_node_detail(pd.DataFrame())
+    assert df.empty
+    for column in [
+        "cluster",
+        "host",
+        "mem_gb",
+        "hp_total_gb",
+        "hp_used_gb",
+        "hp_free_gb",
+        "hp_used_pct",
+        "hp_alloc_pct_ram",
+        "thp_status",
+        "thp_mode",
+        "timestamp",
+        "severity",
+    ]:
+        assert column in df.columns
 
 
 def test_normalize_db_performance_renames_uppercase() -> None:
