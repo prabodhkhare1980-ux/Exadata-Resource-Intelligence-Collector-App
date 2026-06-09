@@ -19,8 +19,7 @@ dash.register_page(__name__, path="/os/hugepages", name="HugePages Analytics")
 
 PAGE_TITLE = "HugePages Analytics"
 PAGE_SUBTITLE = (
-    "HugePages allocation, utilization, free page risk, "
-    "and Transparent HugePages compliance."
+    "HugePages allocation, utilization, and free page risk."
 )
 
 NODE_DETAIL_COLUMNS = [
@@ -32,7 +31,6 @@ NODE_DETAIL_COLUMNS = [
     {"id": "hp_free_gb_fmt", "name": "HP FREE GB"},
     {"id": "hp_used_pct_fmt", "name": "HP USED %"},
     {"id": "hp_alloc_pct_ram_fmt", "name": "HP ALLOC % RAM"},
-    {"id": "thp_status", "name": "THP"},
     {"id": "timestamp", "name": "TIMESTAMP"},
 ]
 
@@ -76,7 +74,6 @@ def _prepare_detail_rows(df: pd.DataFrame) -> pd.DataFrame:
     table["hp_free_gb_fmt"] = table["hp_free_gb"].map(lambda v: _fmt_int(v, comma=True))
     table["hp_used_pct_fmt"] = table["hp_used_pct"].map(lambda v: _fmt_pct(v, 1))
     table["hp_alloc_pct_ram_fmt"] = table["hp_alloc_pct_ram"].map(lambda v: _fmt_pct(v, 1))
-    table["thp_status"] = table["thp_status"].fillna("").astype(str)
     table["timestamp"] = table["timestamp"].fillna("").astype(str)
     return table
 
@@ -149,42 +146,6 @@ def _conditional_styles() -> list[dict]:
             },
         ]
     )
-    # THP mode coloring
-    styles.extend(
-        [
-            {
-                "if": {
-                    "filter_query": '{thp_mode} = "never"',
-                    "column_id": "thp_status",
-                },
-                "color": "#16a34a",
-                "fontWeight": "600",
-            },
-            {
-                "if": {
-                    "filter_query": '{thp_mode} = "madvise"',
-                    "column_id": "thp_status",
-                },
-                "color": "#f59e0b",
-                "fontWeight": "600",
-            },
-            {
-                "if": {
-                    "filter_query": '{thp_mode} = "always"',
-                    "column_id": "thp_status",
-                },
-                "color": "#ef4444",
-                "fontWeight": "700",
-            },
-            {
-                "if": {
-                    "filter_query": '{thp_mode} = "unknown"',
-                    "column_id": "thp_status",
-                },
-                "color": "#94a3b8",
-            },
-        ]
-    )
     return styles
 
 
@@ -193,7 +154,6 @@ def _node_detail_table(df: pd.DataFrame, table_id: str) -> dash_table.DataTable:
     data_columns = [
         "hp_used_pct",
         "hp_alloc_pct_ram",
-        "thp_mode",
         *(col["id"] for col in NODE_DETAIL_COLUMNS),
     ]
     data = rendered[data_columns].to_dict("records")
@@ -221,35 +181,6 @@ def _node_detail_table(df: pd.DataFrame, table_id: str) -> dash_table.DataTable:
         },
         style_data_conditional=_conditional_styles(),
     )
-
-
-def _thp_mode_chart(df: pd.DataFrame) -> dcc.Graph:
-    if df.empty or "thp_mode" not in df.columns:
-        counts = pd.DataFrame({"thp_mode": [], "count": []})
-    else:
-        counts = df["thp_mode"].fillna("unknown").value_counts().reset_index()
-        counts.columns = ["thp_mode", "count"]
-    fig = px.bar(
-        counts,
-        x="thp_mode",
-        y="count",
-        title="THP mode count",
-        template="plotly_dark",
-        color="thp_mode",
-        color_discrete_map={
-            "never": "#16a34a",
-            "madvise": "#f59e0b",
-            "always": "#ef4444",
-            "unknown": "#94a3b8",
-        },
-    )
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=40, b=10),
-        showlegend=False,
-    )
-    return dcc.Graph(figure=fig)
 
 
 def _hp_used_vs_total_chart(df: pd.DataFrame) -> dcc.Graph:
@@ -283,83 +214,9 @@ def _hp_used_vs_total_chart(df: pd.DataFrame) -> dcc.Graph:
     return dcc.Graph(figure=fig)
 
 
-def _filters_panel(df: pd.DataFrame) -> html.Div:
-    clusters = sorted(df["cluster"].dropna().astype(str).unique().tolist())
-    return html.Div(
-        [
-            html.Div(
-                [
-                    html.Label("Cluster", className="topbar-filter-label"),
-                    dcc.Dropdown(
-                        id="hugepages-cluster-filter",
-                        options=[{"label": c, "value": c} for c in clusters],
-                        value=[],
-                        multi=True,
-                        placeholder="All clusters",
-                    ),
-                ],
-                className="hugepages-filter-item",
-            ),
-            html.Div(
-                [
-                    html.Label("Host search", className="topbar-filter-label"),
-                    dcc.Input(
-                        id="hugepages-host-search",
-                        type="text",
-                        placeholder="filter by host…",
-                        debounce=True,
-                        className="hugepages-host-input",
-                    ),
-                ],
-                className="hugepages-filter-item",
-            ),
-            html.Div(
-                [
-                    html.Label("THP mode", className="topbar-filter-label"),
-                    dcc.Dropdown(
-                        id="hugepages-thp-filter",
-                        options=[
-                            {"label": "All", "value": "all"},
-                            {"label": "never", "value": "never"},
-                            {"label": "madvise", "value": "madvise"},
-                            {"label": "always", "value": "always"},
-                            {"label": "unknown", "value": "unknown"},
-                        ],
-                        value="all",
-                        clearable=False,
-                    ),
-                ],
-                className="hugepages-filter-item",
-            ),
-            html.Div(
-                [
-                    html.Label("Severity", className="topbar-filter-label"),
-                    dcc.Dropdown(
-                        id="hugepages-severity-filter",
-                        options=[
-                            {"label": "All", "value": "all"},
-                            {"label": "OK", "value": "OK"},
-                            {"label": "INFO", "value": "INFO"},
-                            {"label": "WARNING", "value": "WARNING"},
-                            {"label": "CRITICAL", "value": "CRITICAL"},
-                        ],
-                        value="all",
-                        clearable=False,
-                    ),
-                ],
-                className="hugepages-filter-item",
-            ),
-        ],
-        className="hugepages-filter-row",
-    )
-
-
 def _is_risky(row: dict) -> bool:
     severity = str(row.get("severity") or "OK").upper()
     if severity in {"WARNING", "CRITICAL"}:
-        return True
-    mode = str(row.get("thp_mode") or "unknown")
-    if mode != "never":
         return True
     used_pct = row.get("hp_used_pct")
     try:
@@ -415,7 +272,6 @@ def render_hugepages(filter_state: dict | None):
     hp_used_gb = pd.to_numeric(df["hp_used_gb"], errors="coerce").sum(skipna=True)
     hp_free_gb = pd.to_numeric(df["hp_free_gb"], errors="coerce").sum(skipna=True)
     avg_used_pct = pd.to_numeric(df["hp_used_pct"], errors="coerce").mean(skipna=True)
-    thp_not_never = int((df["thp_mode"] != "never").sum())
 
     cards = kpi_row(
         [
@@ -446,11 +302,6 @@ def render_hugepages(filter_state: dict | None):
                 f"{avg_used_pct:.1f}%" if not pd.isna(avg_used_pct) else "—",
                 "INFO",
             ),
-            kpi_card(
-                "THP Not Never",
-                thp_not_never,
-                "WARNING" if thp_not_never else "OK",
-            ),
         ]
     )
 
@@ -474,10 +325,9 @@ def render_hugepages(filter_state: dict | None):
         "HP Used GB vs HP Total GB by Host",
         _hp_used_vs_total_chart(df),
     )
-    chart_thp = section_panel("THP mode count", _thp_mode_chart(df))
 
     charts_grid = html.Div(
-        [chart_used_pct, chart_alloc_pct, chart_used_vs_total, chart_thp],
+        [chart_used_pct, chart_alloc_pct, chart_used_vs_total],
         className="panel-grid",
     )
 
