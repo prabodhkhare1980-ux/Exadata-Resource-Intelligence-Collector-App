@@ -10,11 +10,28 @@ from dash.dependencies import Input, Output
 from components.cards import empty_state, kpi_card, kpi_row, section_panel
 from components.charts import horizontal_top_bar
 from components.filters import apply_cluster_filter
-from components.tables import data_table
+from components.tables import data_table, detail_table
 from services.data_loader import read_output
-from services.normalizers import normalize_asm, normalize_severity
+from services.normalizers import (
+    build_asm_diskgroup_detail,
+    normalize_asm,
+    normalize_severity,
+)
 
 dash.register_page(__name__, path="/storage/asm", name="ASM Analytics")
+
+
+DISKGROUP_DETAIL_COLUMNS = [
+    {"id": "cluster", "name": "CLUSTER", "type": "text"},
+    {"id": "diskgroup_name", "name": "DISKGROUP", "type": "strong"},
+    {"id": "type", "name": "TYPE", "type": "type_badge"},
+    {"id": "state", "name": "STATE", "type": "state_badge"},
+    {"id": "used_tb", "name": "USED TB", "type": "number", "decimals": 2},
+    {"id": "free_tb", "name": "FREE TB", "type": "number", "decimals": 2},
+    {"id": "total_tb", "name": "TOTAL TB", "type": "number", "decimals": 2},
+    {"id": "used_pct", "name": "% USED", "type": "progress"},
+    {"id": "timestamp", "name": "TIMESTAMP", "type": "text"},
+]
 
 
 def layout():
@@ -38,6 +55,9 @@ def render_asm(filter_state: dict | None):
     if df.empty:
         return empty_state("No ASM rows match the current cluster filter")
 
+    detail_df = build_asm_diskgroup_detail(raw)
+    detail_df = apply_cluster_filter(detail_df, selected)
+
     total_tb = pd.to_numeric(df["total_tb"], errors="coerce").sum(skipna=True)
     free_tb = pd.to_numeric(df["free_tb"], errors="coerce").sum(skipna=True)
     used_tb = max(total_tb - free_tb, 0)
@@ -55,6 +75,17 @@ def render_asm(filter_state: dict | None):
             kpi_card("Critical diskgroups", critical, "CRITICAL" if critical else "OK"),
             kpi_card("Warning diskgroups", warning, "WARNING" if warning else "OK"),
         ]
+    )
+
+    diskgroups_panel = section_panel(
+        "DISKGROUPS",
+        detail_table(
+            detail_df,
+            "asm-diskgroups-detail",
+            DISKGROUP_DETAIL_COLUMNS,
+            empty_message="No ASM diskgroup rows to display.",
+            download_stem="asm_diskgroups",
+        ),
     )
 
     chart_df = df.assign(
@@ -87,13 +118,12 @@ def render_asm(filter_state: dict | None):
         data_table(risk, "asm-risk-table") if not risk.empty
         else html.Div("No diskgroups in CRITICAL or WARNING.", className="kpi-hint"),
     )
-    full_panel = section_panel("All diskgroups", data_table(df, "asm-full-table"))
 
     return html.Div(
         [
             cards,
+            diskgroups_panel,
             html.Div([top_pct, top_tb], className="panel-grid"),
             risk_panel,
-            full_panel,
         ]
     )
