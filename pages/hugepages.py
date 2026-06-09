@@ -9,11 +9,29 @@ from dash.dependencies import Input, Output
 
 from components.cards import empty_state, kpi_card, kpi_row, section_panel
 from components.filters import apply_cluster_filter
-from components.tables import data_table
+from components.tables import data_table, detail_table
 from services.data_loader import read_output
-from services.normalizers import normalize_hugepages, normalize_severity
+from services.normalizers import (
+    build_hugepages_node_detail,
+    normalize_hugepages,
+    normalize_severity,
+)
 
 dash.register_page(__name__, path="/os/hugepages", name="HugePages Analytics")
+
+
+NODE_DETAIL_COLUMNS = [
+    {"id": "cluster", "name": "CLUSTER", "type": "text"},
+    {"id": "host", "name": "HOST", "type": "strong"},
+    {"id": "mem_gb", "name": "MEM GB", "type": "number", "decimals": 0},
+    {"id": "hp_total_gb", "name": "HP TOTAL GB", "type": "number", "decimals": 0},
+    {"id": "hp_used_gb", "name": "HP USED GB", "type": "number", "decimals": 0},
+    {"id": "hp_free_gb", "name": "HP FREE GB", "type": "number", "decimals": 0},
+    {"id": "hp_used_pct", "name": "HP USED %", "type": "progress"},
+    {"id": "hp_alloc_pct_ram", "name": "HP ALLOC % RAM", "type": "progress"},
+    {"id": "transparent_hugepages", "name": "THP", "type": "thp"},
+    {"id": "timestamp", "name": "TIMESTAMP", "type": "text"},
+]
 
 
 def layout():
@@ -32,26 +50,30 @@ def render_hugepages(filter_state: dict | None):
             "HugePages output not found",
             "python main.py --collectors hugepages",
         )
+    os_raw = read_output("os_inventory")
+
     df = normalize_hugepages(raw)
     df = apply_cluster_filter(df, selected)
     if df.empty:
         return empty_state("No HugePages rows match the current cluster filter")
+
+    detail_df = build_hugepages_node_detail(raw, os_raw)
+    detail_df = apply_cluster_filter(detail_df, selected)
 
     total = pd.to_numeric(df["hugepages_total"], errors="coerce").sum(skipna=True)
     free = pd.to_numeric(df["hugepages_free"], errors="coerce").sum(skipna=True)
     used = max(total - free, 0)
     used_pct = pd.to_numeric(df["hugepages_used_pct"], errors="coerce").mean(skipna=True)
     alloc_ram_pct = pd.to_numeric(
-        df["hugepages_allocated_pct_of_ram"], errors="coerce"
+        detail_df["hp_alloc_pct_ram"], errors="coerce"
     ).mean(skipna=True)
     thp_enabled = 0
-    if "transparent_hugepages" in df.columns:
+    if "transparent_hugepages" in detail_df.columns:
         thp_enabled = int(
-            df["transparent_hugepages"]
+            detail_df["transparent_hugepages"]
             .astype(str)
             .str.lower()
-            .str.contains("never")
-            .eq(False)
+            .apply(lambda raw: "[" in raw and "[never]" not in raw)
             .sum()
         )
     critical = int((df["warning_level"].map(normalize_severity) == "CRITICAL").sum())
@@ -79,12 +101,22 @@ def render_hugepages(filter_state: dict | None):
         ]
     )
 
+    node_detail_panel = section_panel(
+        "HUGEPAGES — NODE DETAIL",
+        detail_table(
+            detail_df,
+            "hugepages-node-detail",
+            NODE_DETAIL_COLUMNS,
+            empty_message="No HugePages rows to display.",
+            download_stem="hugepages_node_detail",
+        ),
+    )
+
     risk = df[df["warning_level"].map(normalize_severity).isin(["CRITICAL", "WARNING"])]
     risk_panel = section_panel(
         "Risk table",
         data_table(risk, "hugepages-risk-table") if not risk.empty
         else html.Div("No hosts in CRITICAL or WARNING.", className="kpi-hint"),
     )
-    full_panel = section_panel("All hosts", data_table(df, "hugepages-full-table"))
 
-    return html.Div([cards, risk_panel, full_panel])
+    return html.Div([cards, node_detail_panel, risk_panel])

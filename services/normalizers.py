@@ -96,6 +96,234 @@ def normalize_asm(df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def _meminfo_mem_total_gb(value: Any) -> float | None:
+    parsed = parse_json_value(value)
+    if not isinstance(parsed, dict):
+        return None
+    raw = parsed.get("MemTotal") or parsed.get("mem_total") or parsed.get("memtotal")
+    if raw is None:
+        return None
+    try:
+        text = str(raw).strip()
+        if not text:
+            return None
+        # /proc/meminfo MemTotal is typically "16384000 kB"
+        token = text.split()[0]
+        kb = float(token)
+        return round(kb / 1024 / 1024, 2)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def os_memory_gb_lookup(os_df: pd.DataFrame) -> dict[tuple[str, str], float]:
+    """Build a (cluster, host) -> mem_total_gb lookup from OS inventory rows."""
+
+    if os_df is None or os_df.empty:
+        return {}
+    lookup: dict[tuple[str, str], float] = {}
+    columns = set(os_df.columns)
+    for _, record in os_df.iterrows():
+        cluster = str(record.get("cluster") or "")
+        host = str(record.get("host") or record.get("hostname") or "")
+        if not host:
+            continue
+        meminfo_source = None
+        if "meminfo_json" in columns:
+            meminfo_source = record.get("meminfo_json")
+        if meminfo_source is None and "meminfo" in columns:
+            meminfo_source = record.get("meminfo")
+        mem_gb = _meminfo_mem_total_gb(meminfo_source)
+        if mem_gb is not None:
+            lookup[(cluster, host)] = mem_gb
+    return lookup
+
+
+def build_hugepages_node_detail(
+    hugepages_df: pd.DataFrame, os_df: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Build the HugePages node-detail table matching the dashboard layout.
+
+    Columns: cluster, host, mem_gb, hp_total_gb, hp_used_gb, hp_free_gb,
+    hp_used_pct, hp_alloc_pct_ram, transparent_hugepages, timestamp.
+    """
+
+    if hugepages_df is None or hugepages_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "cluster",
+                "host",
+                "mem_gb",
+                "hp_total_gb",
+                "hp_used_gb",
+                "hp_free_gb",
+                "hp_used_pct",
+                "hp_alloc_pct_ram",
+                "transparent_hugepages",
+                "timestamp",
+                "warning_level",
+            ]
+        )
+    table = ensure_columns(
+        hugepages_df,
+        [
+            "cluster",
+            "host",
+            "hugepages_total",
+            "hugepages_free",
+            "hugepages_used",
+            "hugepages_used_pct",
+            "hugepagesize_kb",
+            "hugepages_allocated_pct_of_ram",
+            "transparent_hugepages",
+            "collected_at",
+            "warning_level",
+        ],
+    ).copy()
+
+    numeric_cols = [
+        "hugepages_total",
+        "hugepages_free",
+        "hugepages_used",
+        "hugepages_used_pct",
+        "hugepagesize_kb",
+        "hugepages_allocated_pct_of_ram",
+    ]
+    for column in numeric_cols:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+
+    page_size_kb = table["hugepagesize_kb"].where(table["hugepagesize_kb"] > 0, 2048).fillna(2048)
+    table["hp_total_gb"] = (table["hugepages_total"] * page_size_kb / 1024 / 1024).round(2)
+    table["hp_free_gb"] = (table["hugepages_free"] * page_size_kb / 1024 / 1024).round(2)
+    derived_used = table["hugepages_total"] - table["hugepages_free"]
+    used_pages = table["hugepages_used"].where(table["hugepages_used"].notna(), derived_used)
+    table["hp_used_gb"] = (used_pages * page_size_kb / 1024 / 1024).round(2)
+
+    needs_used_pct = (
+        table["hugepages_used_pct"].isna()
+        & table["hugepages_total"].notna()
+        & table["hugepages_free"].notna()
+    )
+    if needs_used_pct.any():
+        derived = (
+            (table["hugepages_total"] - table["hugepages_free"])
+            / table["hugepages_total"]
+            * 100
+        ).where(table["hugepages_total"] > 0)
+        table.loc[needs_used_pct, "hugepages_used_pct"] = derived[needs_used_pct].round(2)
+    table["hp_used_pct"] = table["hugepages_used_pct"]
+
+    mem_lookup = os_memory_gb_lookup(os_df) if os_df is not None else {}
+    table["mem_gb"] = [
+        mem_lookup.get((str(c or ""), str(h or "")))
+        for c, h in zip(table["cluster"], table["host"])
+    ]
+
+    needs_alloc_pct = table["hugepages_allocated_pct_of_ram"].isna() & table["mem_gb"].notna()
+    if needs_alloc_pct.any():
+        derived = (table["hp_total_gb"] / table["mem_gb"] * 100).where(table["mem_gb"] > 0)
+        table.loc[needs_alloc_pct, "hugepages_allocated_pct_of_ram"] = (
+            derived[needs_alloc_pct].round(2)
+        )
+    table["hp_alloc_pct_ram"] = table["hugepages_allocated_pct_of_ram"]
+
+    table["timestamp"] = table["collected_at"]
+    table["warning_level"] = table["warning_level"].map(normalize_severity)
+
+    return table[
+        [
+            "cluster",
+            "host",
+            "mem_gb",
+            "hp_total_gb",
+            "hp_used_gb",
+            "hp_free_gb",
+            "hp_used_pct",
+            "hp_alloc_pct_ram",
+            "transparent_hugepages",
+            "timestamp",
+            "warning_level",
+        ]
+    ]
+
+
+def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
+    """Build the ASM diskgroups detail table matching the dashboard layout.
+
+    Columns: cluster, diskgroup_name, type, state, used_tb, free_tb,
+    total_tb, used_pct, timestamp.
+    """
+
+    if asm_raw is None or asm_raw.empty:
+        return pd.DataFrame(
+            columns=[
+                "cluster",
+                "diskgroup_name",
+                "type",
+                "state",
+                "used_tb",
+                "free_tb",
+                "total_tb",
+                "used_pct",
+                "timestamp",
+                "warning_level",
+            ]
+        )
+    table = ensure_columns(
+        asm_raw,
+        [
+            "cluster",
+            "diskgroup_name",
+            "type",
+            "state",
+            "total_tb",
+            "free_tb",
+            "used_pct",
+            "record_type",
+            "collected_at",
+            "warning_level",
+        ],
+    ).copy()
+
+    if "record_type" in table.columns:
+        table = table[
+            (table["record_type"].isna())
+            | (table["record_type"].astype(str).str.lower() == "diskgroup")
+        ]
+    table = table[
+        table["diskgroup_name"].notna()
+        & (table["diskgroup_name"].astype(str).str.strip() != "")
+    ]
+
+    for column in ["total_tb", "free_tb", "used_pct"]:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+    table["used_tb"] = (table["total_tb"] - table["free_tb"]).clip(lower=0).round(2)
+
+    needs_pct = table["used_pct"].isna() & table["total_tb"].notna() & table["free_tb"].notna()
+    if needs_pct.any():
+        derived = (
+            (table["total_tb"] - table["free_tb"]) / table["total_tb"] * 100
+        ).where(table["total_tb"] > 0)
+        table.loc[needs_pct, "used_pct"] = derived[needs_pct].round(2)
+
+    table["timestamp"] = table["collected_at"]
+    table["warning_level"] = table["warning_level"].map(normalize_severity)
+
+    return table[
+        [
+            "cluster",
+            "diskgroup_name",
+            "type",
+            "state",
+            "used_tb",
+            "free_tb",
+            "total_tb",
+            "used_pct",
+            "timestamp",
+            "warning_level",
+        ]
+    ].reset_index(drop=True)
+
+
 def normalize_hugepages(df: pd.DataFrame) -> pd.DataFrame:
     """Prepare HugePages rows with consistent used/free percent columns."""
 
