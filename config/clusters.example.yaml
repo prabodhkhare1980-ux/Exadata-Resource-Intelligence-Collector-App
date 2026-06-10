@@ -61,6 +61,13 @@ collection:
       sga_near_max_pct: 98
       pga_used_pct_target: 80
       pga_alloc_pct_target: 100
+  # License/capacity DB collection. Uses base catalog views (v$pdbs,
+  # dba_feature_usage_statistics) and does NOT require Diagnostics Pack.
+  db_capacity:
+    enabled: true
+    collect_pdb_inventory: true
+    collect_feature_usage: true
+    timeout_seconds: 90
   debug:
     enabled: false
   ssh:

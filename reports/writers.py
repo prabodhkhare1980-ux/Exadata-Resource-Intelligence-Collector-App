@@ -2200,3 +2200,76 @@ def _asm_csv_fields(include_debug: bool) -> list[str]:
 
 def _mb_to_tb(value: int) -> float:
     return round(value / 1024 / 1024, 2)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: DB license/capacity outputs (PDB inventory, feature usage).
+# ---------------------------------------------------------------------------
+
+
+def write_pdb_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-PDB inventory rows to output/pdb_inventory.csv."""
+
+    from collectors.db_capacity_collector import PDB_INVENTORY_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "pdb_inventory.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=PDB_INVENTORY_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_pdb_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-PDB inventory rows to output/pdb_inventory.json."""
+
+    from collectors.db_capacity_collector import PDB_INVENTORY_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "pdb_inventory.json"
+    rows = [
+        {column: record.to_csv_row().get(column, "") for column in PDB_INVENTORY_COLUMNS}
+        for record in records
+    ]
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def write_feature_usage_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-feature usage rows to output/db_feature_usage.csv."""
+
+    from collectors.db_capacity_collector import FEATURE_USAGE_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_feature_usage.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=FEATURE_USAGE_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_feature_usage_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-feature usage rows to output/db_feature_usage.json."""
+
+    from collectors.db_capacity_collector import FEATURE_USAGE_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_feature_usage.json"
+    rows = [
+        {column: record.to_csv_row().get(column, "") for column in FEATURE_USAGE_COLUMNS}
+        for record in records
+    ]
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path

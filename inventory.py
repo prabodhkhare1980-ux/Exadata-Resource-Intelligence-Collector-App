@@ -58,6 +58,11 @@ class Inventory:
     db_memory_sga_near_max_pct: float = 98
     db_memory_pga_used_pct_target: float = 80
     db_memory_pga_alloc_pct_target: float = 100
+    # Tier 2: license/capacity DB collectors (base views, no Diagnostics Pack).
+    db_capacity_enabled: bool = True
+    db_capacity_collect_pdb_inventory: bool = True
+    db_capacity_collect_feature_usage: bool = True
+    db_capacity_timeout_seconds: int = 90
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -148,6 +153,7 @@ def load_inventory(path: str | Path) -> Inventory:
     if not isinstance(debug_cfg, dict):
         raise ValueError("'collection.debug' must be a mapping.")
     db_perf_cfg = collection.get("db_performance") or {}
+    db_capacity_cfg = collection.get("db_capacity") or {}
     if not isinstance(db_perf_cfg, dict):
         raise ValueError("'collection.db_performance' must be a mapping.")
     db_memory_cfg = collection.get("db_memory_history") or {}
@@ -190,6 +196,14 @@ def load_inventory(path: str | Path) -> Inventory:
         db_memory_pga_alloc_pct_target=float(
             warning_thresholds.get("pga_alloc_pct_target", 100)
         ),
+        db_capacity_enabled=bool(db_capacity_cfg.get("enabled", True)),
+        db_capacity_collect_pdb_inventory=bool(
+            db_capacity_cfg.get("collect_pdb_inventory", True)
+        ),
+        db_capacity_collect_feature_usage=bool(
+            db_capacity_cfg.get("collect_feature_usage", True)
+        ),
+        db_capacity_timeout_seconds=int(db_capacity_cfg.get("timeout_seconds", 90)),
     )
 
 

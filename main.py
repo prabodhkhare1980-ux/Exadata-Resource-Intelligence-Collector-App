@@ -30,6 +30,7 @@ from collectors.version_inventory_collector import (
     VersionInventoryCollector,
     VersionInventoryRecord,
 )
+from collectors.db_capacity_collector import DBCapacityCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
@@ -66,6 +67,10 @@ from reports.writers import (
     write_version_inventory_json,
     write_version_summary_csv,
     write_version_summary_json,
+    write_pdb_inventory_csv,
+    write_pdb_inventory_json,
+    write_feature_usage_csv,
+    write_feature_usage_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -242,6 +247,53 @@ def _print_preflight_report(
 
 
 # run() and main unchanged-ish
+
+
+def _collect_db_capacity(db_records, inventory, runner):
+    """Collect PDB inventory and feature usage across all collected databases.
+
+    Post-pass over ``db_records`` (the DB inventory already gathered by both
+    the sequential and parallel pipelines), so it does not need to thread new
+    fields through the per-host result type. Returns (pdb_records,
+    feature_records). Failures are logged and never abort the run.
+    """
+
+    if not inventory.db_capacity_enabled:
+        return [], []
+
+    hosts_by_name = {
+        host.name: host
+        for cluster in inventory.clusters
+        for host in cluster.hosts
+    }
+    collector = DBCapacityCollector(
+        runner, logger=logging.getLogger("collectors.db_capacity")
+    )
+    pdb_records = []
+    feature_records = []
+    for db_record in db_records:
+        host = hosts_by_name.get(db_record.host)
+        if host is None:
+            continue
+        try:
+            pdbs, features = collector.collect_host(
+                db_record,
+                host,
+                enabled=True,
+                collect_pdb_inventory=inventory.db_capacity_collect_pdb_inventory,
+                collect_feature_usage=inventory.db_capacity_collect_feature_usage,
+                timeout_seconds=inventory.db_capacity_timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "DB capacity collection skipped/failed for %s: %s",
+                db_record.host,
+                exc,
+            )
+            continue
+        pdb_records.extend(pdbs)
+        feature_records.extend(features)
+    return pdb_records, feature_records
 
 
 def _collect_host(cluster, host, runner, logs_dir, inventory):
@@ -684,6 +736,15 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                             hugepages_records.append(hp_rec)
                             version_records.append(ver_rec)
                             hosts_failed += 1
+
+    # Tier 2: license/capacity DB collection (PDB inventory + feature usage).
+    # Runs as a post-pass over the DB inventory we already collected, mirroring
+    # the cluster-scoped memory-history pass. Uses base views only (no
+    # Diagnostics Pack), so it is independent of db_performance/AWR settings.
+    pdb_records, feature_records = _collect_db_capacity(
+        db_records, inventory, runner
+    )
+
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
     write_db_inventory_csv(db_records, inventory.output_dir)
@@ -718,6 +779,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     write_version_summary_csv(version_records, inventory.output_dir)
     write_version_summary_json(version_records, inventory.output_dir)
+    write_pdb_inventory_csv(pdb_records, inventory.output_dir)
+    write_pdb_inventory_json(pdb_records, inventory.output_dir)
+    write_feature_usage_csv(feature_records, inventory.output_dir)
+    write_feature_usage_json(feature_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
     write_db_performance_errors_csv(db_performance_records, inventory.output_dir)
