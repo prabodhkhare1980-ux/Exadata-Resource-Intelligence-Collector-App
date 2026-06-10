@@ -14,11 +14,13 @@ from collectors.cell_inventory_collector import (
     build_dcli_cellcli_command,
     build_direct_ssh_cellcli_command,
     build_exacli_command,
+    looks_like_cellip_ora,
     parse_cell_group_hosts,
     parse_cell_ips,
     parse_cell_size_gb,
     parse_cellcli_detail,
     parse_cellcli_detail_multi,
+    parse_cellip_ora,
     parse_cluster_name,
     parse_command_v,
     parse_dcli_detail,
@@ -135,6 +137,27 @@ def test_parse_cell_ips_from_cellip_ora() -> None:
 
 def test_parse_cell_group_hosts() -> None:
     assert parse_cell_group_hosts("# comment\ncel01\ncel02\ncel01\n") == ["cel01", "cel02"]
+
+
+def test_looks_like_cellip_ora_detects_real_format() -> None:
+    cellip = 'cell="30.117.250.15;30.117.250.16"\ncell="30.117.250.17;30.117.250.18"\n'
+    assert looks_like_cellip_ora(cellip) is True
+    assert looks_like_cellip_ora("cel01\ncel02\n") is False  # plain dcli group file
+
+
+def test_parse_cellip_ora_groups_redundant_ips_per_cell() -> None:
+    cellip = (
+        'cell="30.117.250.15;30.117.250.16"\n'
+        'cell="30.117.250.17;30.117.250.18"\n'
+        'cell="30.117.250.19;30.117.250.20"\n'
+    )
+    cells = parse_cellip_ora(cellip)
+    # 3 cells, each with its two redundant IPs (not 6 separate cells).
+    assert cells == [
+        ["30.117.250.15", "30.117.250.16"],
+        ["30.117.250.17", "30.117.250.18"],
+        ["30.117.250.19", "30.117.250.20"],
+    ]
 
 
 def test_parse_cellcli_detail_single_cell() -> None:
@@ -269,6 +292,84 @@ def test_direct_ssh_when_dcli_absent() -> None:
     assert rec.FLASH_DISK_COUNT == "1"
 
 
+def test_cellip_ora_uses_direct_ssh_not_dcli_g() -> None:
+    """Regression: cellip.ora must NOT be passed to `dcli -g`.
+
+    Reproduces the field bug where dcli treated each cell="ip;ip" line as a
+    hostname. With the fix, each line is one cell reached by direct SSH to
+    one of its redundant IPs.
+    """
+
+    commands_seen = []
+
+    def runner(cmd: str) -> CommandResult:
+        commands_seen.append(cmd)
+        if "command -v dcli" in cmd:
+            return _result("/usr/bin/dcli\n")
+        if "cat /etc/oracle/cell/network-config/cellip.ora" in cmd:
+            return _result(
+                'cell="30.117.250.15;30.117.250.16"\n'
+                'cell="30.117.250.17;30.117.250.18"\n'
+            )
+        # other cell_group_files absent
+        if "cat /root/cell_group" in cmd:
+            return _result("", returncode=1)
+        if "list cell detail" in cmd:
+            return _result(CELL_DETAIL_SINGLE)
+        if "list flashcache detail" in cmd:
+            return _result(FLASH_DETAIL_SINGLE)
+        if "list physicaldisk detail" in cmd:
+            return _result(PHYSICALDISK_DETAIL_SINGLE)
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="dcli_or_direct", users=("root",),
+        cell_group_files=("/root/cell_group", "/etc/oracle/cell/network-config/cellip.ora"),
+        allow_direct_cell_ssh=True, timeout_seconds=45,
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(FakeCluster(), FakeHost(), access, command_runner=runner)
+
+    # Two cells (one per cellip.ora line), reached by direct SSH.
+    assert len(records) == 2
+    assert all(r.collection_status == "success" for r in records)
+    assert all(r.cell_access_method == "direct_ssh" for r in records)
+    assert {r.cell_target for r in records} == {"30.117.250.15", "30.117.250.17"}
+    # cellip.ora was never handed to `dcli -g`.
+    assert not any("dcli -g /etc/oracle/cell/network-config/cellip.ora" in c for c in commands_seen)
+    # And the nested ssh is wrapped in sudo -n by default.
+    assert any("sudo -n ssh" in c and "30.117.250.15" in c for c in commands_seen)
+
+
+def test_direct_ssh_falls_back_to_second_redundant_ip() -> None:
+    def runner(cmd: str) -> CommandResult:
+        if "command -v dcli" in cmd:
+            return _result("")  # no dcli
+        if "cat /etc/oracle/cell/network-config/cellip.ora" in cmd:
+            return _result('cell="30.117.250.15;30.117.250.16"\n')
+        if "/root/cell_group" in cmd:
+            return _result("", returncode=1)
+        # First IP unreachable, second IP works.
+        if "30.117.250.15" in cmd:
+            return _result(stderr="ssh: connect to host 30.117.250.15 port 22: No route to host", returncode=255)
+        if "30.117.250.16" in cmd and "list cell detail" in cmd:
+            return _result(CELL_DETAIL_SINGLE)
+        if "30.117.250.16" in cmd:
+            return _result("")
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="dcli_or_direct", users=("root",),
+        cell_group_files=("/etc/oracle/cell/network-config/cellip.ora",),
+        allow_direct_cell_ssh=True, timeout_seconds=45,
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(FakeCluster(), FakeHost(), access, command_runner=runner)
+    assert len(records) == 1
+    assert records[0].collection_status == "success"
+    assert records[0].cell_target == "30.117.250.16"  # fell back to the redundant IP
+
+
 def test_connection_closed_not_classified_as_dcli_not_found() -> None:
     # dcli IS present but the cell command fails with connection noise.
     def runner(cmd: str) -> CommandResult:
@@ -315,7 +416,7 @@ def test_exacli_success() -> None:
         if "crsctl get cluster name" in cmd:
             return _result("CRS-6724: Current cluster name is exacs-cl01\n")
         if "cat /etc/oracle/cell/network-config/cellip.ora" in cmd:
-            return _result('cell="192.168.136.5";cell="192.168.136.6"\n')
+            return _result('cell="192.168.136.5;192.168.136.6"\ncell="192.168.136.7;192.168.136.8"\n')
         if "list cell detail" in cmd:
             return _result(CELL_DETAIL_SINGLE)
         if "list flashcache detail" in cmd:
@@ -331,12 +432,13 @@ def test_exacli_success() -> None:
         FakeCluster(), FakeHost(), _exacli_access(),
         grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
     )
-    assert len(records) == 2  # two cell IPs
+    assert len(records) == 2  # two cells (one record per cellip.ora line)
     rec = records[0]
     assert rec.collection_status == "success"
     assert rec.cell_access_method == "exacli"
     assert rec.cell_user == "cloud_user_exacs-cl01"
-    assert rec.cell_target in {"192.168.136.5", "192.168.136.6"}
+    # Primary (first) IP of each cell is used.
+    assert {r.cell_target for r in records} == {"192.168.136.5", "192.168.136.7"}
 
 
 def test_exacli_auth_required() -> None:

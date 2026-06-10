@@ -98,7 +98,7 @@ Storage cells are reached differently per estate, selected by each environment's
 
 | Method | Where | How |
 | --- | --- | --- |
-| `dcli_or_direct` | On-prem | Use `dcli -g <cell_group> -l <user>` if `dcli` is present; otherwise discover cells (from `cell_group_files` / `/etc/hosts`) and SSH to each cell directly |
+| `dcli_or_direct` | On-prem | Use `dcli -g <cell_group> -l <user>` **only** with a proper one-host-per-line group file; `cellip.ora` (lines of `cell="ip;ip"`) is parsed into one cell per line and each is reached by direct SSH (`sudo -n ssh <user>@<cell>`) to one of its two redundant IPs |
 | `direct_ssh` | On-prem | Always SSH to each discovered cell and run `cellcli` |
 | `exacli` | OCI ExaCS | From the DB VM, resolve the cluster name via `crsctl get cluster name`, build the `cloud_user_<clustername>` storage user, read cell IPs from `cellip.ora`, and run `exacli -l <user> -c <ip> --cookie-jar -n -e "..."` |
 

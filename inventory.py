@@ -38,6 +38,9 @@ class CellAccessConfig:
     use_cookie_jar: bool = True
     no_prompt: bool = True
     timeout_seconds: int = 45
+    # Wrap nested ssh-to-cell in `sudo -n` so the DB node's privileged
+    # identity (which holds the cell SSH keys, as dcli is run as root) is used.
+    direct_ssh_use_sudo: bool = True
 
 
 @dataclass(frozen=True)
@@ -309,6 +312,7 @@ def _build_cell_access_map(
             use_cookie_jar=bool(ca.get("use_cookie_jar", True)),
             no_prompt=bool(ca.get("no_prompt", True)),
             timeout_seconds=timeout,
+            direct_ssh_use_sudo=bool(ca.get("direct_ssh_use_sudo", True)),
         )
     return result
 
