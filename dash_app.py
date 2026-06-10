@@ -34,8 +34,10 @@ def build_global_cluster_options() -> list[dict[str, str]]:
         read_output("hugepages"),
         read_output("db_resource_details"),
         read_output("db_memory_history_summary"),
+        read_output("db_memory_cluster_summary"),
         read_output("db_performance"),
         read_output("os_inventory"),
+        read_output("version_inventory"),
         read_output("health_summary"),
     )
 

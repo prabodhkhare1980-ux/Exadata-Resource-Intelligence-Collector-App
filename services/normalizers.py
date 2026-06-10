@@ -759,3 +759,359 @@ def normalize_db_memory_summary(df: pd.DataFrame) -> pd.DataFrame:
     table["warning_severity"] = table["warning_severity"].map(normalize_severity)
     table["warning_level"] = table["warning_severity"]
     return table
+
+
+# ---------------------------------------------------------------------------
+# OS inventory: per-host memory and CPU parsing from /proc/meminfo and lscpu.
+# ---------------------------------------------------------------------------
+
+
+def parse_meminfo(value: Any) -> dict[str, Any]:
+    """Return a /proc/meminfo dict from a JSON string, dict, or text blob."""
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return {}
+    if isinstance(value, dict):
+        return value
+    parsed = parse_json_value(value)
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(value, str):
+        result: dict[str, Any] = {}
+        for line in value.splitlines():
+            if ":" in line:
+                key, _, val = line.partition(":")
+                result[key.strip()] = val.strip()
+        return result
+    return {}
+
+
+def _coalesce_meminfo(record: dict[str, Any]) -> dict[str, Any]:
+    for key in ("meminfo_json", "meminfo"):
+        if key in record:
+            parsed = parse_meminfo(record.get(key))
+            if parsed:
+                return parsed
+    return {}
+
+
+def _meminfo_kb(meminfo: dict[str, Any], key: str) -> float:
+    raw = meminfo.get(key)
+    if raw is None:
+        return float("nan")
+    text = str(raw).strip().lower().replace(" kb", "")
+    try:
+        return float(text)
+    except ValueError:
+        return float("nan")
+
+
+def build_os_memory_table(os_inventory: pd.DataFrame) -> pd.DataFrame:
+    """Build per-host OS memory snapshot table from ``os_inventory`` output.
+
+    Output columns: cluster, host, hostname, status, mem_total_gb,
+    mem_free_gb, mem_available_gb, mem_used_gb, mem_used_pct,
+    swap_total_gb, swap_free_gb, swap_used_gb, swap_used_pct, severity.
+    """
+
+    columns = [
+        "cluster", "host", "hostname", "status",
+        "mem_total_gb", "mem_free_gb", "mem_available_gb",
+        "mem_used_gb", "mem_used_pct",
+        "swap_total_gb", "swap_free_gb", "swap_used_gb", "swap_used_pct",
+        "severity",
+    ]
+    if os_inventory is None or os_inventory.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    for _, record in os_inventory.iterrows():
+        rec = record.to_dict()
+        meminfo = _coalesce_meminfo(rec)
+        mem_total_kb = _meminfo_kb(meminfo, "MemTotal")
+        mem_free_kb = _meminfo_kb(meminfo, "MemFree")
+        mem_available_kb = _meminfo_kb(meminfo, "MemAvailable")
+        swap_total_kb = _meminfo_kb(meminfo, "SwapTotal")
+        swap_free_kb = _meminfo_kb(meminfo, "SwapFree")
+        rows.append({
+            "cluster": rec.get("cluster"),
+            "host": rec.get("host"),
+            "hostname": rec.get("hostname"),
+            "status": rec.get("status"),
+            "mem_total_gb": mem_total_kb / 1024 / 1024,
+            "mem_free_gb": mem_free_kb / 1024 / 1024,
+            "mem_available_gb": mem_available_kb / 1024 / 1024,
+            "swap_total_gb": swap_total_kb / 1024 / 1024,
+            "swap_free_gb": swap_free_kb / 1024 / 1024,
+        })
+    table = pd.DataFrame(rows)
+    # Prefer MemAvailable-based used; fall back to MemFree-based.
+    table["mem_used_gb"] = (table["mem_total_gb"] - table["mem_available_gb"]).where(
+        table["mem_available_gb"].notna(),
+        table["mem_total_gb"] - table["mem_free_gb"],
+    )
+    table["mem_used_pct"] = (
+        (table["mem_used_gb"] / table["mem_total_gb"] * 100)
+        .where(table["mem_total_gb"] > 0)
+        .round(1)
+    )
+    table["swap_used_gb"] = table["swap_total_gb"] - table["swap_free_gb"]
+    table["swap_used_pct"] = (
+        (table["swap_used_gb"] / table["swap_total_gb"] * 100)
+        .where(table["swap_total_gb"] > 0)
+        .round(1)
+    )
+    table["severity"] = table["mem_used_pct"].map(severity_from_pct)
+    return table[columns]
+
+
+def _lscpu_dict(record: dict[str, Any]) -> dict[str, Any]:
+    for key in ("cpu_json", "cpu"):
+        if key not in record:
+            continue
+        candidate = parse_json_value(record.get(key))
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        return int(str(value).strip().split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def build_os_cpu_table(os_inventory: pd.DataFrame) -> pd.DataFrame:
+    """Build per-host OS CPU inventory table from ``os_inventory`` output.
+
+    Output columns: cluster, host, hostname, status, cpus, cores_per_socket,
+    sockets, threads_per_core, physical_cores, cpu_model, uptime.
+    """
+
+    columns = [
+        "cluster", "host", "hostname", "status",
+        "cpus", "cores_per_socket", "sockets", "threads_per_core",
+        "physical_cores", "cpu_model", "uptime",
+    ]
+    if os_inventory is None or os_inventory.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    for _, record in os_inventory.iterrows():
+        rec = record.to_dict()
+        cpu_data = _lscpu_dict(rec)
+        cpus = _coerce_int(cpu_data.get("CPU(s)") or cpu_data.get("CPUs"))
+        cores_per_socket = _coerce_int(
+            cpu_data.get("Core(s) per socket") or cpu_data.get("Cores per socket")
+        )
+        sockets = _coerce_int(cpu_data.get("Socket(s)") or cpu_data.get("Sockets"))
+        threads_per_core = _coerce_int(cpu_data.get("Thread(s) per core"))
+        physical_cores: int | None
+        if cores_per_socket is not None and sockets is not None:
+            physical_cores = cores_per_socket * sockets
+        else:
+            physical_cores = None
+        model = cpu_data.get("Model name") or cpu_data.get("Model")
+        rows.append({
+            "cluster": rec.get("cluster"),
+            "host": rec.get("host"),
+            "hostname": rec.get("hostname"),
+            "status": rec.get("status"),
+            "cpus": cpus,
+            "cores_per_socket": cores_per_socket,
+            "sockets": sockets,
+            "threads_per_core": threads_per_core,
+            "physical_cores": physical_cores,
+            "cpu_model": model,
+            "uptime": rec.get("uptime"),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+# ---------------------------------------------------------------------------
+# Inventory: DB resource details, cluster memory rollup, version inventory.
+# ---------------------------------------------------------------------------
+
+
+_DB_RESOURCE_RENAME_MAP = {
+    # CSV-style columns (PascalCase) → snake_case used by the dashboard.
+    "Cluster": "cluster",
+    "HOST_NAME": "host_name",
+    "DB_NAME": "db_name",
+    "DB_ROLE": "db_role",
+    "OPEN_MODE": "open_mode",
+    "VERSION": "version",
+    "RAC_ENABLED": "rac_enabled",
+    "INST_COUNT": "inst_count",
+    "SGA_TARGET_GB": "sga_target_gb",
+    "PGA_AGGR_TARGET_GB": "pga_aggr_target_gb",
+    "SGA_MAX_SIZE_GB": "sga_max_size_gb",
+    "PGA_AGGR_LIMIT_GB": "pga_aggr_limit_gb",
+    "PROCESSES": "processes",
+    "CPU_COUNT": "cpu_count",
+    "DB_SIZE_GB": "db_size_gb",
+    "USED_DB_SIZE_GB": "used_db_size_gb",
+    "DB_USED_PCT": "db_used_pct",
+    "Collected_At": "collected_at",
+}
+
+
+def normalize_db_resource_details(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the per-DB resource detail snapshot for the Dash app.
+
+    Accepts both the JSON output (already snake_case) and the CSV output
+    (PascalCase). Numeric columns are coerced; ``db_used_pct`` is derived
+    when missing but ``db_size_gb`` and ``used_db_size_gb`` are present.
+    A ``warning_level`` column is derived from ``db_used_pct`` so the
+    standard severity styling applies.
+    """
+
+    identity_columns = [
+        "cluster", "host", "host_name", "db_unique_name", "db_name",
+        "db_role", "open_mode", "version", "rac_enabled", "oracle_home",
+        "oracle_sid", "size_source", "collection_status", "collected_at",
+    ]
+    numeric_columns = [
+        "inst_count", "cpu_count", "processes",
+        "sga_target_gb", "sga_max_size_gb",
+        "pga_aggr_target_gb", "pga_aggr_limit_gb",
+        "db_size_gb", "used_db_size_gb", "db_used_pct",
+    ]
+    columns = identity_columns + numeric_columns + ["warning_level"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    table = df.rename(
+        columns={
+            old: new
+            for old, new in _DB_RESOURCE_RENAME_MAP.items()
+            if old in df.columns and new not in df.columns
+        }
+    ).copy()
+    table = ensure_columns(table, columns).copy()
+    for column in numeric_columns:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+
+    # Derive db_used_pct when the collector did not include it.
+    needs_pct = (
+        table["db_used_pct"].isna()
+        & table["db_size_gb"].notna()
+        & table["used_db_size_gb"].notna()
+    )
+    if needs_pct.any():
+        derived = (
+            (table["used_db_size_gb"] / table["db_size_gb"]) * 100
+        ).where(table["db_size_gb"] > 0)
+        table.loc[needs_pct, "db_used_pct"] = derived[needs_pct].round(2)
+
+    table["warning_level"] = table["db_used_pct"].map(severity_from_pct)
+    return table[columns]
+
+
+_DB_MEM_CLUSTER_RENAME_MAP = {
+    "Cluster": "cluster",
+}
+
+
+def normalize_db_memory_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the cluster-level DB memory rollup output.
+
+    The collector writes ``db_memory_cluster_summary.{json,csv}``. This
+    helper renames Cluster→cluster, coerces numerics, and returns the
+    canonical columns expected by the dashboard.
+    """
+
+    columns = [
+        "cluster", "database_count", "instance_count",
+        "avg_sga_used_gb", "max_sga_used_gb",
+        "total_latest_sga_used_gb",
+        "total_latest_pga_used_gb",
+        "total_latest_pga_allocated_gb",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    table = df.rename(
+        columns={
+            old: new
+            for old, new in _DB_MEM_CLUSTER_RENAME_MAP.items()
+            if old in df.columns and new not in df.columns
+        }
+    ).copy()
+    table = ensure_columns(table, columns).copy()
+    for column in columns:
+        if column == "cluster":
+            continue
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+    return table[columns]
+
+
+def normalize_version_inventory(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the per-host image / GI patch inventory output.
+
+    Reads ``version_inventory.{json,csv}`` (already snake_case in JSON).
+    Returns a stable column order useful for the Fleet Inventory page.
+    """
+
+    columns = [
+        "cluster", "host", "address", "node_type",
+        "image_version", "exadata_software_version", "image_status",
+        "image_activated", "kernel_version",
+        "gi_active_version", "gi_release_version",
+        "gi_release_patch_string", "gi_release_patch_level",
+        "collection_status", "collected_at",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    table = ensure_columns(df, columns).copy()
+    return table[columns]
+
+
+def build_cluster_version_drift(version_df: pd.DataFrame) -> pd.DataFrame:
+    """Return per-cluster image/GI patch drift indicators.
+
+    Output columns: cluster, host_count, image_versions, gi_patch_strings,
+    image_drift, gi_patch_drift, severity. ``*_drift`` is True when more
+    than one distinct value is observed on that cluster.
+    """
+
+    drift_columns = [
+        "cluster", "host_count",
+        "image_versions", "gi_patch_strings",
+        "image_drift", "gi_patch_drift", "severity",
+    ]
+    if version_df is None or version_df.empty:
+        return pd.DataFrame(columns=drift_columns)
+
+    df = normalize_version_inventory(version_df)
+    rows: list[dict[str, Any]] = []
+    for cluster, group in df.groupby(df["cluster"].fillna(""), dropna=False):
+        if not str(cluster).strip():
+            continue
+        image_set = sorted(
+            {str(v).strip() for v in group["image_version"].dropna() if str(v).strip()}
+        )
+        gi_set = sorted(
+            {
+                str(v).strip()
+                for v in group["gi_release_patch_string"].dropna()
+                if str(v).strip()
+            }
+        )
+        image_drift = len(image_set) > 1
+        gi_drift = len(gi_set) > 1
+        severity = "WARNING" if (image_drift or gi_drift) else "OK"
+        rows.append({
+            "cluster": cluster,
+            "host_count": int(len(group)),
+            "image_versions": ", ".join(image_set) or "—",
+            "gi_patch_strings": ", ".join(gi_set) or "—",
+            "image_drift": image_drift,
+            "gi_patch_drift": gi_drift,
+            "severity": severity,
+        })
+    return pd.DataFrame(rows, columns=drift_columns)
