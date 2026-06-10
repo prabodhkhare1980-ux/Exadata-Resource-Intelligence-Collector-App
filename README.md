@@ -113,6 +113,20 @@ cells go to `cell_inventory.{csv,json}`; unreachable cells go to
 The dashboard's **Cell Inventory** page summarises cells/version/capacity by cluster
 and lists failed access. No scripts are copied to targets and no credentials are stored.
 
+To test cell collection on its own (without running the full pipeline), use the
+diagnostic driver — it prints a per-cell summary (target / method / user / status /
+error category / captured stderr) and writes the same `cell_inventory*.{csv,json}`:
+
+```bash
+python -m scripts.run_cell_inventory --config config/clusters.local.yaml
+python -m scripts.run_cell_inventory --config config/clusters.local.yaml --cluster onprem-rac01 --verbose
+python -m scripts.run_cell_inventory --config config/clusters.local.yaml --no-write   # print only
+```
+
+Note: `output/cell_inventory.{csv,json}` contains **successful cells only** — if it is
+empty (header row only), every cell failed and the reason is in
+`output/cell_inventory_errors.{csv,json}` (and in the driver's summary).
+
 ## Oracle inventory mapping rules
 
 - Use `srvctl config database` as authoritative input for database names (`db_unique_name`).
