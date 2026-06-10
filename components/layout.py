@@ -12,9 +12,17 @@ NAV_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         [("Executive Cockpit", "/")],
     ),
     (
+        "Inventory",
+        [
+            ("Fleet Inventory", "/inventory/fleet"),
+            ("DB Inventory & Capacity", "/db/inventory"),
+        ],
+    ),
+    (
         "DB Resource Analytics",
         [
             ("DB Memory Analytics", "/db/memory"),
+            ("DB Memory Cluster Rollup", "/db/memory-cluster"),
             ("DB CPU Analytics", "/db/cpu"),
             ("DB IOPS Analytics", "/db/iops"),
             ("DB Throughput Analytics", "/db/throughput"),
