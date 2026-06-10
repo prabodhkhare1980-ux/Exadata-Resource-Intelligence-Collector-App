@@ -1115,3 +1115,76 @@ def build_cluster_version_drift(version_df: pd.DataFrame) -> pd.DataFrame:
             "severity": severity,
         })
     return pd.DataFrame(rows, columns=drift_columns)
+
+
+# ---------------------------------------------------------------------------
+# Storage-cell inventory.
+# ---------------------------------------------------------------------------
+
+
+def normalize_cell_inventory(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize successful cell inventory rows for the Dash page.
+
+    Renames the PascalCase cell columns to snake_case, coerces GB/count
+    numerics, and derives flash-cache / hard-disk / flash-disk TB columns.
+    """
+
+    rename_map = {
+        "Cluster": "cluster",
+        "CELL_NAME": "cell_name",
+        "CELL_VERSION": "cell_version",
+        "CELL_RELEASE_VERSION": "cell_release_version",
+        "MAKE_MODEL": "make_model",
+        "STATUS": "status",
+        "CPU_COUNT": "cpu_count",
+        "FLASH_CACHE_GB": "flash_cache_gb",
+        "FLASH_CACHE_MODE": "flash_cache_mode",
+        "HARD_DISK_GB": "hard_disk_gb",
+        "FLASH_DISK_GB": "flash_disk_gb",
+        "HARD_DISK_COUNT": "hard_disk_count",
+        "FLASH_DISK_COUNT": "flash_disk_count",
+    }
+    columns = [
+        "cluster", "source_host", "cell_name", "cell_version", "cell_release_version",
+        "make_model", "status", "cpu_count",
+        "flash_cache_gb", "flash_cache_tb", "flash_cache_mode",
+        "hard_disk_gb", "hard_disk_tb", "hard_disk_count",
+        "flash_disk_gb", "flash_disk_tb", "flash_disk_count",
+        "cell_access_method", "cell_target",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    table = df.rename(
+        columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}
+    ).copy()
+    table = ensure_columns(table, columns).copy()
+    for col in ("cpu_count", "flash_cache_gb", "hard_disk_gb", "flash_disk_gb",
+                "hard_disk_count", "flash_disk_count"):
+        table[col] = pd.to_numeric(table[col], errors="coerce")
+    for gb_col, tb_col in (
+        ("flash_cache_gb", "flash_cache_tb"),
+        ("hard_disk_gb", "hard_disk_tb"),
+        ("flash_disk_gb", "flash_disk_tb"),
+    ):
+        table[tb_col] = (table[gb_col] / 1024).round(2)
+    return table[columns]
+
+
+def normalize_cell_inventory_errors(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize failed cell-access rows for the Dash error table."""
+
+    rename_map = {"Cluster": "cluster"}
+    columns = [
+        "cluster", "source_host", "cell_access_method", "cell_target",
+        "cell_user_attempted", "error_category", "collection_error",
+        "dcli_available", "cell_group_file_used", "cell_hosts_discovered",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    table = df.rename(
+        columns={old: new for old, new in rename_map.items() if old in df.columns and new not in df.columns}
+    ).copy()
+    table = ensure_columns(table, columns).copy()
+    table["warning_level"] = "CRITICAL"
+    return table[columns + ["warning_level"]]

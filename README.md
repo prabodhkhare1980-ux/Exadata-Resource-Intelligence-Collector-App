@@ -85,12 +85,33 @@ writes both `.csv` and `.json` under `output/`.
 | `db_patch_inventory` | `opatch lspatches` per Oracle home | No | DB-home + Grid-home patch level; catches homes drifting from baseline |
 | `db_workload` | `dba_hist_sys_time_model`, `dba_hist_sysstat` | Yes | Per-snapshot DB Time, DB CPU, AAS, redo MB/s — workload intensity |
 | `db_tablespace_growth` | `dba_hist_tbspc_space_usage` | Yes | Per-tablespace allocated/used GB over time — days-to-full substrate |
-| `cell_inventory` | `dcli` + `cellcli ... list ... detail` | No | Per-cell image version, model, status, flash cache, disk capacity |
+| `cell_inventory` (+ `cell_inventory_errors`) | dcli / direct-SSH / ExaCLI → `cellcli`/`exacli ... list ... detail` | No | Per-cell image, release, model, status, flash cache, hard/flash disk capacity & counts |
 
 Configure under `collection.` with these blocks (all default-enabled): `db_capacity`,
 `db_patch`, `db_workload`, `cell_inventory`. AWR-based collectors honour the existing
-`db_performance.use_awr` / `days_back` settings. Cell inventory uses
-`dcli -g <cell_group> -l <cell_user>` from the first host of each cluster.
+`db_performance.use_awr` / `days_back` settings.
+
+### Cell inventory access models
+
+Storage cells are reached differently per estate, selected by each environment's
+`cell_access.method`:
+
+| Method | Where | How |
+| --- | --- | --- |
+| `dcli_or_direct` | On-prem | Use `dcli -g <cell_group> -l <user>` if `dcli` is present; otherwise discover cells (from `cell_group_files` / `/etc/hosts`) and SSH to each cell directly |
+| `direct_ssh` | On-prem | Always SSH to each discovered cell and run `cellcli` |
+| `exacli` | OCI ExaCS | From the DB VM, resolve the cluster name via `crsctl get cluster name`, build the `cloud_user_<clustername>` storage user, read cell IPs from `cellip.ora`, and run `exacli -l <user> -c <ip> --cookie-jar -n -e "..."` |
+
+For the on-prem methods each cell/command is retried across `cell_access.users`
+(e.g. `root` then `celladmin`) until one succeeds. ExaCLI uses an existing cookie
+jar — when none exists the row is flagged `EXACLI_AUTH_REQUIRED` with guidance to run
+the initial `exacli` login manually (no passwords are stored or prompted). Successful
+cells go to `cell_inventory.{csv,json}`; unreachable cells go to
+`cell_inventory_errors.{csv,json}` with the actual stderr captured and a precise
+`error_category` (`DCLI_NOT_FOUND`, `CELL_AUTH`, `EXACLI_NOT_FOUND`,
+`EXACLI_AUTH_REQUIRED`, `CELL_IP_FILE_NOT_FOUND`, `CELL_COMMAND_FAILED`, `PARSE_ERROR`).
+The dashboard's **Cell Inventory** page summarises cells/version/capacity by cluster
+and lists failed access. No scripts are copied to targets and no credentials are stored.
 
 ## Oracle inventory mapping rules
 

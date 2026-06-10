@@ -2367,21 +2367,50 @@ def write_db_tablespace_growth_json(records: Iterable[Any], output_dir: Path) ->
     )
 
 
+def _cell_status(record: Any) -> str:
+    value = getattr(record, "collection_status", "") or ""
+    return str(value).strip().lower()
+
+
 def write_cell_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
-    """Write per-cell storage inventory to output/cell_inventory.csv."""
+    """Write successful per-cell storage inventory to output/cell_inventory.csv."""
 
     from collectors.cell_inventory_collector import CELL_INVENTORY_COLUMNS
 
+    success = [r for r in records if _cell_status(r) == "success"]
     return _write_records(
-        records, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.csv", "csv"
+        success, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.csv", "csv"
     )
 
 
 def write_cell_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
-    """Write per-cell storage inventory to output/cell_inventory.json."""
+    """Write successful per-cell storage inventory to output/cell_inventory.json."""
 
     from collectors.cell_inventory_collector import CELL_INVENTORY_COLUMNS
 
+    success = [r for r in records if _cell_status(r) == "success"]
     return _write_records(
-        records, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.json", "json"
+        success, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.json", "json"
+    )
+
+
+def write_cell_inventory_errors_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write failed cell-access rows to output/cell_inventory_errors.csv."""
+
+    from collectors.cell_inventory_collector import CELL_INVENTORY_ERROR_COLUMNS
+
+    errors = [r for r in records if _cell_status(r) != "success"]
+    return _write_records(
+        errors, CELL_INVENTORY_ERROR_COLUMNS, output_dir / "cell_inventory_errors.csv", "csv"
+    )
+
+
+def write_cell_inventory_errors_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write failed cell-access rows to output/cell_inventory_errors.json."""
+
+    from collectors.cell_inventory_collector import CELL_INVENTORY_ERROR_COLUMNS
+
+    errors = [r for r in records if _cell_status(r) != "success"]
+    return _write_records(
+        errors, CELL_INVENTORY_ERROR_COLUMNS, output_dir / "cell_inventory_errors.json", "json"
     )

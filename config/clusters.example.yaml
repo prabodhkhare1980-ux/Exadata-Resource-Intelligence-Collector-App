@@ -10,6 +10,13 @@ environments:
       method: sudo
       sudo_password: none
       force_tty: true
+    # On-prem cells: try dcli, else SSH directly to each cell. Try root first
+    # (many on-prem cells deny celladmin), then celladmin.
+    cell_access:
+      method: dcli_or_direct
+      users:
+        - root
+        - celladmin
 
   oci:
     description: OCI Exadata estate
@@ -22,6 +29,14 @@ environments:
       method: sudo
       sudo_password: none
       force_tty: true
+    # OCI ExaCS: reach cells with ExaCLI from the DB VM using the
+    # cloud_user_<clustername> storage user and cellip.ora.
+    cell_access:
+      method: exacli
+      exacli_user_template: cloud_user_{cluster_name}
+      cell_ip_file: /etc/oracle/cell/network-config/cellip.ora
+      use_cookie_jar: true
+      no_prompt: true
 
 clusters:
   - name: onprem-rac01
@@ -80,13 +95,20 @@ collection:
     collect_workload: true
     collect_tablespace_growth: true
     timeout_seconds: 120
-  # Exadata storage-cell inventory, gathered from a compute node with
-  # `dcli -g <cell_group> -l <cell_user> "cellcli -e list ... detail"`.
+  # Exadata storage-cell inventory. The per-environment `cell_access` block
+  # (above) selects the method (dcli_or_direct / direct_ssh / exacli); these
+  # are the global defaults shared across environments.
   cell_inventory:
     enabled: true
-    cell_group: /opt/oracle.SupportTools/onecommand/cell_group
-    cell_user: celladmin
-    timeout_seconds: 60
+    timeout_seconds: 45
+    access_order:        # default user fallback when an env omits cell_access.users
+      - celladmin
+      - root
+    cell_group_files:    # probed in order; first readable one wins
+      - /root/cell_group
+      - /root/cell_group_name
+      - /etc/oracle/cell/network-config/cellip.ora
+    allow_direct_cell_ssh: true
   debug:
     enabled: false
   ssh:

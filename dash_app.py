@@ -38,6 +38,7 @@ def build_global_cluster_options() -> list[dict[str, str]]:
         read_output("db_performance"),
         read_output("os_inventory"),
         read_output("version_inventory"),
+        read_output("cell_inventory"),
         read_output("health_summary"),
     )
 

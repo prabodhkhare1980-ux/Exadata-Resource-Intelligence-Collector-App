@@ -288,3 +288,57 @@ def test_build_cluster_version_drift_handles_empty() -> None:
     drift = build_cluster_version_drift(pd.DataFrame())
     assert drift.empty
     assert "image_drift" in drift.columns
+
+
+# ---------------------------------------------------------------------------
+# Cell inventory
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_cell_inventory_derives_tb_columns() -> None:
+    from services.normalizers import normalize_cell_inventory
+
+    raw = pd.DataFrame([
+        {
+            "Cluster": "rac01", "source_host": "db01", "CELL_NAME": "cel01",
+            "CELL_VERSION": "OSS_23.1.0.0.0", "CELL_RELEASE_VERSION": "23.1.0.0.0",
+            "MAKE_MODEL": "X9-2L HC", "STATUS": "online", "CPU_COUNT": "32",
+            "FLASH_CACHE_GB": "5963", "FLASH_CACHE_MODE": "WriteBack",
+            "HARD_DISK_GB": "20480", "FLASH_DISK_GB": "6553",
+            "HARD_DISK_COUNT": "12", "FLASH_DISK_COUNT": "4",
+            "cell_access_method": "exacli", "cell_target": "192.168.136.5",
+        }
+    ])
+    table = normalize_cell_inventory(raw)
+    row = table.iloc[0]
+    assert row["cluster"] == "rac01"
+    assert row["cell_release_version"] == "23.1.0.0.0"
+    assert row["flash_cache_tb"] == pytest.approx(5963 / 1024, abs=0.01)
+    assert row["hard_disk_tb"] == pytest.approx(20480 / 1024, abs=0.01)
+    assert row["cell_access_method"] == "exacli"
+
+
+def test_normalize_cell_inventory_handles_empty() -> None:
+    from services.normalizers import normalize_cell_inventory
+
+    table = normalize_cell_inventory(pd.DataFrame())
+    assert table.empty
+    assert "flash_cache_tb" in table.columns
+
+
+def test_normalize_cell_inventory_errors() -> None:
+    from services.normalizers import normalize_cell_inventory_errors
+
+    raw = pd.DataFrame([
+        {
+            "Cluster": "rac02", "source_host": "db03", "cell_access_method": "dcli",
+            "cell_target": "cel09", "cell_user_attempted": "celladmin,root",
+            "error_category": "CELL_AUTH", "collection_error": "Permission denied",
+            "dcli_available": "true", "cell_group_file_used": "/root/cell_group",
+            "cell_hosts_discovered": "cel09",
+        }
+    ])
+    table = normalize_cell_inventory_errors(raw)
+    row = table.iloc[0]
+    assert row["error_category"] == "CELL_AUTH"
+    assert row["warning_level"] == "CRITICAL"

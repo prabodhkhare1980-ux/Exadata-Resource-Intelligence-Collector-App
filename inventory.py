@@ -2,11 +2,42 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+DEFAULT_CELL_GROUP_FILES = (
+    "/root/cell_group",
+    "/root/cell_group_name",
+    "/etc/oracle/cell/network-config/cellip.ora",
+)
+DEFAULT_CELL_IP_FILE = "/etc/oracle/cell/network-config/cellip.ora"
+DEFAULT_CELL_USERS = ("celladmin", "root")
+DEFAULT_EXACLI_USER_TEMPLATE = "cloud_user_{cluster_name}"
+
+
+@dataclass(frozen=True)
+class CellAccessConfig:
+    """Per-environment storage-cell access policy.
+
+    ``method`` is one of ``dcli_or_direct`` (try dcli, fall back to direct
+    SSH), ``direct_ssh`` (always SSH to each cell), or ``exacli`` (OCI
+    ExaCS). ``users`` is the ordered fallback list (e.g. celladmin then
+    root) for the on-prem methods.
+    """
+
+    enabled: bool = True
+    method: str = "dcli_or_direct"
+    users: tuple[str, ...] = DEFAULT_CELL_USERS
+    cell_group_files: tuple[str, ...] = DEFAULT_CELL_GROUP_FILES
+    allow_direct_cell_ssh: bool = True
+    cell_ip_file: str = DEFAULT_CELL_IP_FILE
+    exacli_user_template: str = DEFAULT_EXACLI_USER_TEMPLATE
+    use_cookie_jar: bool = True
+    no_prompt: bool = True
+    timeout_seconds: int = 45
 
 
 @dataclass(frozen=True)
@@ -72,11 +103,9 @@ class Inventory:
     db_workload_collect_workload: bool = True
     db_workload_collect_tablespace_growth: bool = True
     db_workload_timeout_seconds: int = 120
-    # Tier 2: Exadata storage-cell inventory via dcli + cellcli.
+    # Storage-cell inventory across mixed access models (dcli / direct / exacli).
     cell_inventory_enabled: bool = True
-    cell_inventory_cell_group: str = "/opt/oracle.SupportTools/onecommand/cell_group"
-    cell_inventory_cell_user: str = "celladmin"
-    cell_inventory_timeout_seconds: int = 60
+    cell_access_by_environment: dict[str, "CellAccessConfig"] = field(default_factory=dict)
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -233,12 +262,55 @@ def load_inventory(path: str | Path) -> Inventory:
         ),
         db_workload_timeout_seconds=int(db_workload_cfg.get("timeout_seconds", 120)),
         cell_inventory_enabled=bool(cell_cfg.get("enabled", True)),
-        cell_inventory_cell_group=str(
-            cell_cfg.get("cell_group", "/opt/oracle.SupportTools/onecommand/cell_group")
-        ),
-        cell_inventory_cell_user=str(cell_cfg.get("cell_user", "celladmin")),
-        cell_inventory_timeout_seconds=int(cell_cfg.get("timeout_seconds", 60)),
+        cell_access_by_environment=_build_cell_access_map(environments, cell_cfg),
     )
+
+
+def _build_cell_access_map(
+    environments: dict[str, Any], cell_cfg: dict[str, Any]
+) -> dict[str, CellAccessConfig]:
+    """Merge collection.cell_inventory defaults with each env's cell_access."""
+
+    enabled = bool(cell_cfg.get("enabled", True))
+    timeout = int(cell_cfg.get("timeout_seconds", 45))
+    access_order = cell_cfg.get("access_order")
+    default_users = (
+        tuple(str(u).strip() for u in access_order if str(u).strip())
+        if isinstance(access_order, list) and access_order
+        else DEFAULT_CELL_USERS
+    )
+    group_files = cell_cfg.get("cell_group_files")
+    default_group_files = (
+        tuple(str(f).strip() for f in group_files if str(f).strip())
+        if isinstance(group_files, list) and group_files
+        else DEFAULT_CELL_GROUP_FILES
+    )
+    allow_direct = bool(cell_cfg.get("allow_direct_cell_ssh", True))
+
+    result: dict[str, CellAccessConfig] = {}
+    for env_name, env_data in environments.items():
+        ca = (env_data or {}).get("cell_access") or {}
+        env_users = ca.get("users")
+        users = (
+            tuple(str(u).strip() for u in env_users if str(u).strip())
+            if isinstance(env_users, list) and env_users
+            else default_users
+        )
+        result[env_name] = CellAccessConfig(
+            enabled=enabled,
+            method=str(ca.get("method", "dcli_or_direct")).strip().lower(),
+            users=users,
+            cell_group_files=default_group_files,
+            allow_direct_cell_ssh=allow_direct,
+            cell_ip_file=str(ca.get("cell_ip_file", DEFAULT_CELL_IP_FILE)),
+            exacli_user_template=str(
+                ca.get("exacli_user_template", DEFAULT_EXACLI_USER_TEMPLATE)
+            ),
+            use_cookie_jar=bool(ca.get("use_cookie_jar", True)),
+            no_prompt=bool(ca.get("no_prompt", True)),
+            timeout_seconds=timeout,
+        )
+    return result
 
 
 def _required_string(data: dict[str, Any], key: str, context: str) -> str:
