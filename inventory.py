@@ -72,6 +72,11 @@ class Inventory:
     db_workload_collect_workload: bool = True
     db_workload_collect_tablespace_growth: bool = True
     db_workload_timeout_seconds: int = 120
+    # Tier 2: Exadata storage-cell inventory via dcli + cellcli.
+    cell_inventory_enabled: bool = True
+    cell_inventory_cell_group: str = "/opt/oracle.SupportTools/onecommand/cell_group"
+    cell_inventory_cell_user: str = "celladmin"
+    cell_inventory_timeout_seconds: int = 60
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -165,6 +170,7 @@ def load_inventory(path: str | Path) -> Inventory:
     db_capacity_cfg = collection.get("db_capacity") or {}
     db_patch_cfg = collection.get("db_patch") or {}
     db_workload_cfg = collection.get("db_workload") or {}
+    cell_cfg = collection.get("cell_inventory") or {}
     if not isinstance(db_perf_cfg, dict):
         raise ValueError("'collection.db_performance' must be a mapping.")
     db_memory_cfg = collection.get("db_memory_history") or {}
@@ -226,6 +232,12 @@ def load_inventory(path: str | Path) -> Inventory:
             db_workload_cfg.get("collect_tablespace_growth", True)
         ),
         db_workload_timeout_seconds=int(db_workload_cfg.get("timeout_seconds", 120)),
+        cell_inventory_enabled=bool(cell_cfg.get("enabled", True)),
+        cell_inventory_cell_group=str(
+            cell_cfg.get("cell_group", "/opt/oracle.SupportTools/onecommand/cell_group")
+        ),
+        cell_inventory_cell_user=str(cell_cfg.get("cell_user", "celladmin")),
+        cell_inventory_timeout_seconds=int(cell_cfg.get("timeout_seconds", 60)),
     )
 
 

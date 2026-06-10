@@ -80,6 +80,13 @@ collection:
     collect_workload: true
     collect_tablespace_growth: true
     timeout_seconds: 120
+  # Exadata storage-cell inventory, gathered from a compute node with
+  # `dcli -g <cell_group> -l <cell_user> "cellcli -e list ... detail"`.
+  cell_inventory:
+    enabled: true
+    cell_group: /opt/oracle.SupportTools/onecommand/cell_group
+    cell_user: celladmin
+    timeout_seconds: 60
   debug:
     enabled: false
   ssh:

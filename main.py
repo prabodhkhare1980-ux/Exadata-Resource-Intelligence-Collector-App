@@ -33,6 +33,7 @@ from collectors.version_inventory_collector import (
 from collectors.db_capacity_collector import DBCapacityCollector
 from collectors.db_patch_collector import DBPatchCollector
 from collectors.db_workload_collector import DBWorkloadCollector
+from collectors.cell_inventory_collector import CellInventoryCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
@@ -79,6 +80,8 @@ from reports.writers import (
     write_db_workload_json,
     write_db_tablespace_growth_csv,
     write_db_tablespace_growth_json,
+    write_cell_inventory_csv,
+    write_cell_inventory_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -390,6 +393,45 @@ def _collect_db_workload(db_records, inventory, runner):
         workload_records.extend(workload)
         tablespace_records.extend(tablespaces)
     return workload_records, tablespace_records
+
+
+def _collect_cell_inventory(inventory, runner):
+    """Collect Exadata storage-cell inventory once per cluster via dcli.
+
+    dcli fans out to every cell from a single compute node, so we run it
+    from the first host of each cluster. Failures (no dcli, no cell group)
+    are recorded as failed records and never abort the run.
+    """
+
+    if not inventory.cell_inventory_enabled:
+        return []
+
+    collector = CellInventoryCollector(
+        runner, logger=logging.getLogger("collectors.cell_inventory")
+    )
+    cell_records = []
+    for cluster in inventory.clusters:
+        if not cluster.hosts:
+            continue
+        host = cluster.hosts[0]
+        try:
+            cell_records.extend(
+                collector.collect_cluster(
+                    cluster,
+                    host,
+                    enabled=True,
+                    cell_group=inventory.cell_inventory_cell_group,
+                    cell_user=inventory.cell_inventory_cell_user,
+                    timeout_seconds=inventory.cell_inventory_timeout_seconds,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Cell inventory collection skipped/failed for cluster %s: %s",
+                cluster.name,
+                exc,
+            )
+    return cell_records
 
 
 def _collect_host(cluster, host, runner, logs_dir, inventory):
@@ -846,6 +888,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     workload_records, tablespace_records = _collect_db_workload(
         db_records, inventory, runner
     )
+    # Tier 2: Exadata storage-cell inventory (dcli + cellcli), once per cluster.
+    cell_records = _collect_cell_inventory(inventory, runner)
 
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
@@ -891,6 +935,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_workload_json(workload_records, inventory.output_dir)
     write_db_tablespace_growth_csv(tablespace_records, inventory.output_dir)
     write_db_tablespace_growth_json(tablespace_records, inventory.output_dir)
+    write_cell_inventory_csv(cell_records, inventory.output_dir)
+    write_cell_inventory_json(cell_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
     write_db_performance_errors_csv(db_performance_records, inventory.output_dir)

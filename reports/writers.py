@@ -2365,3 +2365,23 @@ def write_db_tablespace_growth_json(records: Iterable[Any], output_dir: Path) ->
     return _write_records(
         records, TABLESPACE_GROWTH_COLUMNS, output_dir / "db_tablespace_growth.json", "json"
     )
+
+
+def write_cell_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-cell storage inventory to output/cell_inventory.csv."""
+
+    from collectors.cell_inventory_collector import CELL_INVENTORY_COLUMNS
+
+    return _write_records(
+        records, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.csv", "csv"
+    )
+
+
+def write_cell_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-cell storage inventory to output/cell_inventory.json."""
+
+    from collectors.cell_inventory_collector import CELL_INVENTORY_COLUMNS
+
+    return _write_records(
+        records, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.json", "json"
+    )
