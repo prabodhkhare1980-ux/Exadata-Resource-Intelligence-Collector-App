@@ -2273,3 +2273,37 @@ def write_feature_usage_json(records: Iterable[Any], output_dir: Path) -> Path:
         json.dump(rows, json_file, indent=2)
         json_file.write("\n")
     return json_path
+
+
+def write_db_patch_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-home opatch lspatches rows to output/db_patch_inventory.csv."""
+
+    from collectors.db_patch_collector import DB_PATCH_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_patch_inventory.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=DB_PATCH_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_db_patch_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-home opatch lspatches rows to output/db_patch_inventory.json."""
+
+    from collectors.db_patch_collector import DB_PATCH_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_patch_inventory.json"
+    rows = [
+        {column: record.to_csv_row().get(column, "") for column in DB_PATCH_COLUMNS}
+        for record in records
+    ]
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path

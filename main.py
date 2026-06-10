@@ -31,6 +31,7 @@ from collectors.version_inventory_collector import (
     VersionInventoryRecord,
 )
 from collectors.db_capacity_collector import DBCapacityCollector
+from collectors.db_patch_collector import DBPatchCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
@@ -71,6 +72,8 @@ from reports.writers import (
     write_pdb_inventory_json,
     write_feature_usage_csv,
     write_feature_usage_json,
+    write_db_patch_inventory_csv,
+    write_db_patch_inventory_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -294,6 +297,46 @@ def _collect_db_capacity(db_records, inventory, runner):
         pdb_records.extend(pdbs)
         feature_records.extend(features)
     return pdb_records, feature_records
+
+
+def _collect_db_patches(db_records, inventory, runner):
+    """Collect opatch lspatches per Oracle home across all collected databases.
+
+    Post-pass over ``db_records``, same shape as ``_collect_db_capacity``.
+    Returns a flat list of DBPatchRecord. Failures are logged, never fatal.
+    """
+
+    if not inventory.db_patch_enabled:
+        return []
+
+    hosts_by_name = {
+        host.name: host
+        for cluster in inventory.clusters
+        for host in cluster.hosts
+    }
+    collector = DBPatchCollector(
+        runner, logger=logging.getLogger("collectors.db_patch")
+    )
+    patch_records = []
+    for db_record in db_records:
+        host = hosts_by_name.get(db_record.host)
+        if host is None:
+            continue
+        try:
+            patch_records.extend(
+                collector.collect_host(
+                    db_record,
+                    host,
+                    enabled=True,
+                    timeout_seconds=inventory.db_patch_timeout_seconds,
+                    include_grid_home=inventory.db_patch_include_grid_home,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "DB patch collection skipped/failed for %s: %s", db_record.host, exc
+            )
+    return patch_records
 
 
 def _collect_host(cluster, host, runner, logs_dir, inventory):
@@ -744,6 +787,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     pdb_records, feature_records = _collect_db_capacity(
         db_records, inventory, runner
     )
+    # Tier 2: per-Oracle-home patch inventory (opatch lspatches).
+    patch_records = _collect_db_patches(db_records, inventory, runner)
 
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
@@ -783,6 +828,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_pdb_inventory_json(pdb_records, inventory.output_dir)
     write_feature_usage_csv(feature_records, inventory.output_dir)
     write_feature_usage_json(feature_records, inventory.output_dir)
+    write_db_patch_inventory_csv(patch_records, inventory.output_dir)
+    write_db_patch_inventory_json(patch_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
     write_db_performance_errors_csv(db_performance_records, inventory.output_dir)

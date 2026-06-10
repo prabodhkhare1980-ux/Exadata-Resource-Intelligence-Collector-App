@@ -68,6 +68,11 @@ collection:
     collect_pdb_inventory: true
     collect_feature_usage: true
     timeout_seconds: 90
+  # Per-Oracle-home patch inventory via opatch lspatches (DB homes + Grid home).
+  db_patch:
+    enabled: true
+    include_grid_home: true
+    timeout_seconds: 60
   debug:
     enabled: false
   ssh:
