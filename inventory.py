@@ -58,6 +58,25 @@ class Inventory:
     db_memory_sga_near_max_pct: float = 98
     db_memory_pga_used_pct_target: float = 80
     db_memory_pga_alloc_pct_target: float = 100
+    # Tier 2: license/capacity DB collectors (base views, no Diagnostics Pack).
+    db_capacity_enabled: bool = True
+    db_capacity_collect_pdb_inventory: bool = True
+    db_capacity_collect_feature_usage: bool = True
+    db_capacity_timeout_seconds: int = 90
+    # Tier 2: per-Oracle-home patch inventory (opatch lspatches).
+    db_patch_enabled: bool = True
+    db_patch_include_grid_home: bool = True
+    db_patch_timeout_seconds: int = 60
+    # Tier 2: AWR workload intensity + tablespace growth (Diagnostics Pack).
+    db_workload_enabled: bool = True
+    db_workload_collect_workload: bool = True
+    db_workload_collect_tablespace_growth: bool = True
+    db_workload_timeout_seconds: int = 120
+    # Tier 2: Exadata storage-cell inventory via dcli + cellcli.
+    cell_inventory_enabled: bool = True
+    cell_inventory_cell_group: str = "/opt/oracle.SupportTools/onecommand/cell_group"
+    cell_inventory_cell_user: str = "celladmin"
+    cell_inventory_timeout_seconds: int = 60
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -148,6 +167,10 @@ def load_inventory(path: str | Path) -> Inventory:
     if not isinstance(debug_cfg, dict):
         raise ValueError("'collection.debug' must be a mapping.")
     db_perf_cfg = collection.get("db_performance") or {}
+    db_capacity_cfg = collection.get("db_capacity") or {}
+    db_patch_cfg = collection.get("db_patch") or {}
+    db_workload_cfg = collection.get("db_workload") or {}
+    cell_cfg = collection.get("cell_inventory") or {}
     if not isinstance(db_perf_cfg, dict):
         raise ValueError("'collection.db_performance' must be a mapping.")
     db_memory_cfg = collection.get("db_memory_history") or {}
@@ -190,6 +213,31 @@ def load_inventory(path: str | Path) -> Inventory:
         db_memory_pga_alloc_pct_target=float(
             warning_thresholds.get("pga_alloc_pct_target", 100)
         ),
+        db_capacity_enabled=bool(db_capacity_cfg.get("enabled", True)),
+        db_capacity_collect_pdb_inventory=bool(
+            db_capacity_cfg.get("collect_pdb_inventory", True)
+        ),
+        db_capacity_collect_feature_usage=bool(
+            db_capacity_cfg.get("collect_feature_usage", True)
+        ),
+        db_capacity_timeout_seconds=int(db_capacity_cfg.get("timeout_seconds", 90)),
+        db_patch_enabled=bool(db_patch_cfg.get("enabled", True)),
+        db_patch_include_grid_home=bool(db_patch_cfg.get("include_grid_home", True)),
+        db_patch_timeout_seconds=int(db_patch_cfg.get("timeout_seconds", 60)),
+        db_workload_enabled=bool(db_workload_cfg.get("enabled", True)),
+        db_workload_collect_workload=bool(
+            db_workload_cfg.get("collect_workload", True)
+        ),
+        db_workload_collect_tablespace_growth=bool(
+            db_workload_cfg.get("collect_tablespace_growth", True)
+        ),
+        db_workload_timeout_seconds=int(db_workload_cfg.get("timeout_seconds", 120)),
+        cell_inventory_enabled=bool(cell_cfg.get("enabled", True)),
+        cell_inventory_cell_group=str(
+            cell_cfg.get("cell_group", "/opt/oracle.SupportTools/onecommand/cell_group")
+        ),
+        cell_inventory_cell_user=str(cell_cfg.get("cell_user", "celladmin")),
+        cell_inventory_timeout_seconds=int(cell_cfg.get("timeout_seconds", 60)),
     )
 
 

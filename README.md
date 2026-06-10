@@ -72,6 +72,26 @@ No scripts are copied to targets and no remote temp files are created.
 - On-prem mode can set `privilege.force_tty: true` so SSH runs with `-tt` for sudo policies that require a TTY.
 - In TTY mode, shell prompt/echo/control noise is cleaned before parsing, and parser accepts only content between `===BEGIN_SECTION:<name>===` and `===END_SECTION:<name>===` markers.
 
+## License & capacity collectors (Tier 2)
+
+These deepen inventory, license posture, and capacity assessment. Each runs as
+a post-pass over the DB inventory (or once per cluster for cell inventory) and
+writes both `.csv` and `.json` under `output/`.
+
+| Output | Source | Diagnostics Pack? | Purpose |
+| --- | --- | --- | --- |
+| `pdb_inventory` | `v$pdbs` + `cdb_data_files` | No | Per-PDB open mode, restricted, size — Multitenant license posture |
+| `db_feature_usage` | `dba_feature_usage_statistics` | No | Currently-used options/features (Partitioning, ACO, RAT, In-Memory, ADG) |
+| `db_patch_inventory` | `opatch lspatches` per Oracle home | No | DB-home + Grid-home patch level; catches homes drifting from baseline |
+| `db_workload` | `dba_hist_sys_time_model`, `dba_hist_sysstat` | Yes | Per-snapshot DB Time, DB CPU, AAS, redo MB/s — workload intensity |
+| `db_tablespace_growth` | `dba_hist_tbspc_space_usage` | Yes | Per-tablespace allocated/used GB over time — days-to-full substrate |
+| `cell_inventory` | `dcli` + `cellcli ... list ... detail` | No | Per-cell image version, model, status, flash cache, disk capacity |
+
+Configure under `collection.` with these blocks (all default-enabled): `db_capacity`,
+`db_patch`, `db_workload`, `cell_inventory`. AWR-based collectors honour the existing
+`db_performance.use_awr` / `days_back` settings. Cell inventory uses
+`dcli -g <cell_group> -l <cell_user>` from the first host of each cluster.
+
 ## Oracle inventory mapping rules
 
 - Use `srvctl config database` as authoritative input for database names (`db_unique_name`).

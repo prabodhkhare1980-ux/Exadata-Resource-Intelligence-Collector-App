@@ -30,6 +30,10 @@ from collectors.version_inventory_collector import (
     VersionInventoryCollector,
     VersionInventoryRecord,
 )
+from collectors.db_capacity_collector import DBCapacityCollector
+from collectors.db_patch_collector import DBPatchCollector
+from collectors.db_workload_collector import DBWorkloadCollector
+from collectors.cell_inventory_collector import CellInventoryCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
@@ -66,6 +70,18 @@ from reports.writers import (
     write_version_inventory_json,
     write_version_summary_csv,
     write_version_summary_json,
+    write_pdb_inventory_csv,
+    write_pdb_inventory_json,
+    write_feature_usage_csv,
+    write_feature_usage_json,
+    write_db_patch_inventory_csv,
+    write_db_patch_inventory_json,
+    write_db_workload_csv,
+    write_db_workload_json,
+    write_db_tablespace_growth_csv,
+    write_db_tablespace_growth_json,
+    write_cell_inventory_csv,
+    write_cell_inventory_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -242,6 +258,180 @@ def _print_preflight_report(
 
 
 # run() and main unchanged-ish
+
+
+def _collect_db_capacity(db_records, inventory, runner):
+    """Collect PDB inventory and feature usage across all collected databases.
+
+    Post-pass over ``db_records`` (the DB inventory already gathered by both
+    the sequential and parallel pipelines), so it does not need to thread new
+    fields through the per-host result type. Returns (pdb_records,
+    feature_records). Failures are logged and never abort the run.
+    """
+
+    if not inventory.db_capacity_enabled:
+        return [], []
+
+    hosts_by_name = {
+        host.name: host
+        for cluster in inventory.clusters
+        for host in cluster.hosts
+    }
+    collector = DBCapacityCollector(
+        runner, logger=logging.getLogger("collectors.db_capacity")
+    )
+    pdb_records = []
+    feature_records = []
+    for db_record in db_records:
+        host = hosts_by_name.get(db_record.host)
+        if host is None:
+            continue
+        try:
+            pdbs, features = collector.collect_host(
+                db_record,
+                host,
+                enabled=True,
+                collect_pdb_inventory=inventory.db_capacity_collect_pdb_inventory,
+                collect_feature_usage=inventory.db_capacity_collect_feature_usage,
+                timeout_seconds=inventory.db_capacity_timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "DB capacity collection skipped/failed for %s: %s",
+                db_record.host,
+                exc,
+            )
+            continue
+        pdb_records.extend(pdbs)
+        feature_records.extend(features)
+    return pdb_records, feature_records
+
+
+def _collect_db_patches(db_records, inventory, runner):
+    """Collect opatch lspatches per Oracle home across all collected databases.
+
+    Post-pass over ``db_records``, same shape as ``_collect_db_capacity``.
+    Returns a flat list of DBPatchRecord. Failures are logged, never fatal.
+    """
+
+    if not inventory.db_patch_enabled:
+        return []
+
+    hosts_by_name = {
+        host.name: host
+        for cluster in inventory.clusters
+        for host in cluster.hosts
+    }
+    collector = DBPatchCollector(
+        runner, logger=logging.getLogger("collectors.db_patch")
+    )
+    patch_records = []
+    for db_record in db_records:
+        host = hosts_by_name.get(db_record.host)
+        if host is None:
+            continue
+        try:
+            patch_records.extend(
+                collector.collect_host(
+                    db_record,
+                    host,
+                    enabled=True,
+                    timeout_seconds=inventory.db_patch_timeout_seconds,
+                    include_grid_home=inventory.db_patch_include_grid_home,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "DB patch collection skipped/failed for %s: %s", db_record.host, exc
+            )
+    return patch_records
+
+
+def _collect_db_workload(db_records, inventory, runner):
+    """Collect AWR workload intensity and tablespace growth across databases.
+
+    Post-pass over ``db_records``. Returns (workload_records,
+    tablespace_records). Honours the same AWR/days_back settings as the
+    db_performance collector. Failures are logged, never fatal.
+    """
+
+    if not inventory.db_workload_enabled:
+        return [], []
+
+    hosts_by_name = {
+        host.name: host
+        for cluster in inventory.clusters
+        for host in cluster.hosts
+    }
+    collector = DBWorkloadCollector(
+        runner, logger=logging.getLogger("collectors.db_workload")
+    )
+    workload_records = []
+    tablespace_records = []
+    for db_record in db_records:
+        host = hosts_by_name.get(db_record.host)
+        if host is None:
+            continue
+        try:
+            workload, tablespaces = collector.collect_host(
+                db_record,
+                host,
+                enabled=True,
+                use_awr=inventory.db_performance_use_awr,
+                days_back=inventory.db_performance_days_back,
+                timeout_seconds=inventory.db_workload_timeout_seconds,
+                collect_workload=inventory.db_workload_collect_workload,
+                collect_tablespace_growth=inventory.db_workload_collect_tablespace_growth,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "DB workload collection skipped/failed for %s: %s",
+                db_record.host,
+                exc,
+            )
+            continue
+        workload_records.extend(workload)
+        tablespace_records.extend(tablespaces)
+    return workload_records, tablespace_records
+
+
+def _collect_cell_inventory(inventory, runner):
+    """Collect Exadata storage-cell inventory once per cluster via dcli.
+
+    dcli fans out to every cell from a single compute node, so we run it
+    from the first host of each cluster. Failures (no dcli, no cell group)
+    are recorded as failed records and never abort the run.
+    """
+
+    if not inventory.cell_inventory_enabled:
+        return []
+
+    collector = CellInventoryCollector(
+        runner, logger=logging.getLogger("collectors.cell_inventory")
+    )
+    cell_records = []
+    for cluster in inventory.clusters:
+        if not cluster.hosts:
+            continue
+        host = cluster.hosts[0]
+        try:
+            cell_records.extend(
+                collector.collect_cluster(
+                    cluster,
+                    host,
+                    enabled=True,
+                    cell_group=inventory.cell_inventory_cell_group,
+                    cell_user=inventory.cell_inventory_cell_user,
+                    timeout_seconds=inventory.cell_inventory_timeout_seconds,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Cell inventory collection skipped/failed for cluster %s: %s",
+                cluster.name,
+                exc,
+            )
+    return cell_records
 
 
 def _collect_host(cluster, host, runner, logs_dir, inventory):
@@ -684,6 +874,23 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
                             hugepages_records.append(hp_rec)
                             version_records.append(ver_rec)
                             hosts_failed += 1
+
+    # Tier 2: license/capacity DB collection (PDB inventory + feature usage).
+    # Runs as a post-pass over the DB inventory we already collected, mirroring
+    # the cluster-scoped memory-history pass. Uses base views only (no
+    # Diagnostics Pack), so it is independent of db_performance/AWR settings.
+    pdb_records, feature_records = _collect_db_capacity(
+        db_records, inventory, runner
+    )
+    # Tier 2: per-Oracle-home patch inventory (opatch lspatches).
+    patch_records = _collect_db_patches(db_records, inventory, runner)
+    # Tier 2: AWR workload intensity (DB Time/CPU/AAS/redo) + tablespace growth.
+    workload_records, tablespace_records = _collect_db_workload(
+        db_records, inventory, runner
+    )
+    # Tier 2: Exadata storage-cell inventory (dcli + cellcli), once per cluster.
+    cell_records = _collect_cell_inventory(inventory, runner)
+
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
     write_db_inventory_csv(db_records, inventory.output_dir)
@@ -718,6 +925,18 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     write_version_summary_csv(version_records, inventory.output_dir)
     write_version_summary_json(version_records, inventory.output_dir)
+    write_pdb_inventory_csv(pdb_records, inventory.output_dir)
+    write_pdb_inventory_json(pdb_records, inventory.output_dir)
+    write_feature_usage_csv(feature_records, inventory.output_dir)
+    write_feature_usage_json(feature_records, inventory.output_dir)
+    write_db_patch_inventory_csv(patch_records, inventory.output_dir)
+    write_db_patch_inventory_json(patch_records, inventory.output_dir)
+    write_db_workload_csv(workload_records, inventory.output_dir)
+    write_db_workload_json(workload_records, inventory.output_dir)
+    write_db_tablespace_growth_csv(tablespace_records, inventory.output_dir)
+    write_db_tablespace_growth_json(tablespace_records, inventory.output_dir)
+    write_cell_inventory_csv(cell_records, inventory.output_dir)
+    write_cell_inventory_json(cell_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
     write_db_performance_errors_csv(db_performance_records, inventory.output_dir)

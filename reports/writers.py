@@ -2200,3 +2200,188 @@ def _asm_csv_fields(include_debug: bool) -> list[str]:
 
 def _mb_to_tb(value: int) -> float:
     return round(value / 1024 / 1024, 2)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: DB license/capacity outputs (PDB inventory, feature usage).
+# ---------------------------------------------------------------------------
+
+
+def write_pdb_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-PDB inventory rows to output/pdb_inventory.csv."""
+
+    from collectors.db_capacity_collector import PDB_INVENTORY_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "pdb_inventory.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=PDB_INVENTORY_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_pdb_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-PDB inventory rows to output/pdb_inventory.json."""
+
+    from collectors.db_capacity_collector import PDB_INVENTORY_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "pdb_inventory.json"
+    rows = [
+        {column: record.to_csv_row().get(column, "") for column in PDB_INVENTORY_COLUMNS}
+        for record in records
+    ]
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def write_feature_usage_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-feature usage rows to output/db_feature_usage.csv."""
+
+    from collectors.db_capacity_collector import FEATURE_USAGE_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_feature_usage.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=FEATURE_USAGE_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_feature_usage_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-feature usage rows to output/db_feature_usage.json."""
+
+    from collectors.db_capacity_collector import FEATURE_USAGE_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_feature_usage.json"
+    rows = [
+        {column: record.to_csv_row().get(column, "") for column in FEATURE_USAGE_COLUMNS}
+        for record in records
+    ]
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def write_db_patch_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-home opatch lspatches rows to output/db_patch_inventory.csv."""
+
+    from collectors.db_patch_collector import DB_PATCH_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "db_patch_inventory.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file, fieldnames=DB_PATCH_COLUMNS, extrasaction="ignore"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    return csv_path
+
+
+def write_db_patch_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-home opatch lspatches rows to output/db_patch_inventory.json."""
+
+    from collectors.db_patch_collector import DB_PATCH_COLUMNS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "db_patch_inventory.json"
+    rows = [
+        {column: record.to_csv_row().get(column, "") for column in DB_PATCH_COLUMNS}
+        for record in records
+    ]
+    with json_path.open("w", encoding="utf-8") as json_file:
+        json.dump(rows, json_file, indent=2)
+        json_file.write("\n")
+    return json_path
+
+
+def _write_records(records: Iterable[Any], columns: list[str], path: Path, fmt: str) -> Path:
+    """Shared writer for simple flat record outputs (csv or json)."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    materialized = list(records)
+    if fmt == "csv":
+        with path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            for record in materialized:
+                writer.writerow(record.to_csv_row())
+    else:
+        rows = [
+            {column: record.to_csv_row().get(column, "") for column in columns}
+            for record in materialized
+        ]
+        with path.open("w", encoding="utf-8") as json_file:
+            json.dump(rows, json_file, indent=2)
+            json_file.write("\n")
+    return path
+
+
+def write_db_workload_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot DB Time/CPU/AAS/redo rows to output/db_workload.csv."""
+
+    from collectors.db_workload_collector import WORKLOAD_COLUMNS
+
+    return _write_records(records, WORKLOAD_COLUMNS, output_dir / "db_workload.csv", "csv")
+
+
+def write_db_workload_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot DB Time/CPU/AAS/redo rows to output/db_workload.json."""
+
+    from collectors.db_workload_collector import WORKLOAD_COLUMNS
+
+    return _write_records(records, WORKLOAD_COLUMNS, output_dir / "db_workload.json", "json")
+
+
+def write_db_tablespace_growth_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot tablespace growth to output/db_tablespace_growth.csv."""
+
+    from collectors.db_workload_collector import TABLESPACE_GROWTH_COLUMNS
+
+    return _write_records(
+        records, TABLESPACE_GROWTH_COLUMNS, output_dir / "db_tablespace_growth.csv", "csv"
+    )
+
+
+def write_db_tablespace_growth_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot tablespace growth to output/db_tablespace_growth.json."""
+
+    from collectors.db_workload_collector import TABLESPACE_GROWTH_COLUMNS
+
+    return _write_records(
+        records, TABLESPACE_GROWTH_COLUMNS, output_dir / "db_tablespace_growth.json", "json"
+    )
+
+
+def write_cell_inventory_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-cell storage inventory to output/cell_inventory.csv."""
+
+    from collectors.cell_inventory_collector import CELL_INVENTORY_COLUMNS
+
+    return _write_records(
+        records, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.csv", "csv"
+    )
+
+
+def write_cell_inventory_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-cell storage inventory to output/cell_inventory.json."""
+
+    from collectors.cell_inventory_collector import CELL_INVENTORY_COLUMNS
+
+    return _write_records(
+        records, CELL_INVENTORY_COLUMNS, output_dir / "cell_inventory.json", "json"
+    )

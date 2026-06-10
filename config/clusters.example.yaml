@@ -61,6 +61,32 @@ collection:
       sga_near_max_pct: 98
       pga_used_pct_target: 80
       pga_alloc_pct_target: 100
+  # License/capacity DB collection. Uses base catalog views (v$pdbs,
+  # dba_feature_usage_statistics) and does NOT require Diagnostics Pack.
+  db_capacity:
+    enabled: true
+    collect_pdb_inventory: true
+    collect_feature_usage: true
+    timeout_seconds: 90
+  # Per-Oracle-home patch inventory via opatch lspatches (DB homes + Grid home).
+  db_patch:
+    enabled: true
+    include_grid_home: true
+    timeout_seconds: 60
+  # AWR workload intensity (DB Time/CPU/AAS/redo) and tablespace growth.
+  # Reads DBA_HIST_* views and requires Oracle Diagnostics Pack licensing.
+  db_workload:
+    enabled: true
+    collect_workload: true
+    collect_tablespace_growth: true
+    timeout_seconds: 120
+  # Exadata storage-cell inventory, gathered from a compute node with
+  # `dcli -g <cell_group> -l <cell_user> "cellcli -e list ... detail"`.
+  cell_inventory:
+    enabled: true
+    cell_group: /opt/oracle.SupportTools/onecommand/cell_group
+    cell_user: celladmin
+    timeout_seconds: 60
   debug:
     enabled: false
   ssh:
