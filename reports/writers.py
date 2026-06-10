@@ -2307,3 +2307,61 @@ def write_db_patch_inventory_json(records: Iterable[Any], output_dir: Path) -> P
         json.dump(rows, json_file, indent=2)
         json_file.write("\n")
     return json_path
+
+
+def _write_records(records: Iterable[Any], columns: list[str], path: Path, fmt: str) -> Path:
+    """Shared writer for simple flat record outputs (csv or json)."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    materialized = list(records)
+    if fmt == "csv":
+        with path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            for record in materialized:
+                writer.writerow(record.to_csv_row())
+    else:
+        rows = [
+            {column: record.to_csv_row().get(column, "") for column in columns}
+            for record in materialized
+        ]
+        with path.open("w", encoding="utf-8") as json_file:
+            json.dump(rows, json_file, indent=2)
+            json_file.write("\n")
+    return path
+
+
+def write_db_workload_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot DB Time/CPU/AAS/redo rows to output/db_workload.csv."""
+
+    from collectors.db_workload_collector import WORKLOAD_COLUMNS
+
+    return _write_records(records, WORKLOAD_COLUMNS, output_dir / "db_workload.csv", "csv")
+
+
+def write_db_workload_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot DB Time/CPU/AAS/redo rows to output/db_workload.json."""
+
+    from collectors.db_workload_collector import WORKLOAD_COLUMNS
+
+    return _write_records(records, WORKLOAD_COLUMNS, output_dir / "db_workload.json", "json")
+
+
+def write_db_tablespace_growth_csv(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot tablespace growth to output/db_tablespace_growth.csv."""
+
+    from collectors.db_workload_collector import TABLESPACE_GROWTH_COLUMNS
+
+    return _write_records(
+        records, TABLESPACE_GROWTH_COLUMNS, output_dir / "db_tablespace_growth.csv", "csv"
+    )
+
+
+def write_db_tablespace_growth_json(records: Iterable[Any], output_dir: Path) -> Path:
+    """Write per-snapshot tablespace growth to output/db_tablespace_growth.json."""
+
+    from collectors.db_workload_collector import TABLESPACE_GROWTH_COLUMNS
+
+    return _write_records(
+        records, TABLESPACE_GROWTH_COLUMNS, output_dir / "db_tablespace_growth.json", "json"
+    )

@@ -32,6 +32,7 @@ from collectors.version_inventory_collector import (
 )
 from collectors.db_capacity_collector import DBCapacityCollector
 from collectors.db_patch_collector import DBPatchCollector
+from collectors.db_workload_collector import DBWorkloadCollector
 from collectors.shared_context import SharedHostContext
 from inventory import Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
@@ -74,6 +75,10 @@ from reports.writers import (
     write_feature_usage_json,
     write_db_patch_inventory_csv,
     write_db_patch_inventory_json,
+    write_db_workload_csv,
+    write_db_workload_json,
+    write_db_tablespace_growth_csv,
+    write_db_tablespace_growth_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -337,6 +342,54 @@ def _collect_db_patches(db_records, inventory, runner):
                 "DB patch collection skipped/failed for %s: %s", db_record.host, exc
             )
     return patch_records
+
+
+def _collect_db_workload(db_records, inventory, runner):
+    """Collect AWR workload intensity and tablespace growth across databases.
+
+    Post-pass over ``db_records``. Returns (workload_records,
+    tablespace_records). Honours the same AWR/days_back settings as the
+    db_performance collector. Failures are logged, never fatal.
+    """
+
+    if not inventory.db_workload_enabled:
+        return [], []
+
+    hosts_by_name = {
+        host.name: host
+        for cluster in inventory.clusters
+        for host in cluster.hosts
+    }
+    collector = DBWorkloadCollector(
+        runner, logger=logging.getLogger("collectors.db_workload")
+    )
+    workload_records = []
+    tablespace_records = []
+    for db_record in db_records:
+        host = hosts_by_name.get(db_record.host)
+        if host is None:
+            continue
+        try:
+            workload, tablespaces = collector.collect_host(
+                db_record,
+                host,
+                enabled=True,
+                use_awr=inventory.db_performance_use_awr,
+                days_back=inventory.db_performance_days_back,
+                timeout_seconds=inventory.db_workload_timeout_seconds,
+                collect_workload=inventory.db_workload_collect_workload,
+                collect_tablespace_growth=inventory.db_workload_collect_tablespace_growth,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "DB workload collection skipped/failed for %s: %s",
+                db_record.host,
+                exc,
+            )
+            continue
+        workload_records.extend(workload)
+        tablespace_records.extend(tablespaces)
+    return workload_records, tablespace_records
 
 
 def _collect_host(cluster, host, runner, logs_dir, inventory):
@@ -789,6 +842,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     )
     # Tier 2: per-Oracle-home patch inventory (opatch lspatches).
     patch_records = _collect_db_patches(db_records, inventory, runner)
+    # Tier 2: AWR workload intensity (DB Time/CPU/AAS/redo) + tablespace growth.
+    workload_records, tablespace_records = _collect_db_workload(
+        db_records, inventory, runner
+    )
 
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
@@ -830,6 +887,10 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_feature_usage_json(feature_records, inventory.output_dir)
     write_db_patch_inventory_csv(patch_records, inventory.output_dir)
     write_db_patch_inventory_json(patch_records, inventory.output_dir)
+    write_db_workload_csv(workload_records, inventory.output_dir)
+    write_db_workload_json(workload_records, inventory.output_dir)
+    write_db_tablespace_growth_csv(tablespace_records, inventory.output_dir)
+    write_db_tablespace_growth_json(tablespace_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
     write_db_performance_errors_csv(db_performance_records, inventory.output_dir)

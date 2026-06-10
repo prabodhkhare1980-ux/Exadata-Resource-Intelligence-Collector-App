@@ -73,6 +73,13 @@ collection:
     enabled: true
     include_grid_home: true
     timeout_seconds: 60
+  # AWR workload intensity (DB Time/CPU/AAS/redo) and tablespace growth.
+  # Reads DBA_HIST_* views and requires Oracle Diagnostics Pack licensing.
+  db_workload:
+    enabled: true
+    collect_workload: true
+    collect_tablespace_growth: true
+    timeout_seconds: 120
   debug:
     enabled: false
   ssh:

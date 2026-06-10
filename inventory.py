@@ -67,6 +67,11 @@ class Inventory:
     db_patch_enabled: bool = True
     db_patch_include_grid_home: bool = True
     db_patch_timeout_seconds: int = 60
+    # Tier 2: AWR workload intensity + tablespace growth (Diagnostics Pack).
+    db_workload_enabled: bool = True
+    db_workload_collect_workload: bool = True
+    db_workload_collect_tablespace_growth: bool = True
+    db_workload_timeout_seconds: int = 120
 
 
 def load_inventory(path: str | Path) -> Inventory:
@@ -159,6 +164,7 @@ def load_inventory(path: str | Path) -> Inventory:
     db_perf_cfg = collection.get("db_performance") or {}
     db_capacity_cfg = collection.get("db_capacity") or {}
     db_patch_cfg = collection.get("db_patch") or {}
+    db_workload_cfg = collection.get("db_workload") or {}
     if not isinstance(db_perf_cfg, dict):
         raise ValueError("'collection.db_performance' must be a mapping.")
     db_memory_cfg = collection.get("db_memory_history") or {}
@@ -212,6 +218,14 @@ def load_inventory(path: str | Path) -> Inventory:
         db_patch_enabled=bool(db_patch_cfg.get("enabled", True)),
         db_patch_include_grid_home=bool(db_patch_cfg.get("include_grid_home", True)),
         db_patch_timeout_seconds=int(db_patch_cfg.get("timeout_seconds", 60)),
+        db_workload_enabled=bool(db_workload_cfg.get("enabled", True)),
+        db_workload_collect_workload=bool(
+            db_workload_cfg.get("collect_workload", True)
+        ),
+        db_workload_collect_tablespace_growth=bool(
+            db_workload_cfg.get("collect_tablespace_growth", True)
+        ),
+        db_workload_timeout_seconds=int(db_workload_cfg.get("timeout_seconds", 120)),
     )
 
 
