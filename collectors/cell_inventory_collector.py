@@ -1,21 +1,25 @@
-"""Exadata storage-cell inventory via dcli + cellcli.
+"""Exadata storage-cell inventory across mixed access models.
 
-The compute-node collectors never reach the storage grid, so cell image
-versions, models, and flash-cache capacity were invisible. A DMA collects
-this from a compute node by fanning out to the cells with ``dcli``:
+Storage cells are not reachable the same way in every estate, so this
+collector supports three access methods, selected per environment via
+``cell_access.method``:
 
-    dcli -g <cell_group> -l <cell_user> "cellcli -e list cell detail"
+* ``dcli_or_direct`` (on-prem): if ``dcli`` is present, fan out with
+  ``dcli -g <cell_group> -l <user> "cellcli -e '...'"``; otherwise discover
+  the cell hosts and SSH to each cell directly and run ``cellcli``.
+* ``direct_ssh`` (on-prem): always SSH to each discovered cell directly.
+* ``exacli`` (OCI ExaCS): cells are reached with ``exacli`` from the DB VM
+  using the ``cloud_user_<clustername>`` storage user and the cell IPs in
+  ``/etc/oracle/cell/network-config/cellip.ora``.
 
-``dcli`` prefixes every output line with ``<cellhost>: ``. The ``... detail``
-form emits one ``attr: value`` pair per line, which parses unambiguously
-even for attributes containing spaces (e.g. ``makeModel``). This collector
-runs once per cluster from a representative compute host and merges the
-cell, flashcache, and physicaldisk listings into one row per cell.
+User fallback: for the on-prem methods each cell/command is attempted with
+every user in ``cell_access.users`` (e.g. ``celladmin`` then ``root``) until
+one succeeds.
 
-Execution model matches the rest of the project: a single command streamed
-over SSH (``runner.run_command``); no scripts copied to the target. If
-``dcli`` or the cell group file is absent the cluster simply yields a
-failed record with a clear message, never aborting the run.
+Everything runs as a single command streamed over the existing SSH runner
+(``runner.run_command``) — no scripts copied, no temp files, no stored
+credentials. All command construction and output parsing are pure functions
+so the whole decision tree is unit-testable without a live cell.
 """
 
 from __future__ import annotations
@@ -23,22 +27,25 @@ from __future__ import annotations
 import logging
 import re
 import shlex
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
-from ssh_runner import SSHRunner
+from ssh_runner import CommandResult, SSHRunner
 
 if TYPE_CHECKING:
-    from inventory import ClusterConfig, HostConfig
+    from inventory import CellAccessConfig, ClusterConfig, HostConfig
 
 
-CELL_INVENTORY_COLUMNS = [
-    "Cluster",
-    "source_host",
-    "source_address",
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+# Cell attribute fields surfaced as the successful inventory.
+CELL_FIELDS = [
     "CELL_NAME",
     "CELL_VERSION",
+    "CELL_RELEASE_VERSION",
     "MAKE_MODEL",
     "STATUS",
     "CPU_COUNT",
@@ -46,10 +53,39 @@ CELL_INVENTORY_COLUMNS = [
     "FLASH_CACHE_MODE",
     "HARD_DISK_GB",
     "FLASH_DISK_GB",
+    "HARD_DISK_COUNT",
+    "FLASH_DISK_COUNT",
+]
+
+CELL_INVENTORY_COLUMNS = [
+    "Cluster",
+    "source_host",
+    "source_address",
+    *CELL_FIELDS,
+    "cell_access_method",
+    "cell_target",
+    "cell_user",
     "Collected_At",
+    "collection_status",
+]
+
+CELL_INVENTORY_ERROR_COLUMNS = [
+    "Cluster",
+    "source_host",
+    "source_address",
+    "cell_access_method",
+    "cell_target",
+    "cell_user",
+    "cell_user_attempted",
     "collection_status",
     "collection_error",
     "error_category",
+    "dcli_available",
+    "cell_group_file_used",
+    "cell_hosts_discovered",
+    "cell_command",
+    "raw_error",
+    "Collected_At",
 ]
 
 
@@ -60,6 +96,7 @@ class CellInventoryRecord:
     source_address: str = ""
     CELL_NAME: str = ""
     CELL_VERSION: str = ""
+    CELL_RELEASE_VERSION: str = ""
     MAKE_MODEL: str = ""
     STATUS: str = ""
     CPU_COUNT: str = ""
@@ -67,28 +104,71 @@ class CellInventoryRecord:
     FLASH_CACHE_MODE: str = ""
     HARD_DISK_GB: str = ""
     FLASH_DISK_GB: str = ""
+    HARD_DISK_COUNT: str = ""
+    FLASH_DISK_COUNT: str = ""
+    cell_access_method: str = ""
+    cell_target: str = ""
+    cell_user: str = ""
     Collected_At: str = ""
     collection_status: str = "success"
     collection_error: str = ""
     error_category: str = ""
+    # Debug / diagnostics.
+    dcli_available: str = ""
+    cell_group_file_used: str = ""
+    cell_hosts_discovered: str = ""
+    cell_user_attempted: str = ""
+    cell_command: str = ""
+    raw_error: str = ""
 
     def to_csv_row(self) -> dict[str, object]:
-        return {column: getattr(self, column) for column in CELL_INVENTORY_COLUMNS}
+        data = asdict(self)
+        return {key: data.get(key, "") for key in data}
 
     def to_json_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
-DEFAULT_CELL_GROUP = "/opt/oracle.SupportTools/onecommand/cell_group"
-DEFAULT_CELL_USER = "celladmin"
+# ---------------------------------------------------------------------------
+# Command builders (pure)
+# ---------------------------------------------------------------------------
+
+CELLCLI_DETAIL_COMMANDS = {
+    "cell": "list cell detail",
+    "flashcache": "list flashcache detail",
+    "physicaldisk": "list physicaldisk detail",
+}
+
+
+def build_command_check(binary: str) -> str:
+    """Probe for an executable without failing the shell when it is absent."""
+
+    return f"command -v {shlex.quote(binary)} 2>/dev/null || true"
+
+
+def build_exacli_path_probe() -> str:
+    """Probe for exacli on PATH and the documented fallback locations."""
+
+    return (
+        "command -v exacli 2>/dev/null "
+        "|| ls /usr/local/bin/exacli 2>/dev/null "
+        "|| ls /usr/bin/exacli 2>/dev/null "
+        "|| true"
+    )
+
+
+def build_cat_command(path: str) -> str:
+    """Cat a file; non-zero return code signals the file is missing."""
+
+    return f"cat {shlex.quote(path)}"
 
 
 def build_dcli_cellcli_command(
-    cell_group: str, cell_user: str, cellcli_command: str, timeout_seconds: int = 60
+    cell_group: str, cell_user: str, cellcli_command: str, timeout_seconds: int = 45
 ) -> str:
-    """Build a ``dcli -g <group> -l <user> "cellcli -e <cmd>"`` invocation."""
+    """Build ``dcli -g <group> -l <user> "cellcli -e '<cmd>'"``."""
 
-    inner = f"cellcli -e {cellcli_command}"
+    inner = f"cellcli -e {shlex.quote(cellcli_command)}"
     return " ".join(
         [
             "timeout",
@@ -103,50 +183,169 @@ def build_dcli_cellcli_command(
     )
 
 
-_DETAIL_LINE = re.compile(r"^(?P<cell>\S+?):\s+(?P<attr>[A-Za-z0-9_]+):\s*(?P<value>.*)$")
+def build_direct_ssh_cellcli_command(
+    cell: str, cell_user: str, cellcli_command: str, timeout_seconds: int = 45
+) -> str:
+    """Build a nested ``ssh <user>@<cell> "cellcli -e '<cmd>'"`` command.
+
+    Runs from the DB node over the existing SSH session. BatchMode keeps it
+    non-interactive (no password prompt); a failed key/login surfaces as an
+    auth error rather than hanging.
+    """
+
+    remote = f"cellcli -e {shlex.quote(cellcli_command)}"
+    return " ".join(
+        [
+            "timeout",
+            f"{int(timeout_seconds)}s",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
+            f"{cell_user}@{cell}",
+            shlex.quote(remote),
+        ]
+    )
+
+
+def build_crsctl_cluster_name_command(grid_home: str, grid_owner: str) -> str:
+    """Build the sudo/crsctl command that reports the cluster name."""
+
+    path = f"{grid_home}/bin:/usr/bin:/bin"
+    return " ".join(
+        [
+            "sudo",
+            "-n",
+            "-u",
+            shlex.quote(grid_owner),
+            "env",
+            f"ORACLE_HOME={shlex.quote(grid_home)}",
+            f"PATH={shlex.quote(path)}",
+            "crsctl",
+            "get",
+            "cluster",
+            "name",
+        ]
+    )
+
+
+def build_exacli_command(
+    exacli_path: str,
+    cell_user: str,
+    cell_ip: str,
+    cellcli_command: str,
+    *,
+    use_cookie_jar: bool = True,
+    no_prompt: bool = True,
+    timeout_seconds: int = 45,
+) -> str:
+    """Build an ExaCLI invocation for one cell IP."""
+
+    parts = [
+        "timeout",
+        f"{int(timeout_seconds)}s",
+        shlex.quote(exacli_path or "exacli"),
+        "-l",
+        shlex.quote(cell_user),
+        "-c",
+        shlex.quote(cell_ip),
+    ]
+    if use_cookie_jar:
+        parts.append("--cookie-jar")
+    if no_prompt:
+        parts.append("-n")
+    parts.extend(["-e", shlex.quote(cellcli_command)])
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Parsers (pure)
+# ---------------------------------------------------------------------------
+
+_DCLI_DETAIL_LINE = re.compile(r"^(?P<cell>\S+?):\s+(?P<attr>[A-Za-z0-9_]+):\s*(?P<value>.*)$")
+_CELLCLI_DETAIL_LINE = re.compile(r"^(?P<attr>[A-Za-z0-9_]+):\s+(?P<value>.*)$")
+_IPV4 = re.compile(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
+
+
+def parse_command_v(output: str) -> str:
+    """Return the first path-looking token from a ``command -v`` probe."""
+
+    for line in (output or "").splitlines():
+        token = line.strip()
+        if token and (token.startswith("/") or " " not in token):
+            return token
+    return ""
+
+
+def parse_cluster_name(output: str) -> str:
+    """Parse ``CRS-6724: Current cluster name is <name>`` (or bare name)."""
+
+    for line in (output or "").splitlines():
+        match = re.search(r"cluster name is\s+(\S+)", line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    # crsctl may emit just the name on some versions.
+    stripped = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if len(stripped) == 1 and " " not in stripped[0] and "-" not in stripped[0][:4]:
+        return stripped[0]
+    return ""
+
+
+def parse_cell_ips(output: str) -> list[str]:
+    """Parse unique cell IPs from a cellip.ora-style file."""
+
+    ips: list[str] = []
+    seen: set[str] = set()
+    for match in _IPV4.finditer(output or ""):
+        ip = match.group(1)
+        if ip not in seen:
+            seen.add(ip)
+            ips.append(ip)
+    return ips
+
+
+def parse_cell_group_hosts(output: str) -> list[str]:
+    """Parse cell hostnames/IPs from a dcli cell_group file (one per line)."""
+
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for line in (output or "").splitlines():
+        token = line.strip()
+        if not token or token.startswith("#"):
+            continue
+        token = token.split()[0]
+        if token and token not in seen:
+            seen.add(token)
+            hosts.append(token)
+    return hosts
 
 
 def parse_dcli_detail(text: str) -> dict[str, dict[str, str]]:
-    """Parse ``dcli "... list <obj> detail"`` output into per-cell attr dicts.
-
-    Lines look like ``cel01: cellVersion:    OSS_23.1.0.0.0_...``. Returns
-    ``{cell_host: {attr: value, ...}}``. Lines that do not match the
-    ``cell: attr: value`` shape (banners, blank lines) are ignored. When a
-    cell repeats an attribute (multiple objects, e.g. several flashcache
-    entries) the values are summed if numeric-with-unit, else last-wins;
-    callers that need per-object rows should use :func:`parse_dcli_rows`.
-    """
+    """Parse ``dcli "... detail"`` output into ``{cell_host: {attr: value}}``."""
 
     result: dict[str, dict[str, str]] = {}
-    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
-        match = _DETAIL_LINE.match(raw_line.strip())
+    for raw_line in (text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        match = _DCLI_DETAIL_LINE.match(raw_line.strip())
         if not match:
             continue
-        cell = match.group("cell")
-        attr = match.group("attr")
-        value = match.group("value").strip()
-        result.setdefault(cell, {})[attr] = value
+        result.setdefault(match.group("cell"), {})[match.group("attr")] = match.group("value").strip()
     return result
 
 
 def parse_dcli_detail_multi(text: str) -> dict[str, list[dict[str, str]]]:
-    """Parse detail output where each cell may list multiple objects.
-
-    A new object starts whenever the ``name`` attribute reappears for a
-    cell. Returns ``{cell_host: [ {attr: value, ...}, ... ]}``. Used for
-    physicaldisk / griddisk listings where capacity must be summed across
-    many objects per cell.
-    """
+    """Parse dcli detail with multiple objects per cell (split on ``name``)."""
 
     result: dict[str, list[dict[str, str]]] = {}
     current: dict[str, dict[str, str]] = {}
-    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
-        match = _DETAIL_LINE.match(raw_line.strip())
+    for raw_line in (text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        match = _DCLI_DETAIL_LINE.match(raw_line.strip())
         if not match:
             continue
         cell, attr, value = match.group("cell"), match.group("attr"), match.group("value").strip()
         if attr == "name":
-            # Start a new object for this cell.
             obj = {"name": value}
             result.setdefault(cell, []).append(obj)
             current[cell] = obj
@@ -158,6 +357,39 @@ def parse_dcli_detail_multi(text: str) -> dict[str, list[dict[str, str]]]:
                 current[cell] = obj
             obj[attr] = value
     return result
+
+
+def parse_cellcli_detail(text: str) -> dict[str, str]:
+    """Parse single-cell ``cellcli/exacli "... detail"`` output (no host prefix)."""
+
+    attrs: dict[str, str] = {}
+    for raw_line in (text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        match = _CELLCLI_DETAIL_LINE.match(raw_line.strip())
+        if not match:
+            continue
+        attrs[match.group("attr")] = match.group("value").strip()
+    return attrs
+
+
+def parse_cellcli_detail_multi(text: str) -> list[dict[str, str]]:
+    """Parse single-cell detail with multiple objects (split on ``name``)."""
+
+    objects: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for raw_line in (text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        match = _CELLCLI_DETAIL_LINE.match(raw_line.strip())
+        if not match:
+            continue
+        attr, value = match.group("attr"), match.group("value").strip()
+        if attr == "name":
+            current = {"name": value}
+            objects.append(current)
+        elif current is not None:
+            current[attr] = value
+        else:
+            current = {attr: value}
+            objects.append(current)
+    return objects
 
 
 _SIZE_UNITS = {"T": 1024.0, "G": 1.0, "M": 1.0 / 1024.0, "K": 1.0 / 1024.0 / 1024.0}
@@ -179,121 +411,6 @@ def parse_cell_size_gb(value: str) -> float | None:
     return round(number * _SIZE_UNITS.get(unit, 1.0), 2)
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-# cellcli detail commands issued via dcli. Kept as a mapping so callers can
-# inject results per kind in tests.
-CELLCLI_COMMANDS = {
-    "cell": "list cell detail",
-    "flashcache": "list flashcache detail",
-    "physicaldisk": "list physicaldisk detail",
-}
-
-
-class CellInventoryCollector:
-    """Collect per-cell image/model/capacity from a compute node via dcli."""
-
-    def __init__(
-        self, runner: SSHRunner | None, logger: logging.Logger | None = None
-    ) -> None:
-        self.runner = runner
-        self.logger = logger or logging.getLogger(__name__)
-
-    def collect_cluster(
-        self,
-        cluster: "ClusterConfig",
-        host: "HostConfig",
-        *,
-        enabled: bool = True,
-        cell_group: str = DEFAULT_CELL_GROUP,
-        cell_user: str = DEFAULT_CELL_USER,
-        timeout_seconds: int = 60,
-        command_executor=None,
-    ) -> list[CellInventoryRecord]:
-        if not enabled:
-            return []
-
-        now = _utc_now()
-        results = {}
-        for kind, cellcli_cmd in CELLCLI_COMMANDS.items():
-            command = build_dcli_cellcli_command(
-                cell_group, cell_user, cellcli_cmd, timeout_seconds
-            )
-            result = self._execute(host, kind, command, command_executor)
-            results[kind] = result
-
-        cell_result = results["cell"]
-        if not cell_result.ok:
-            return [
-                CellInventoryRecord(
-                    Cluster=cluster.name,
-                    source_host=host.name,
-                    source_address=host.address,
-                    Collected_At=now,
-                    collection_status="failed",
-                    collection_error=_cell_error(cell_result),
-                    error_category=_cell_error_category(cell_result),
-                )
-            ]
-
-        cells = parse_dcli_detail(cell_result.stdout)
-        flash = (
-            parse_dcli_detail_multi(results["flashcache"].stdout)
-            if results["flashcache"].ok
-            else {}
-        )
-        disks = (
-            parse_dcli_detail_multi(results["physicaldisk"].stdout)
-            if results["physicaldisk"].ok
-            else {}
-        )
-
-        records: list[CellInventoryRecord] = []
-        for cell_host, attrs in sorted(cells.items()):
-            flash_gb, flash_mode = _flashcache_summary(flash.get(cell_host, []))
-            hard_gb, flash_disk_gb = _physicaldisk_summary(disks.get(cell_host, []))
-            records.append(
-                CellInventoryRecord(
-                    Cluster=cluster.name,
-                    source_host=host.name,
-                    source_address=host.address,
-                    CELL_NAME=attrs.get("name", cell_host),
-                    CELL_VERSION=attrs.get("cellVersion", ""),
-                    MAKE_MODEL=attrs.get("makeModel", ""),
-                    STATUS=attrs.get("status", ""),
-                    CPU_COUNT=attrs.get("cpuCount", ""),
-                    FLASH_CACHE_GB="" if flash_gb is None else f"{flash_gb}",
-                    FLASH_CACHE_MODE=flash_mode,
-                    HARD_DISK_GB="" if hard_gb is None else f"{hard_gb}",
-                    FLASH_DISK_GB="" if flash_disk_gb is None else f"{flash_disk_gb}",
-                    Collected_At=now,
-                    collection_status="success",
-                )
-            )
-        if not records:
-            return [
-                CellInventoryRecord(
-                    Cluster=cluster.name,
-                    source_host=host.name,
-                    source_address=host.address,
-                    Collected_At=now,
-                    collection_status="failed",
-                    collection_error="no_cells_parsed",
-                    error_category="EMPTY_OUTPUT",
-                )
-            ]
-        return records
-
-    def _execute(self, host, kind, command, command_executor):
-        if command_executor is not None:
-            return command_executor(kind, command)
-        if self.runner is None:
-            raise ValueError("runner is required when command_executor is not supplied")
-        return self.runner.run_command(host, command)
-
-
 def _flashcache_summary(objects: list[dict[str, str]]) -> tuple[float | None, str]:
     total = 0.0
     found = False
@@ -308,42 +425,513 @@ def _flashcache_summary(objects: list[dict[str, str]]) -> tuple[float | None, st
     return (round(total, 2) if found else None), mode
 
 
-def _physicaldisk_summary(objects: list[dict[str, str]]) -> tuple[float | None, float | None]:
-    hard = 0.0
-    flash = 0.0
+def _physicaldisk_summary(
+    objects: list[dict[str, str]],
+) -> tuple[float | None, float | None, int, int]:
+    hard = flash = 0.0
     hard_found = flash_found = False
+    hard_count = flash_count = 0
     for obj in objects:
         size = parse_cell_size_gb(obj.get("physicalSize", "") or obj.get("size", ""))
-        if size is None:
-            continue
         disk_type = (obj.get("diskType") or "").lower()
         if "flash" in disk_type:
-            flash += size
-            flash_found = True
+            flash_count += 1
+            if size is not None:
+                flash += size
+                flash_found = True
         else:
-            hard += size
-            hard_found = True
+            hard_count += 1
+            if size is not None:
+                hard += size
+                hard_found = True
     return (
         round(hard, 2) if hard_found else None,
         round(flash, 2) if flash_found else None,
+        hard_count,
+        flash_count,
     )
 
 
-def _cell_error(result) -> str:
-    if getattr(result, "timed_out", False):
-        return "dcli/cellcli timed out"
-    stderr = (getattr(result, "stderr", "") or "").strip()
-    stdout = (getattr(result, "stdout", "") or "").strip()
-    detail = stderr or stdout or f"dcli exited with {getattr(result, 'returncode', '')}"
-    return detail
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
 
 
-def _cell_error_category(result) -> str:
-    if getattr(result, "timed_out", False):
-        return "TIMEOUT"
-    combined = f"{getattr(result, 'stdout', '')}\n{getattr(result, 'stderr', '')}".lower()
-    if "command not found" in combined or "no such file" in combined or "dcli" in combined and "not" in combined:
-        return "DCLI_NOT_FOUND"
-    if "permission denied" in combined or "publickey" in combined:
-        return "CELL_AUTH"
-    return "UNKNOWN"
+def _is_auth_error(result: CommandResult) -> bool:
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    return any(
+        marker in combined
+        for marker in (
+            "permission denied",
+            "publickey",
+            "authentication failed",
+            "password",
+            "access denied",
+            "not authorized",
+        )
+    )
+
+
+def _is_exacli_auth_error(result: CommandResult) -> bool:
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    return any(
+        marker in combined
+        for marker in (
+            "cookie",
+            "not authenticated",
+            "authentication required",
+            "password",
+            "credential",
+            "login",
+        )
+    )
+
+
+def _raw_error(result: CommandResult) -> str:
+    parts = []
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    if stderr:
+        parts.append(stderr)
+    if stdout and stdout not in parts:
+        parts.append(stdout)
+    if getattr(result, "error", None):
+        parts.append(str(result.error))
+    return " | ".join(parts) or f"exit code {result.returncode}"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------------------
+# Collector
+# ---------------------------------------------------------------------------
+
+CommandRunner = Callable[[str], CommandResult]
+
+
+class CellInventoryCollector:
+    """Collect per-cell inventory across dcli / direct-SSH / ExaCLI models."""
+
+    def __init__(self, runner: SSHRunner | None, logger: logging.Logger | None = None) -> None:
+        self.runner = runner
+        self.logger = logger or logging.getLogger(__name__)
+
+    def collect_cluster(
+        self,
+        cluster: "ClusterConfig",
+        host: "HostConfig",
+        access: "CellAccessConfig",
+        *,
+        grid_home: str = "",
+        grid_owner: str = "",
+        command_runner: CommandRunner | None = None,
+    ) -> list[CellInventoryRecord]:
+        if access is None or not access.enabled:
+            return []
+        run = command_runner or self._default_runner(host)
+        ctx = _Ctx(cluster=cluster.name, host=host.name, address=host.address, access=access, run=run)
+        if access.method == "exacli":
+            return self._collect_exacli(ctx, grid_home, grid_owner)
+        return self._collect_onprem(ctx)
+
+    def _default_runner(self, host) -> CommandRunner:
+        if self.runner is None:
+            raise ValueError("runner is required when command_runner is not supplied")
+        return lambda command: self.runner.run_command(host, command)
+
+    # -- on-prem: dcli or direct ssh --------------------------------------
+
+    def _collect_onprem(self, ctx: "_Ctx") -> list[CellInventoryRecord]:
+        dcli_path = parse_command_v(ctx.run(build_command_check("dcli")).stdout)
+        dcli_available = bool(dcli_path)
+
+        cell_group_used, cell_hosts = self._discover_cell_group(ctx)
+
+        force_direct = ctx.access.method == "direct_ssh"
+        if dcli_available and cell_group_used and not force_direct:
+            return self._collect_via_dcli(ctx, cell_group_used, cell_hosts, dcli_available)
+
+        if ctx.access.allow_direct_cell_ssh and cell_hosts:
+            return self._collect_via_direct_ssh(ctx, cell_hosts, dcli_available, cell_group_used)
+
+        # Nothing worked: build one diagnostic error record explaining why.
+        if not dcli_available and not cell_hosts:
+            error = (
+                "dcli not found and no cell hosts could be discovered from "
+                f"{', '.join(ctx.access.cell_group_files)} or /etc/hosts"
+            )
+            category = "DCLI_NOT_FOUND"
+        elif not ctx.access.allow_direct_cell_ssh:
+            error = "dcli not found and allow_direct_cell_ssh is disabled"
+            category = "DCLI_NOT_FOUND"
+        else:
+            error = "no cell group file found and no cell hosts discovered"
+            category = "CELL_IP_FILE_NOT_FOUND"
+        return [
+            self._error_record(
+                ctx,
+                method="dcli" if dcli_available else "direct_ssh",
+                target="",
+                user="",
+                user_attempted="",
+                error=error,
+                category=category,
+                dcli_available=dcli_available,
+                cell_group_used=cell_group_used,
+                cell_hosts=cell_hosts,
+            )
+        ]
+
+    def _discover_cell_group(self, ctx: "_Ctx") -> tuple[str, list[str]]:
+        """Return (first readable cell group/ip file, discovered cell hosts)."""
+
+        cell_group_used = ""
+        hosts: list[str] = []
+        for path in ctx.access.cell_group_files:
+            result = ctx.run(build_cat_command(path))
+            if result.ok and result.stdout.strip():
+                cell_group_used = path
+                if "cellip.ora" in path or _IPV4.search(result.stdout):
+                    hosts = parse_cell_ips(result.stdout) or parse_cell_group_hosts(result.stdout)
+                else:
+                    hosts = parse_cell_group_hosts(result.stdout)
+                if hosts:
+                    break
+        if not hosts:
+            # Last resort: cell-like entries in /etc/hosts.
+            etc = ctx.run("grep -iE 'cel[l0-9]' /etc/hosts 2>/dev/null || true")
+            if etc.ok and etc.stdout.strip():
+                hosts = _hosts_from_etc_hosts(etc.stdout)
+        return cell_group_used, hosts
+
+    def _collect_via_dcli(
+        self, ctx: "_Ctx", cell_group: str, cell_hosts: list[str], dcli_available: bool
+    ) -> list[CellInventoryRecord]:
+        last_error: CommandResult | None = None
+        attempted: list[str] = []
+        for user in ctx.access.users:
+            attempted.append(user)
+            commands = {
+                kind: build_dcli_cellcli_command(cell_group, user, cmd, ctx.access.timeout_seconds)
+                for kind, cmd in CELLCLI_DETAIL_COMMANDS.items()
+            }
+            cell_res = ctx.run(commands["cell"])
+            if not cell_res.ok:
+                last_error = cell_res
+                if _is_auth_error(cell_res):
+                    continue  # try next user
+                continue
+            cells = parse_dcli_detail(cell_res.stdout)
+            if not cells:
+                last_error = cell_res
+                continue
+            flash = parse_dcli_detail_multi(ctx.run(commands["flashcache"]).stdout)
+            disks = parse_dcli_detail_multi(ctx.run(commands["physicaldisk"]).stdout)
+            records: list[CellInventoryRecord] = []
+            for cell_host, attrs in sorted(cells.items()):
+                records.append(
+                    self._success_record(
+                        ctx,
+                        method="dcli",
+                        target=cell_host,
+                        user=user,
+                        attrs=attrs,
+                        flash=flash.get(cell_host, []),
+                        disks=disks.get(cell_host, []),
+                        dcli_available=dcli_available,
+                        cell_group_used=cell_group,
+                        cell_hosts=cell_hosts,
+                        command=commands["cell"],
+                    )
+                )
+            return records
+        # Every user failed.
+        category = "CELL_AUTH" if last_error and _is_auth_error(last_error) else "CELL_COMMAND_FAILED"
+        return [
+            self._error_record(
+                ctx,
+                method="dcli",
+                target=",".join(cell_hosts),
+                user="",
+                user_attempted=",".join(attempted),
+                error=_raw_error(last_error) if last_error else "dcli command failed",
+                category=category,
+                dcli_available=dcli_available,
+                cell_group_used=cell_group,
+                cell_hosts=cell_hosts,
+                command=build_dcli_cellcli_command(
+                    cell_group, attempted[-1] if attempted else "", CELLCLI_DETAIL_COMMANDS["cell"],
+                    ctx.access.timeout_seconds,
+                ),
+            )
+        ]
+
+    def _collect_via_direct_ssh(
+        self, ctx: "_Ctx", cell_hosts: list[str], dcli_available: bool, cell_group_used: str
+    ) -> list[CellInventoryRecord]:
+        records: list[CellInventoryRecord] = []
+        for cell in cell_hosts:
+            records.append(
+                self._collect_one_cell_direct(ctx, cell, dcli_available, cell_group_used, cell_hosts)
+            )
+        return records
+
+    def _collect_one_cell_direct(
+        self, ctx: "_Ctx", cell: str, dcli_available: bool, cell_group_used: str, cell_hosts: list[str]
+    ) -> CellInventoryRecord:
+        last_error: CommandResult | None = None
+        attempted: list[str] = []
+        for user in ctx.access.users:
+            attempted.append(user)
+            cmd = build_direct_ssh_cellcli_command(
+                cell, user, CELLCLI_DETAIL_COMMANDS["cell"], ctx.access.timeout_seconds
+            )
+            cell_res = ctx.run(cmd)
+            if not cell_res.ok:
+                last_error = cell_res
+                continue
+            attrs = parse_cellcli_detail(cell_res.stdout)
+            if not attrs:
+                last_error = cell_res
+                continue
+            flash = parse_cellcli_detail_multi(
+                ctx.run(build_direct_ssh_cellcli_command(
+                    cell, user, CELLCLI_DETAIL_COMMANDS["flashcache"], ctx.access.timeout_seconds
+                )).stdout
+            )
+            disks = parse_cellcli_detail_multi(
+                ctx.run(build_direct_ssh_cellcli_command(
+                    cell, user, CELLCLI_DETAIL_COMMANDS["physicaldisk"], ctx.access.timeout_seconds
+                )).stdout
+            )
+            return self._success_record(
+                ctx,
+                method="direct_ssh",
+                target=cell,
+                user=user,
+                attrs=attrs,
+                flash=flash,
+                disks=disks,
+                dcli_available=dcli_available,
+                cell_group_used=cell_group_used,
+                cell_hosts=cell_hosts,
+                command=cmd,
+            )
+        category = "CELL_AUTH" if last_error and _is_auth_error(last_error) else "CELL_COMMAND_FAILED"
+        return self._error_record(
+            ctx,
+            method="direct_ssh",
+            target=cell,
+            user="",
+            user_attempted=",".join(attempted),
+            error=_raw_error(last_error) if last_error else "direct ssh to cell failed",
+            category=category,
+            dcli_available=dcli_available,
+            cell_group_used=cell_group_used,
+            cell_hosts=cell_hosts,
+            command=build_direct_ssh_cellcli_command(
+                cell, attempted[-1] if attempted else "", CELLCLI_DETAIL_COMMANDS["cell"],
+                ctx.access.timeout_seconds,
+            ),
+        )
+
+    # -- OCI ExaCS: exacli ------------------------------------------------
+
+    def _collect_exacli(
+        self, ctx: "_Ctx", grid_home: str, grid_owner: str
+    ) -> list[CellInventoryRecord]:
+        # A. Cluster name -> storage user.
+        cluster_name = ""
+        if grid_home and grid_owner:
+            cn_res = ctx.run(build_crsctl_cluster_name_command(grid_home, grid_owner))
+            cluster_name = parse_cluster_name(cn_res.stdout)
+        if not cluster_name:
+            return [
+                self._error_record(
+                    ctx, method="exacli", target="", user="", user_attempted="",
+                    error=(
+                        "could not determine cluster name via crsctl "
+                        "(grid_home/grid_owner unknown or crsctl failed)"
+                    ),
+                    category="CELL_COMMAND_FAILED",
+                )
+            ]
+        cell_user = ctx.access.exacli_user_template.format(cluster_name=cluster_name)
+
+        # B. Cell IPs.
+        ip_res = ctx.run(build_cat_command(ctx.access.cell_ip_file))
+        if not ip_res.ok or not ip_res.stdout.strip():
+            return [
+                self._error_record(
+                    ctx, method="exacli", target="", user=cell_user, user_attempted=cell_user,
+                    error=f"cell IP file not readable: {ctx.access.cell_ip_file}: {_raw_error(ip_res)}",
+                    category="CELL_IP_FILE_NOT_FOUND",
+                )
+            ]
+        cell_ips = parse_cell_ips(ip_res.stdout)
+        if not cell_ips:
+            return [
+                self._error_record(
+                    ctx, method="exacli", target="", user=cell_user, user_attempted=cell_user,
+                    error=f"no cell IPs parsed from {ctx.access.cell_ip_file}",
+                    category="CELL_IP_FILE_NOT_FOUND",
+                )
+            ]
+
+        # C. exacli binary.
+        exacli_path = parse_command_v(ctx.run(build_exacli_path_probe()).stdout)
+        if not exacli_path:
+            return [
+                self._error_record(
+                    ctx, method="exacli", target=",".join(cell_ips), user=cell_user,
+                    user_attempted=cell_user,
+                    error="exacli not found on PATH or in /usr/local/bin, /usr/bin",
+                    category="EXACLI_NOT_FOUND", cell_hosts=cell_ips,
+                )
+            ]
+
+        # D. Per-cell collection.
+        records: list[CellInventoryRecord] = []
+        for ip in cell_ips:
+            records.append(
+                self._collect_one_cell_exacli(ctx, exacli_path, cell_user, ip, cell_ips)
+            )
+        return records
+
+    def _collect_one_cell_exacli(
+        self, ctx: "_Ctx", exacli_path: str, cell_user: str, ip: str, cell_ips: list[str]
+    ) -> CellInventoryRecord:
+        def exacli(cmd: str) -> str:
+            return build_exacli_command(
+                exacli_path, cell_user, ip, cmd,
+                use_cookie_jar=ctx.access.use_cookie_jar,
+                no_prompt=ctx.access.no_prompt,
+                timeout_seconds=ctx.access.timeout_seconds,
+            )
+
+        cell_cmd = exacli(CELLCLI_DETAIL_COMMANDS["cell"])
+        cell_res = ctx.run(cell_cmd)
+        if not cell_res.ok:
+            if _is_exacli_auth_error(cell_res):
+                return self._error_record(
+                    ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
+                    error=(
+                        "exacli authentication required. Run an initial exacli login "
+                        "manually on the DB node to create the cookie jar, or configure "
+                        "secure credential handling later."
+                    ),
+                    category="EXACLI_AUTH_REQUIRED", cell_hosts=cell_ips, command=cell_cmd,
+                    raw_error=_raw_error(cell_res),
+                )
+            return self._error_record(
+                ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
+                error=_raw_error(cell_res), category="CELL_COMMAND_FAILED",
+                cell_hosts=cell_ips, command=cell_cmd,
+            )
+        attrs = parse_cellcli_detail(cell_res.stdout)
+        if not attrs:
+            return self._error_record(
+                ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
+                error="exacli returned no parseable cell detail",
+                category="PARSE_ERROR", cell_hosts=cell_ips, command=cell_cmd,
+                raw_error=cell_res.stdout.strip(),
+            )
+        flash = parse_cellcli_detail_multi(ctx.run(exacli(CELLCLI_DETAIL_COMMANDS["flashcache"])).stdout)
+        disks = parse_cellcli_detail_multi(ctx.run(exacli(CELLCLI_DETAIL_COMMANDS["physicaldisk"])).stdout)
+        return self._success_record(
+            ctx, method="exacli", target=ip, user=cell_user, attrs=attrs,
+            flash=flash, disks=disks, cell_hosts=cell_ips, command=cell_cmd,
+        )
+
+    # -- record builders --------------------------------------------------
+
+    def _success_record(
+        self, ctx, *, method, target, user, attrs, flash, disks,
+        dcli_available=None, cell_group_used="", cell_hosts=None, command="",
+    ) -> CellInventoryRecord:
+        flash_gb, flash_mode = _flashcache_summary(flash)
+        hard_gb, flash_disk_gb, hard_count, flash_count = _physicaldisk_summary(disks)
+        return CellInventoryRecord(
+            Cluster=ctx.cluster,
+            source_host=ctx.host,
+            source_address=ctx.address,
+            CELL_NAME=attrs.get("name", target),
+            CELL_VERSION=attrs.get("cellVersion", ""),
+            CELL_RELEASE_VERSION=attrs.get("releaseVersion", ""),
+            MAKE_MODEL=attrs.get("makeModel", ""),
+            STATUS=attrs.get("status", ""),
+            CPU_COUNT=attrs.get("cpuCount", ""),
+            FLASH_CACHE_GB="" if flash_gb is None else f"{flash_gb}",
+            FLASH_CACHE_MODE=flash_mode,
+            HARD_DISK_GB="" if hard_gb is None else f"{hard_gb}",
+            FLASH_DISK_GB="" if flash_disk_gb is None else f"{flash_disk_gb}",
+            HARD_DISK_COUNT=str(hard_count) if hard_count else "",
+            FLASH_DISK_COUNT=str(flash_count) if flash_count else "",
+            cell_access_method=method,
+            cell_target=target,
+            cell_user=user,
+            Collected_At=_utc_now(),
+            collection_status="success",
+            dcli_available=_bool_str(dcli_available),
+            cell_group_file_used=cell_group_used,
+            cell_hosts_discovered=",".join(cell_hosts or []),
+            cell_user_attempted=user,
+            cell_command=command,
+        )
+
+    def _error_record(
+        self, ctx, *, method, target, user, user_attempted, error, category,
+        dcli_available=None, cell_group_used="", cell_hosts=None, command="", raw_error="",
+    ) -> CellInventoryRecord:
+        return CellInventoryRecord(
+            Cluster=ctx.cluster,
+            source_host=ctx.host,
+            source_address=ctx.address,
+            cell_access_method=method,
+            cell_target=target,
+            cell_user=user,
+            Collected_At=_utc_now(),
+            collection_status="failed",
+            collection_error=error,
+            error_category=category,
+            dcli_available=_bool_str(dcli_available),
+            cell_group_file_used=cell_group_used,
+            cell_hosts_discovered=",".join(cell_hosts or []),
+            cell_user_attempted=user_attempted,
+            cell_command=command,
+            raw_error=raw_error or error,
+        )
+
+
+@dataclass
+class _Ctx:
+    cluster: str
+    host: str
+    address: str
+    access: "CellAccessConfig"
+    run: CommandRunner
+
+
+def _bool_str(value) -> str:
+    if value is None:
+        return ""
+    return "true" if value else "false"
+
+
+def _hosts_from_etc_hosts(text: str) -> list[str]:
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        # /etc/hosts: <ip> <name> [aliases...]; prefer a cell-looking name.
+        for token in parts[1:]:
+            if re.search(r"cel[l0-9]", token, re.IGNORECASE) and token not in seen:
+                seen.add(token)
+                hosts.append(token)
+                break
+    return hosts

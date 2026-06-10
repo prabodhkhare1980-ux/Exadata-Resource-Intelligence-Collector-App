@@ -39,7 +39,10 @@ NAV_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ),
     (
         "Storage Analytics",
-        [("ASM Analytics", "/storage/asm")],
+        [
+            ("ASM Analytics", "/storage/asm"),
+            ("Cell Inventory", "/storage/cells"),
+        ],
     ),
     (
         "Explore",

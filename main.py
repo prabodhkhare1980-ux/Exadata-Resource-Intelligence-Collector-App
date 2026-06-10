@@ -35,7 +35,7 @@ from collectors.db_patch_collector import DBPatchCollector
 from collectors.db_workload_collector import DBWorkloadCollector
 from collectors.cell_inventory_collector import CellInventoryCollector
 from collectors.shared_context import SharedHostContext
-from inventory import Inventory, load_inventory
+from inventory import CellAccessConfig, Inventory, load_inventory
 from logging_setup import configure_logging, host_logger
 from reports.writers import (
     write_asm_diskgroups_csv,
@@ -82,6 +82,8 @@ from reports.writers import (
     write_db_tablespace_growth_json,
     write_cell_inventory_csv,
     write_cell_inventory_json,
+    write_cell_inventory_errors_csv,
+    write_cell_inventory_errors_json,
     build_health_summary_rows,
     health_summary_counts,
     write_health_summary_csv,
@@ -395,17 +397,24 @@ def _collect_db_workload(db_records, inventory, runner):
     return workload_records, tablespace_records
 
 
-def _collect_cell_inventory(inventory, runner):
-    """Collect Exadata storage-cell inventory once per cluster via dcli.
+def _collect_cell_inventory(inventory, runner, db_records):
+    """Collect storage-cell inventory once per cluster across access models.
 
-    dcli fans out to every cell from a single compute node, so we run it
-    from the first host of each cluster. Failures (no dcli, no cell group)
-    are recorded as failed records and never abort the run.
+    The access method (dcli / direct SSH / ExaCLI) is selected per
+    environment via ``cell_access.method``. dcli/exacli reach every cell
+    from a single compute node, so we run from the first host of each
+    cluster. For ExaCLI we pass the cluster's Grid home/owner (from the DB
+    inventory) so the collector can resolve the cluster name. Failures are
+    recorded as error rows and never abort the run.
     """
 
     if not inventory.cell_inventory_enabled:
         return []
 
+    grid_by_host = {
+        rec.host: (getattr(rec, "grid_home", ""), getattr(rec, "grid_owner", ""))
+        for rec in db_records
+    }
     collector = CellInventoryCollector(
         runner, logger=logging.getLogger("collectors.cell_inventory")
     )
@@ -414,15 +423,18 @@ def _collect_cell_inventory(inventory, runner):
         if not cluster.hosts:
             continue
         host = cluster.hosts[0]
+        access = inventory.cell_access_by_environment.get(cluster.environment)
+        if access is None:
+            access = CellAccessConfig(enabled=inventory.cell_inventory_enabled)
+        grid_home, grid_owner = grid_by_host.get(host.name, ("", ""))
         try:
             cell_records.extend(
                 collector.collect_cluster(
                     cluster,
                     host,
-                    enabled=True,
-                    cell_group=inventory.cell_inventory_cell_group,
-                    cell_user=inventory.cell_inventory_cell_user,
-                    timeout_seconds=inventory.cell_inventory_timeout_seconds,
+                    access,
+                    grid_home=grid_home,
+                    grid_owner=grid_owner,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -888,8 +900,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     workload_records, tablespace_records = _collect_db_workload(
         db_records, inventory, runner
     )
-    # Tier 2: Exadata storage-cell inventory (dcli + cellcli), once per cluster.
-    cell_records = _collect_cell_inventory(inventory, runner)
+    # Exadata storage-cell inventory across access models, once per cluster.
+    cell_records = _collect_cell_inventory(inventory, runner, db_records)
 
     write_os_csv(os_records, inventory.output_dir)
     write_os_json(os_records, inventory.output_dir)
@@ -937,6 +949,8 @@ def run(inventory: Inventory, debug_ssh: bool = False) -> int:
     write_db_tablespace_growth_json(tablespace_records, inventory.output_dir)
     write_cell_inventory_csv(cell_records, inventory.output_dir)
     write_cell_inventory_json(cell_records, inventory.output_dir)
+    write_cell_inventory_errors_csv(cell_records, inventory.output_dir)
+    write_cell_inventory_errors_json(cell_records, inventory.output_dir)
     write_db_performance_csv(db_performance_records, inventory.output_dir)
     write_db_performance_json(db_performance_records, inventory.output_dir)
     write_db_performance_errors_csv(db_performance_records, inventory.output_dir)
