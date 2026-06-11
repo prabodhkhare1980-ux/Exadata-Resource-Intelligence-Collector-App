@@ -93,6 +93,50 @@ def test_parse_pdb_inventory_output() -> None:
     assert rows[1]["PDB_NAME"] == "PDB2"
 
 
+def test_parse_pdb_inventory_rejects_echoed_sql_source_lines() -> None:
+    """Regression: under sudo+TTY (force_tty=true) sqlplus echoes the SELECT
+    back despite `set echo off`. Lines like ``       p.name || '|' ||`` have
+    exactly the same pipe count as a real 6-field row and used to produce
+    bogus rows whose CDB_NAME was ``p.name``/``p.con_id``/etc.
+    """
+
+    # Replays the exact polluted shape seen in the field: 8 echoed SQL
+    # source lines (one set per pass through the statement under TTY) plus
+    # one real PDB row.
+    polluted = """
+       p.name || '|' ||
+       p.con_id || '|' ||
+       p.open_mode || '|' ||
+       p.restricted || '|' ||
+       p.name || '|' ||
+       p.con_id || '|' ||
+       p.open_mode || '|' ||
+       p.restricted || '|' ||
+DCPSC1PF|ABASF|3|MOUNTED||0
+DAMGLDPD|GOLDAM|3|READ WRITE|NO|937.05
+"""
+    rows = parse_pdb_inventory_output(polluted)
+    assert len(rows) == 2
+    assert {r["CDB_NAME"] for r in rows} == {"DCPSC1PF", "DAMGLDPD"}
+    assert all("p." not in r["CDB_NAME"] for r in rows)
+    assert all("||" not in r["CON_ID"] for r in rows)
+
+
+def test_parse_feature_usage_rejects_echoed_sql_source_lines() -> None:
+    """Same TTY-echo regression for the feature usage SELECT."""
+
+    polluted = """
+       feature_name || '|' ||
+       currently_used || '|' ||
+       nvl(to_char(detected_usages), '0') || '|' ||
+       nvl(to_char(first_usage_date, 'YYYY-MM-DD'), '') || '|' ||
+CDB1|Partitioning|TRUE|42|2024-01-01|2026-06-01
+"""
+    rows = parse_feature_usage_output(polluted)
+    assert len(rows) == 1
+    assert rows[0]["FEATURE_NAME"] == "Partitioning"
+
+
 def test_parse_pdb_inventory_tolerates_empty_result() -> None:
     # A non-CDB legitimately returns no rows; the parser must not raise.
     assert parse_pdb_inventory_output("\n\n") == []

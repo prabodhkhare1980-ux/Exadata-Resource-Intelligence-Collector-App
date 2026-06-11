@@ -114,6 +114,33 @@ exit
     assert rows[0]["DB_NAME"] == "DB1"
 
 
+def test_parse_workload_rejects_echoed_concat_source_lines() -> None:
+    """Regression: under sudo+TTY sqlplus echoes multi-line || lines that
+    can carry exactly the right pipe count for a workload row."""
+
+    polluted = """
+       round(elapsed_sec, 0) || '|' ||
+       round(db_time_sec, 1) || '|' ||
+       round(db_cpu_sec, 1) || '|' ||
+DB1|DB11|2026-06-01 01:00:00|3600|1800.5|900.2|0.5|512.0|0.142
+"""
+    rows = parse_db_workload_output(polluted)
+    assert len(rows) == 1
+    assert rows[0]["DB_NAME"] == "DB1"
+    assert rows[0]["AAS"] == "0.5"
+
+
+def test_parse_tablespace_growth_rejects_echoed_concat_source_lines() -> None:
+    polluted = """
+       ts.name || '|' ||
+       to_char(to_date(u.rtime, 'MM/DD/YYYY HH24:MI:SS'), 'YYYY-MM-DD HH24:MI:SS') || '|' ||
+DB1|USERS|2026-06-01 01:00:00|100.0|82.5|68.75
+"""
+    rows = parse_db_tablespace_growth_output(polluted)
+    assert len(rows) == 1
+    assert rows[0]["TABLESPACE_NAME"] == "USERS"
+
+
 def test_parse_tablespace_growth_output() -> None:
     rows = parse_db_tablespace_growth_output(
         "DB1|USERS|2026-06-01 01:00:00|100.0|82.5|68.75\n"

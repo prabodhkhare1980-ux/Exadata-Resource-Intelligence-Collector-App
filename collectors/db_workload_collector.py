@@ -223,15 +223,12 @@ j AS (
   LEFT JOIN redo r
     ON r.snap_id = p.snap_id AND r.instance_number = p.instance_number AND r.dbid = p.dbid
 )
-SELECT (SELECT name FROM v$database) || '|' ||
-       (SELECT instance_name FROM gv$instance i WHERE i.instance_number = j.instance_number AND ROWNUM = 1) || '|' ||
-       to_char(end_interval_time, 'YYYY-MM-DD HH24:MI:SS') || '|' ||
-       round(elapsed_sec, 0) || '|' ||
-       round(db_time_sec, 1) || '|' ||
-       round(db_cpu_sec, 1) || '|' ||
-       round(db_time_sec / nullif(elapsed_sec, 0), 2) || '|' ||
-       round(redo_mb, 1) || '|' ||
-       round(redo_mb / nullif(elapsed_sec, 0), 3)
+-- Single-line SELECT: under sudo+TTY the SQL client echoes the SELECT back,
+-- and multi-line `||` source lines can match a data row's pipe count.
+-- Keeping the SELECT on one line means the echo is one long line with too
+-- many pipes to be mistaken for data, and the parser additionally rejects
+-- any line containing the quoted-pipe-literal marker `'|'`.
+SELECT (SELECT name FROM v$database) || '|' || (SELECT instance_name FROM gv$instance i WHERE i.instance_number = j.instance_number AND ROWNUM = 1) || '|' || to_char(end_interval_time, 'YYYY-MM-DD HH24:MI:SS') || '|' || round(elapsed_sec, 0) || '|' || round(db_time_sec, 1) || '|' || round(db_cpu_sec, 1) || '|' || round(db_time_sec / nullif(elapsed_sec, 0), 2) || '|' || round(redo_mb, 1) || '|' || round(redo_mb / nullif(elapsed_sec, 0), 3)
 FROM (
   SELECT j.*,
          (CAST(end_interval_time AS DATE) - CAST(prev_end AS DATE)) * 86400 elapsed_sec,
@@ -260,12 +257,8 @@ def build_db_tablespace_growth_sql(days_back: int) -> str:
     days = max(int(days_back), 1)
     return _SQL_HEADER + f"""define DAYS_BACK={days}
 
-SELECT (SELECT name FROM v$database) || '|' ||
-       ts.name || '|' ||
-       to_char(to_date(u.rtime, 'MM/DD/YYYY HH24:MI:SS'), 'YYYY-MM-DD HH24:MI:SS') || '|' ||
-       round(u.tablespace_size * bs.block_size / 1024 / 1024 / 1024, 2) || '|' ||
-       round(u.tablespace_usedsize * bs.block_size / 1024 / 1024 / 1024, 2) || '|' ||
-       round(u.tablespace_usedsize / nullif(u.tablespace_maxsize, 0) * 100, 2)
+-- Single-line SELECT (see comment in build_db_workload_sql).
+SELECT (SELECT name FROM v$database) || '|' || ts.name || '|' || to_char(to_date(u.rtime, 'MM/DD/YYYY HH24:MI:SS'), 'YYYY-MM-DD HH24:MI:SS') || '|' || round(u.tablespace_size * bs.block_size / 1024 / 1024 / 1024, 2) || '|' || round(u.tablespace_usedsize * bs.block_size / 1024 / 1024 / 1024, 2) || '|' || round(u.tablespace_usedsize / nullif(u.tablespace_maxsize, 0) * 100, 2)
 FROM dba_hist_tbspc_space_usage u
 JOIN v$tablespace ts ON ts.ts# = u.tablespace_id
 CROSS JOIN (
