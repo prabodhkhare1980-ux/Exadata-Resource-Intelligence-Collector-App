@@ -102,6 +102,31 @@ Storage cells are reached differently per estate, selected by each environment's
 | `direct_ssh` | On-prem | Always SSH to each discovered cell and run `cellcli` |
 | `exacli` | OCI ExaCS | From the DB VM, resolve the cluster name via `crsctl get cluster name`, build the `cloud_user_<clustername>` storage user, read cell IPs from `cellip.ora`, and run `exacli -l <user> -c <ip> --cookie-jar -n -e "..."` |
 
+The cell access **method is inferred from the environment name** when not
+explicitly set: environments named/described with `oci`, `exacs`, or
+`exadata cloud` default to `exacli`; everything else defaults to
+`dcli_or_direct`. `cell_access.method:` still wins when present.
+
+### OCI ExaCS prerequisites
+
+Per Oracle's documented flow ([Using ExaCLI](https://docs.oracle.com/en-us/iaas/exadatacloud/doc/ecs-using-excli.html)),
+the collector never stores or prompts for a password. Before the first run:
+
+1. On each OCI DB VM, confirm `exacli` is on `PATH` (`command -v exacli`).
+2. Confirm `/etc/oracle/cell/network-config/cellip.ora` exists and is readable
+   by the SSH service account.
+3. **Run an initial exacli login once** as that service account so the
+   per-user cookie jar is created — pick any cell IP from `cellip.ora` and the
+   cluster's `cloud_user_<clustername>`:
+
+   ```bash
+   exacli -l cloud_user_$(crsctl get cluster name | awk -F'is ' '{print $2}') \
+          -c <one_cell_ip> --cookie-jar
+   ```
+   The collector then runs the same `exacli ... --cookie-jar -n -e "..."`
+   non-interactively, reusing that cookie. Until the cookie exists you will
+   see `error_category=EXACLI_AUTH_REQUIRED` and no cell is queried.
+
 For the on-prem methods each cell/command is retried across `cell_access.users`
 (e.g. `root` then `celladmin`) until one succeeds. ExaCLI uses an existing cookie
 jar — when none exists the row is flagged `EXACLI_AUTH_REQUIRED` with guidance to run

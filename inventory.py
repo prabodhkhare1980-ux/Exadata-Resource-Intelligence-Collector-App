@@ -269,6 +269,23 @@ def load_inventory(path: str | Path) -> Inventory:
     )
 
 
+def _infer_cell_access_method(env_name: str, env_data: dict[str, Any]) -> str:
+    """Default cell access method when an env does not declare cell_access.method.
+
+    Environments named/described OCI / ExaCS / Exadata Cloud auto-default to
+    ``exacli`` (Oracle's documented access path for ExaCS DB VMs); everything
+    else falls back to ``dcli_or_direct`` (on-prem). Both are still
+    overridable via ``cell_access.method`` in the YAML.
+    """
+
+    name = (env_name or "").strip().lower()
+    description = str((env_data or {}).get("description", "")).strip().lower()
+    haystack = f"{name} {description}"
+    if any(token in haystack for token in ("oci", "exacs", "cloud exadata", "exadata cloud")):
+        return "exacli"
+    return "dcli_or_direct"
+
+
 def _build_cell_access_map(
     environments: dict[str, Any], cell_cfg: dict[str, Any]
 ) -> dict[str, CellAccessConfig]:
@@ -299,9 +316,12 @@ def _build_cell_access_map(
             if isinstance(env_users, list) and env_users
             else default_users
         )
+        method = str(
+            ca.get("method") or _infer_cell_access_method(env_name, env_data)
+        ).strip().lower()
         result[env_name] = CellAccessConfig(
             enabled=enabled,
-            method=str(ca.get("method", "dcli_or_direct")).strip().lower(),
+            method=method,
             users=users,
             cell_group_files=default_group_files,
             allow_direct_cell_ssh=allow_direct,
