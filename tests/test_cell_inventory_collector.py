@@ -301,18 +301,20 @@ def test_exacli_auto_refreshes_cookie_when_expired_then_succeeds() -> None:
             return _result('cell="192.168.136.5;192.168.136.6"\n')
         if "command -v exacli" in cmd:
             return _result("/usr/bin/exacli\n")
-        # Probe path: "list cell" (the cheap probe). Before refresh -> auth fail.
-        if "-e 'list cell'" in cmd and "list cell detail" not in cmd:
+        # First "list cell detail" hits the expired cookie. After refresh
+        # succeeds, the same call succeeds.
+        if "list cell detail" in cmd:
             if not state["refreshed"]:
-                return _result(stderr="Authentication required: cookie expired", returncode=1)
-            return _result("name: cel01\n", returncode=0)
+                return _result(
+                    stderr="No cookies found for cloud_user_exacs-cl01@192.168.136.5.\n"
+                           "EXA-30033: User must enter password, but ExaCLI did not prompt for it",
+                    returncode=1,
+                )
+            return _result(CELL_DETAIL_SINGLE)
         # Refresh pipeline.
         if "COOKIE_REFRESH_OK" in cmd:
             state["refreshed"] = True
             return _result("COOKIE_REFRESH_OK\n", returncode=0)
-        # Real per-cell calls now succeed because the cookie is fresh.
-        if "list cell detail" in cmd:
-            return _result(CELL_DETAIL_SINGLE)
         if "list flashcache detail" in cmd:
             return _result(FLASH_DETAIL_SINGLE)
         if "list physicaldisk detail" in cmd:
@@ -336,10 +338,10 @@ def test_exacli_auto_refreshes_cookie_when_expired_then_succeeds() -> None:
     assert records[0].collection_status == "success"
 
 
-def test_exacli_skips_refresh_when_probe_already_succeeds() -> None:
-    """Cookie still valid → password_command must NOT be invoked."""
+def test_exacli_skips_refresh_when_cookie_already_valid() -> None:
+    """Cookie still valid for every cell → COOKIE_REFRESH_OK pipeline never runs."""
 
-    pw_calls = []
+    refresh_calls = []
 
     def runner(cmd: str) -> CommandResult:
         if "crsctl get cluster name" in cmd:
@@ -348,11 +350,9 @@ def test_exacli_skips_refresh_when_probe_already_succeeds() -> None:
             return _result('cell="192.168.136.5;192.168.136.6"\n')
         if "command -v exacli" in cmd:
             return _result("/usr/bin/exacli\n")
-        if "/opt/oracle/get_pwd.sh" in cmd:
-            pw_calls.append(cmd)
-            return _result("topsecret\n")
-        if "-e 'list cell'" in cmd and "list cell detail" not in cmd:
-            return _result("name: cel01\n")
+        if "COOKIE_REFRESH_OK" in cmd:
+            refresh_calls.append(cmd)
+            return _result("COOKIE_REFRESH_OK\n", returncode=0)
         if "list cell detail" in cmd:
             return _result(CELL_DETAIL_SINGLE)
         if "list flashcache detail" in cmd:
@@ -374,7 +374,66 @@ def test_exacli_skips_refresh_when_probe_already_succeeds() -> None:
         grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
     )
     assert records[0].collection_status == "success"
-    assert pw_calls == []  # password retrieval never happened
+    assert refresh_calls == []  # refresh pipeline never ran -> password never fetched
+
+
+def test_exacli_refresh_is_per_cell_not_per_cluster() -> None:
+    """Field regression: cell #1 has a valid cookie but cell #2 doesn't.
+
+    Previously the collector only probed cell #1, saw a valid cookie, and
+    skipped refresh for everyone -> cell #2 stayed broken. With per-cell
+    refresh, only cell #2 should trigger the refresh and both end up green.
+    """
+
+    refresh_targets = []
+    cells_with_cookie = {"192.168.136.5"}  # primary IP of cell #1 only
+
+    def runner(cmd: str) -> CommandResult:
+        if "crsctl get cluster name" in cmd:
+            return _result("CRS-6724: Current cluster name is exacs-cl01\n")
+        if "cellip.ora" in cmd:
+            return _result(
+                'cell="192.168.136.5;192.168.136.6"\n'
+                'cell="192.168.136.7;192.168.136.8"\n'
+            )
+        if "command -v exacli" in cmd:
+            return _result("/usr/bin/exacli\n")
+        if "COOKIE_REFRESH_OK" in cmd:
+            # Extract the cell IP from the refresh pipeline; mark it green.
+            for ip in ("192.168.136.5", "192.168.136.7"):
+                if f"-c {ip}" in cmd:
+                    refresh_targets.append(ip)
+                    cells_with_cookie.add(ip)
+            return _result("COOKIE_REFRESH_OK\n", returncode=0)
+        if "list cell detail" in cmd:
+            for ip in ("192.168.136.5", "192.168.136.7", "192.168.136.6", "192.168.136.8"):
+                if f"-c {ip}" in cmd:
+                    if ip in cells_with_cookie:
+                        return _result(CELL_DETAIL_SINGLE)
+                    return _result(
+                        stderr=f"No cookies found for cloud_user_exacs-cl01@{ip}", returncode=1,
+                    )
+        if "list flashcache detail" in cmd:
+            return _result(FLASH_DETAIL_SINGLE)
+        if "list physicaldisk detail" in cmd:
+            return _result(PHYSICALDISK_DETAIL_SINGLE)
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="exacli",
+        cell_ip_file="/etc/oracle/cell/network-config/cellip.ora",
+        exacli_user_template="cloud_user_{cluster_name}",
+        cookie_refresh=True, password_command="/opt/oracle/get_pwd.sh",
+        use_cookie_jar=True, no_prompt=True, timeout_seconds=45,
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), access,
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert all(r.collection_status == "success" for r in records)
+    # Refresh ran ONLY for the cell that needed it (cell #2 primary IP).
+    assert refresh_targets == ["192.168.136.7"]
 
 
 def test_exacli_refresh_surfaces_clear_password_command_failure() -> None:
@@ -385,14 +444,11 @@ def test_exacli_refresh_surfaces_clear_password_command_failure() -> None:
             return _result('cell="192.168.136.5;192.168.136.6"\n')
         if "command -v exacli" in cmd:
             return _result("/usr/bin/exacli\n")
-        # Probe: auth required.
-        if "-e 'list cell'" in cmd and "list cell detail" not in cmd:
-            return _result(stderr="Authentication required: cookie expired", returncode=1)
         # Refresh: password_command failure path (exit 81 from our wrapper).
         if "COOKIE_REFRESH_OK" in cmd:
             return _result(stderr="bad script", returncode=81)
         if "list cell detail" in cmd:
-            return _result(stderr="Authentication required", returncode=1)
+            return _result(stderr="No cookies found", returncode=1)
         return _result("")
 
     access = CellAccessConfig(

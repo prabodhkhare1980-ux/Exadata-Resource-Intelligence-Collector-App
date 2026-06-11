@@ -34,9 +34,10 @@ environments:
       force_tty: true
     # OCI ExaCS: reach cells with ExaCLI from the DB VM using the
     # cloud_user_<clustername> storage user and cellip.ora.
-    # cookie_refresh: when the ExaCLI cookie is missing or expired (24h on
-    # ExaCS) the collector runs `password_command` ON THE DB VM, pipes its
-    # stdout into `exacli ... --cookie-jar` to mint a fresh cookie, and
+    # cookie_refresh: ExaCLI cookies expire after 24h and are PER-CELL.
+    # When any cell's cookie is missing or expired the collector runs
+    # `password_command` ON THE DB VM, pipes its stdout into
+    # `exacli ... --cookie-jar` to mint a fresh cookie for that cell, and
     # retries. The password never enters this app's process or argv.
     cell_access:
       method: exacli
@@ -45,11 +46,14 @@ environments:
       use_cookie_jar: true
       no_prompt: true
       cookie_refresh: true
-      # Replace this with the command Oracle provides on your DB VM (or your
-      # own wrapper script) that prints the cloud_user password to stdout.
-      # The collector executes it on the DB VM only when the cookie has
-      # expired, never writes it anywhere, and never logs it.
-      password_command: /var/opt/oracle/exadbcs/getStorageCredential.sh
+      # On Oracle ExaCS the cloud_user password helper is typically
+      # /opt/exacloud/get_cs_data.py and it is owned by root with the
+      # password on the line after the "ExaCli initial password is:" header.
+      # Wrap it to: (a) sudo if your service account is not root, and
+      # (b) emit JUST the password to stdout (the helper also prints
+      # OpenSSL/usage warnings). The full pipeline runs inside a single
+      # remote bash subshell, so the password lives only in $_p there.
+      password_command: sudo -n /opt/exacloud/get_cs_data.py 2>/dev/null | awk '/ExaCli initial password is:/{getline; print}'
 
 clusters:
   - name: onprem-rac01

@@ -962,44 +962,30 @@ class CellInventoryCollector:
                 )
             ]
 
-        # D. Per-cell collection (one record per cell).
-        # Pre-flight cookie check + auto-refresh. ExaCLI cookies expire after
-        # 24h on ExaCS, so we probe with a cheap "list cell" before iterating
-        # cells. If the cookie is missing/expired and the operator configured
-        # password_command + cookie_refresh, mint a fresh cookie once for the
-        # whole cluster (no per-cell re-auth).
-        refresh_diag = self._ensure_exacli_cookie(ctx, exacli_path, cell_user, cells[0][0])
-
+        # D. Per-cell collection. ExaCLI cookies are PER-CELL (one cookie per
+        # cluster_name x cell_ip pair), so each cell does its own
+        # try-then-refresh-then-retry rather than relying on a single cluster
+        # probe. The password_command runs at most once per cell that needs
+        # a new cookie, and never enters this app's process.
         records: list[CellInventoryRecord] = []
         for candidate_ips in cells:
             records.append(
                 self._collect_one_cell_exacli(
                     ctx, exacli_path, cell_user, candidate_ips, flat_ips,
-                    refresh_diag=refresh_diag,
                 )
             )
         return records
 
-    def _ensure_exacli_cookie(
+    def _refresh_cookie_for_ip(
         self, ctx: "_Ctx", exacli_path: str, cell_user: str, ip: str,
     ) -> str:
-        """Probe the ExaCLI cookie; refresh it if expired and configured.
+        """Mint a fresh ExaCLI cookie for a single ``(cell_user, ip)`` pair.
 
-        Returns a short diagnostic string describing the outcome (suitable
-        for the per-cell ``raw_error``/log line). Never raises and never
-        logs the password.
+        Returns a short diagnostic string describing the outcome (used as a
+        suffix in the per-cell ``raw_error``/log line). Never raises and
+        never logs the password.
         """
 
-        probe_cmd = build_exacli_probe_command(
-            exacli_path, cell_user, ip, timeout_seconds=20
-        )
-        probe = ctx.run(probe_cmd)
-        if probe.ok:
-            return "cookie_ok"
-        if not _is_exacli_auth_error(probe):
-            # Connection / DNS / cell-down issue — let the per-cell flow
-            # report it precisely. Refresh would not help.
-            return f"probe_failed:{_raw_error(probe)[:120]}"
         if not (ctx.access.cookie_refresh and ctx.access.password_command):
             return "cookie_expired_no_refresh_configured"
 
@@ -1012,7 +998,9 @@ class CellInventoryCollector:
             self.logger.info("ExaCLI cookie refreshed for user=%s via %s", cell_user, ip)
             return "cookie_refreshed"
         # Exit codes 81/82 are emitted by build_exacli_cookie_refresh_command
-        # for password-fetch and exacli-pipe failures respectively.
+        # for password-fetch and exacli-pipe failures respectively. Surface
+        # them as stable, parseable suffixes so operators can distinguish a
+        # broken password script from a wrong password.
         rc = getattr(refresh, "returncode", "")
         if rc == 81:
             return "cookie_refresh_failed:password_command_failed"
@@ -1025,7 +1013,6 @@ class CellInventoryCollector:
     def _collect_one_cell_exacli(
         self, ctx: "_Ctx", exacli_path: str, cell_user: str,
         candidate_ips: list[str], all_ips: list[str],
-        *, refresh_diag: str = "",
     ) -> CellInventoryRecord:
         def exacli(ip: str, cmd: str) -> str:
             return build_exacli_command(
@@ -1035,30 +1022,38 @@ class CellInventoryCollector:
                 timeout_seconds=ctx.access.timeout_seconds,
             )
 
-        def with_diag(err: str) -> str:
-            if not refresh_diag or refresh_diag in ("cookie_ok", "cookie_refreshed"):
-                return err
-            return f"{err} [cookie: {refresh_diag}]"
-
         last_res: CommandResult | None = None
         last_cmd = ""
+        refresh_diag_per_ip: dict[str, str] = {}
         for ip in candidate_ips:
             cell_cmd = exacli(ip, CELLCLI_DETAIL_COMMANDS["cell"])
             last_cmd = cell_cmd
             cell_res = ctx.run(cell_cmd)
+
+            # ExaCLI cookies are per-cell. If THIS cell's cookie is missing or
+            # expired, try the refresh once, then retry. Other cells' cookies
+            # may still be valid -- we don't touch them.
+            if not cell_res.ok and _is_exacli_auth_error(cell_res):
+                diag = self._refresh_cookie_for_ip(ctx, exacli_path, cell_user, ip)
+                refresh_diag_per_ip[ip] = diag
+                if diag == "cookie_refreshed":
+                    cell_res = ctx.run(cell_cmd)
+
             last_res = cell_res
             if not cell_res.ok:
                 if _is_exacli_auth_error(cell_res):
+                    diag = refresh_diag_per_ip.get(ip, "")
+                    msg = (
+                        "exacli authentication required. Configure "
+                        "cell_access.cookie_refresh + password_command, "
+                        "or run an initial `exacli ... --cookie-jar` "
+                        "login manually on the DB VM."
+                    )
+                    if diag and diag not in ("cookie_ok", "cookie_refreshed"):
+                        msg = f"{msg} [cookie: {diag}]"
                     return self._error_record(
                         ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
-                        error=(
-                            with_diag(
-                                "exacli authentication required. Configure "
-                                "cell_access.cookie_refresh + password_command, "
-                                "or run an initial `exacli ... --cookie-jar` "
-                                "login manually on the DB VM."
-                            )
-                        ),
+                        error=msg,
                         category="EXACLI_AUTH_REQUIRED", cell_hosts=all_ips, command=cell_cmd,
                         raw_error=_raw_error(cell_res),
                     )
