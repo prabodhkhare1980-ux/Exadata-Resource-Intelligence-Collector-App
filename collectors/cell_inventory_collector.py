@@ -349,16 +349,32 @@ def parse_command_v(output: str) -> str:
 
 
 def parse_cluster_name(output: str) -> str:
-    """Parse ``CRS-6724: Current cluster name is <name>`` (or bare name)."""
+    """Parse ``CRS-6724: Current cluster name is <name>`` (or bare name).
+
+    On ExaCS the line is typically ``CRS-6724: Current cluster name is
+    'iad3dx02v1'`` -- Oracle wraps the name in single quotes on this CRS
+    version. Strip the wrapping quotes so the storage user template (e.g.
+    ``cloud_user_{cluster_name}``) gets the bare name, otherwise exacli
+    will be invoked as ``cloud_user_'iad3dx02v1'`` and authentication will
+    fail with ``No cookies found for cloud_user_'...'@<ip>``.
+    """
+
+    def _strip_wrap_quotes(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            return value[1:-1].strip()
+        return value
 
     for line in (output or "").splitlines():
         match = re.search(r"cluster name is\s+(\S+)", line, re.IGNORECASE)
         if match:
-            return match.group(1).strip()
+            return _strip_wrap_quotes(match.group(1))
     # crsctl may emit just the name on some versions.
     stripped = [line.strip() for line in (output or "").splitlines() if line.strip()]
-    if len(stripped) == 1 and " " not in stripped[0] and "-" not in stripped[0][:4]:
-        return stripped[0]
+    if len(stripped) == 1:
+        candidate = _strip_wrap_quotes(stripped[0])
+        if candidate and " " not in candidate and "-" not in candidate[:4]:
+            return candidate
     return ""
 
 
@@ -890,6 +906,21 @@ class CellInventoryCollector:
                     error=(
                         "could not determine cluster name via crsctl "
                         "(grid_home/grid_owner unknown or crsctl failed)"
+                    ),
+                    category="CELL_COMMAND_FAILED",
+                )
+            ]
+        # Defensive: refuse to build a storage username that has shell-special
+        # or stray-quote characters — this is what produced the
+        # `cloud_user_'iad3dx02v1'` regression where exacli could not find a
+        # matching cookie.
+        if any(ch in cluster_name for ch in (" ", "\t", "'", '"', "$", "`")):
+            return [
+                self._error_record(
+                    ctx, method="exacli", target="", user="", user_attempted="",
+                    error=(
+                        f"refusing to use cluster name with stray characters: {cluster_name!r}. "
+                        "Check `crsctl get cluster name` output on the DB VM."
                     ),
                     category="CELL_COMMAND_FAILED",
                 )

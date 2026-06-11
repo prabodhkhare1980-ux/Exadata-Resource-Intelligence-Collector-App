@@ -127,10 +127,17 @@ def main(argv: list[str] | None = None) -> int:
             continue
         host = cluster.hosts[0]
         access = inventory.cell_access_by_environment.get(cluster.environment) or CellAccessConfig()
+        # `access.users` only applies to dcli / direct_ssh; for exacli the
+        # storage user is derived from crsctl get cluster name.
+        users_label = (
+            f"users={','.join(access.users)}"
+            if access.method in ("dcli_or_direct", "direct_ssh")
+            else f"exacli_user_template={access.exacli_user_template}"
+        )
         LOGGER.info(
-            "Cluster %s (env=%s): cell access method=%s users=%s timeout=%ss",
+            "Cluster %s (env=%s): cell access method=%s %s timeout=%ss",
             cluster.name, cluster.environment, access.method,
-            ",".join(access.users), access.timeout_seconds,
+            users_label, access.timeout_seconds,
         )
         grid_home, grid_owner = "", ""
         if access.method == "exacli":
