@@ -771,6 +771,11 @@ def _parse_pipe_rows_with_legacy(
             or lower_line.startswith(SQL_ECHO_PREFIXES)
         ):
             continue
+        # Reject echoed SQL source. Our concat statements use the quoted
+        # pipe literal `'|'` as the separator -- that 3-character substring
+        # is distinctive of SQL source and never appears in real data.
+        if "'|'" in line:
+            continue
         if line.count("|") not in valid_delimiters:
             continue
         parts = [part.strip() for part in line.split("|")]
@@ -801,6 +806,9 @@ def _parse_pipe_rows(
             or line.startswith("-")
             or lower_line.startswith(SQL_ECHO_PREFIXES)
         ):
+            continue
+        # Reject echoed SQL source (`'|'` marker is the concat separator).
+        if "'|'" in line:
             continue
         if line.count("|") != expected_delimiters:
             continue

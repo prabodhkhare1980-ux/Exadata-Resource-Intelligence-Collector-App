@@ -179,23 +179,27 @@ def build_pdb_inventory_sql() -> str:
     statement raises ORA-00942, which the collector records as an error.
     """
 
+    # SELECT is intentionally on ONE line so that even under sudo+TTY -- where
+    # the SQL client echoes the SELECT back despite `set echo off` -- no
+    # echoed source line carries the same pipe count as a real data row.
+    # The parser also defensively rejects any line containing the quoted
+    # pipe literal `'|'` (the marker our concat statements use).
+    select_line = (
+        "SELECT (SELECT name FROM v$database) || '|' || "
+        "p.name || '|' || p.con_id || '|' || p.open_mode || '|' || "
+        "p.restricted || '|' || nvl(round(c.bytes/1024/1024/1024, 2), 0)"
+    )
     return (
         _SQL_HEADER
-        + """
-SELECT (SELECT name FROM v$database) || '|' ||
-       p.name || '|' ||
-       p.con_id || '|' ||
-       p.open_mode || '|' ||
-       p.restricted || '|' ||
-       nvl(round(c.bytes/1024/1024/1024, 2), 0)
-FROM v$pdbs p
-LEFT JOIN (
-  SELECT con_id, SUM(bytes) bytes FROM cdb_data_files GROUP BY con_id
-) c ON c.con_id = p.con_id
-WHERE p.con_id > 2
-ORDER BY p.con_id;
-exit
-"""
+        + "\n"
+        + select_line
+        + "\n"
+        + "FROM v$pdbs p\n"
+        + "LEFT JOIN (SELECT con_id, SUM(bytes) bytes FROM cdb_data_files GROUP BY con_id) c\n"
+        + "  ON c.con_id = p.con_id\n"
+        + "WHERE p.con_id > 2\n"
+        + "ORDER BY p.con_id;\n"
+        + "exit\n"
     ).lstrip()
 
 
@@ -208,32 +212,32 @@ def build_feature_usage_sql() -> str:
     actionable, license-relevant set.
     """
 
+    # Single-line SELECT (see comment in build_pdb_inventory_sql).
+    select_line = (
+        "SELECT db_name || '|' || feature_name || '|' || currently_used || '|' || "
+        "nvl(to_char(detected_usages), '0') || '|' || "
+        "nvl(to_char(first_usage_date, 'YYYY-MM-DD'), '') || '|' || "
+        "nvl(to_char(last_usage_date, 'YYYY-MM-DD'), '')"
+    )
     return (
         _SQL_HEADER
-        + """
-SELECT db_name || '|' ||
-       feature_name || '|' ||
-       currently_used || '|' ||
-       nvl(to_char(detected_usages), '0') || '|' ||
-       nvl(to_char(first_usage_date, 'YYYY-MM-DD'), '') || '|' ||
-       nvl(to_char(last_usage_date, 'YYYY-MM-DD'), '')
-FROM (
-  SELECT (SELECT name FROM v$database) db_name,
-         f.name feature_name,
-         f.currently_used,
-         f.detected_usages,
-         f.first_usage_date,
-         f.last_usage_date,
-         ROW_NUMBER() OVER (
-           PARTITION BY f.name ORDER BY f.last_sample_date DESC NULLS LAST
-         ) rn
-  FROM dba_feature_usage_statistics f
-)
-WHERE rn = 1
-  AND currently_used = 'TRUE'
-ORDER BY feature_name;
-exit
-"""
+        + "\n"
+        + select_line + "\n"
+        + "FROM (\n"
+        + "  SELECT (SELECT name FROM v$database) db_name,\n"
+        + "         f.name feature_name,\n"
+        + "         f.currently_used,\n"
+        + "         f.detected_usages,\n"
+        + "         f.first_usage_date,\n"
+        + "         f.last_usage_date,\n"
+        + "         ROW_NUMBER() OVER (\n"
+        + "           PARTITION BY f.name ORDER BY f.last_sample_date DESC NULLS LAST\n"
+        + "         ) rn\n"
+        + "  FROM dba_feature_usage_statistics f\n"
+        + ")\n"
+        + "WHERE rn = 1 AND currently_used = 'TRUE'\n"
+        + "ORDER BY feature_name;\n"
+        + "exit\n"
     ).lstrip()
 
 
@@ -274,6 +278,15 @@ def _parse_pipe_rows(text: str, columns: list[str]) -> list[dict[str, str]]:
             or line.startswith("-")
             or lower.startswith(_SQL_ECHO_PREFIXES)
         ):
+            continue
+        # Reject echoed SQL source lines. Under sudo+TTY (force_tty=true),
+        # the SQL client echoes the SELECT despite `set echo off`. Lines
+        # like ``       p.name || '|' ||`` carry exactly 5 literal `|`
+        # characters and would otherwise pass the delimiter check as a
+        # 6-field "row". Our concat statements always use the quoted-pipe
+        # literal `'|'` as the field separator -- that exact 3-character
+        # substring never appears in real data, so it's a clean marker.
+        if "'|'" in line:
             continue
         if line.count("|") != expected_delimiters:
             continue

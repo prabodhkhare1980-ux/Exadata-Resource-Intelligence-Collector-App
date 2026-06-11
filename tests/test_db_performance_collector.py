@@ -98,6 +98,20 @@ exit
     assert rows[0]["DB_NAME"] == "DB1"
 
 
+def test_parse_rejects_echoed_concat_source_lines_under_tty() -> None:
+    """Regression: a multi-line `|| '|' ||` echo would otherwise carry the
+    exact pipe count of a real performance row under sudo+TTY."""
+
+    # 19 echoed `|| '|' ||` lines (matches the 20-column expected layout if
+    # we naively counted pipes) followed by a real row.
+    polluted = "       round(metric, 0) || '|' ||\n" * 19 + (
+        "DB1|DB11|node1|2026-06-01 00:00:00|10|2|12|20|5|25|100|50|150|200|100|300|3.5|7.5|84.9|90.1\n"
+    )
+    rows = parse_db_performance_output(polluted)
+    assert len(rows) == 1
+    assert rows[0]["DB_NAME"] == "DB1"
+
+
 def test_write_thrpt_mapping_uses_physical_write_bytes_for_write_thrpt() -> None:
     sql = _build_db_performance_sql(7)
     assert "sqlplus" not in sql
