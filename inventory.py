@@ -41,6 +41,13 @@ class CellAccessConfig:
     # Wrap nested ssh-to-cell in `sudo -n` so the DB node's privileged
     # identity (which holds the cell SSH keys, as dcli is run as root) is used.
     direct_ssh_use_sudo: bool = True
+    # OCI ExaCS cookie-jar refresh. When enabled, on an EXACLI_AUTH_REQUIRED
+    # probe the collector runs ``password_command`` on the DB VM, pipes its
+    # stdout into ``exacli ... --cookie-jar`` to mint a fresh cookie, and
+    # retries. The password never leaves the remote shell pipeline (no app
+    # logging, no Python process memory, no env vars, no argv).
+    cookie_refresh: bool = False
+    password_command: str = ""
 
 
 @dataclass(frozen=True)
@@ -333,6 +340,8 @@ def _build_cell_access_map(
             no_prompt=bool(ca.get("no_prompt", True)),
             timeout_seconds=timeout,
             direct_ssh_use_sudo=bool(ca.get("direct_ssh_use_sudo", True)),
+            cookie_refresh=bool(ca.get("cookie_refresh", False)),
+            password_command=str(ca.get("password_command", "")).strip(),
         )
     return result
 

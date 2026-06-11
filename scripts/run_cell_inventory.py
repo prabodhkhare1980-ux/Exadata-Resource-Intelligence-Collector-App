@@ -135,9 +135,12 @@ def main(argv: list[str] | None = None) -> int:
         grid_home, grid_owner = "", ""
         if access.method == "exacli":
             grid_home, grid_owner = _discover_grid_env(runner, host)
+            refresh_mode = "enabled" if access.cookie_refresh and access.password_command else "disabled"
             LOGGER.info(
-                "  exacli via %s (cell_ip_file=%s, grid_home=%s, grid_owner=%s)",
+                "  exacli via %s (cell_ip_file=%s, grid_home=%s, grid_owner=%s, "
+                "cookie_refresh=%s)",
                 host.name, access.cell_ip_file, grid_home or "?", grid_owner or "?",
+                refresh_mode,
             )
         try:
             records.extend(

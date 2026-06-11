@@ -264,6 +264,71 @@ def build_exacli_command(
     return " ".join(parts)
 
 
+def build_exacli_cookie_refresh_command(
+    exacli_path: str,
+    cell_user: str,
+    cell_ip: str,
+    password_command: str,
+    *,
+    timeout_seconds: int = 60,
+    probe_command: str = "list cell",
+) -> str:
+    """Build the remote shell pipeline that refreshes the ExaCLI cookie jar.
+
+    The pipeline is a single remote bash invocation that:
+
+    1. Captures the cloud_user password from ``password_command``'s stdout
+       into a shell variable (the password never enters our app, never
+       traverses our SSH connection in plaintext, never lands on argv).
+    2. Pipes the password into ``exacli ... --cookie-jar`` (no ``-n``) so
+       ExaCLI mints a fresh cookie at the DB VM user's standard location
+       (typically ``~/.exacli/cookies``).
+    3. Unsets the shell variable.
+
+    Emits ``COOKIE_REFRESH_OK`` on success so the caller can verify cleanly
+    without grepping the user's exacli output. ``timeout`` caps the
+    blast radius of a stuck password script.
+    """
+
+    inner_exacli = " ".join(
+        [
+            shlex.quote(exacli_path or "exacli"),
+            "-l", shlex.quote(cell_user),
+            "-c", shlex.quote(cell_ip),
+            "--cookie-jar",
+            "-e", shlex.quote(probe_command),
+        ]
+    )
+    # The password script and exacli both run inside the same bash -c, so
+    # the password never leaves that subshell.
+    pipeline = (
+        f"_p=$( {password_command} ) || exit 81; "
+        f"printf '%s\\n' \"$_p\" | {inner_exacli} > /dev/null 2>&1 || exit 82; "
+        f"unset _p; "
+        f"echo COOKIE_REFRESH_OK"
+    )
+    return " ".join(
+        [
+            "timeout",
+            f"{int(timeout_seconds)}s",
+            "bash",
+            "-c",
+            shlex.quote(pipeline),
+        ]
+    )
+
+
+def build_exacli_probe_command(
+    exacli_path: str, cell_user: str, cell_ip: str, *, timeout_seconds: int = 20
+) -> str:
+    """Cheap ExaCLI cookie validity probe (``list cell`` is one short row)."""
+
+    return build_exacli_command(
+        exacli_path, cell_user, cell_ip, "list cell",
+        use_cookie_jar=True, no_prompt=True, timeout_seconds=timeout_seconds,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Parsers (pure)
 # ---------------------------------------------------------------------------
@@ -867,16 +932,69 @@ class CellInventoryCollector:
             ]
 
         # D. Per-cell collection (one record per cell).
+        # Pre-flight cookie check + auto-refresh. ExaCLI cookies expire after
+        # 24h on ExaCS, so we probe with a cheap "list cell" before iterating
+        # cells. If the cookie is missing/expired and the operator configured
+        # password_command + cookie_refresh, mint a fresh cookie once for the
+        # whole cluster (no per-cell re-auth).
+        refresh_diag = self._ensure_exacli_cookie(ctx, exacli_path, cell_user, cells[0][0])
+
         records: list[CellInventoryRecord] = []
         for candidate_ips in cells:
             records.append(
-                self._collect_one_cell_exacli(ctx, exacli_path, cell_user, candidate_ips, flat_ips)
+                self._collect_one_cell_exacli(
+                    ctx, exacli_path, cell_user, candidate_ips, flat_ips,
+                    refresh_diag=refresh_diag,
+                )
             )
         return records
+
+    def _ensure_exacli_cookie(
+        self, ctx: "_Ctx", exacli_path: str, cell_user: str, ip: str,
+    ) -> str:
+        """Probe the ExaCLI cookie; refresh it if expired and configured.
+
+        Returns a short diagnostic string describing the outcome (suitable
+        for the per-cell ``raw_error``/log line). Never raises and never
+        logs the password.
+        """
+
+        probe_cmd = build_exacli_probe_command(
+            exacli_path, cell_user, ip, timeout_seconds=20
+        )
+        probe = ctx.run(probe_cmd)
+        if probe.ok:
+            return "cookie_ok"
+        if not _is_exacli_auth_error(probe):
+            # Connection / DNS / cell-down issue — let the per-cell flow
+            # report it precisely. Refresh would not help.
+            return f"probe_failed:{_raw_error(probe)[:120]}"
+        if not (ctx.access.cookie_refresh and ctx.access.password_command):
+            return "cookie_expired_no_refresh_configured"
+
+        refresh_cmd = build_exacli_cookie_refresh_command(
+            exacli_path, cell_user, ip, ctx.access.password_command,
+            timeout_seconds=max(ctx.access.timeout_seconds, 60),
+        )
+        refresh = ctx.run(refresh_cmd)
+        if refresh.ok and "COOKIE_REFRESH_OK" in (refresh.stdout or ""):
+            self.logger.info("ExaCLI cookie refreshed for user=%s via %s", cell_user, ip)
+            return "cookie_refreshed"
+        # Exit codes 81/82 are emitted by build_exacli_cookie_refresh_command
+        # for password-fetch and exacli-pipe failures respectively.
+        rc = getattr(refresh, "returncode", "")
+        if rc == 81:
+            return "cookie_refresh_failed:password_command_failed"
+        if rc == 82:
+            return "cookie_refresh_failed:exacli_rejected_password"
+        # Don't surface the refresh command body (it contains the password
+        # script invocation) — only the captured stderr suffix is useful.
+        return f"cookie_refresh_failed:{(refresh.stderr or '').strip()[:120]}"
 
     def _collect_one_cell_exacli(
         self, ctx: "_Ctx", exacli_path: str, cell_user: str,
         candidate_ips: list[str], all_ips: list[str],
+        *, refresh_diag: str = "",
     ) -> CellInventoryRecord:
         def exacli(ip: str, cmd: str) -> str:
             return build_exacli_command(
@@ -885,6 +1003,11 @@ class CellInventoryCollector:
                 no_prompt=ctx.access.no_prompt,
                 timeout_seconds=ctx.access.timeout_seconds,
             )
+
+        def with_diag(err: str) -> str:
+            if not refresh_diag or refresh_diag in ("cookie_ok", "cookie_refreshed"):
+                return err
+            return f"{err} [cookie: {refresh_diag}]"
 
         last_res: CommandResult | None = None
         last_cmd = ""
@@ -898,9 +1021,12 @@ class CellInventoryCollector:
                     return self._error_record(
                         ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
                         error=(
-                            "exacli authentication required. Run an initial exacli login "
-                            "manually on the DB node to create the cookie jar, or configure "
-                            "secure credential handling later."
+                            with_diag(
+                                "exacli authentication required. Configure "
+                                "cell_access.cookie_refresh + password_command, "
+                                "or run an initial `exacli ... --cookie-jar` "
+                                "login manually on the DB VM."
+                            )
                         ),
                         category="EXACLI_AUTH_REQUIRED", cell_hosts=all_ips, command=cell_cmd,
                         raw_error=_raw_error(cell_res),
