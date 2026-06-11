@@ -130,6 +130,18 @@ def test_parse_cluster_name_from_crs6724() -> None:
     assert parse_cluster_name("CRS-6724: Current cluster name is exacs-cl01\n") == "exacs-cl01"
 
 
+def test_parse_cluster_name_strips_oracle_single_quotes() -> None:
+    """ExaCS regression: crsctl wraps the name in single quotes on some versions."""
+
+    # Real ExaCS output that caused cloud_user_'iad3dx02v1' to be issued.
+    assert (
+        parse_cluster_name("CRS-6724: Current cluster name is 'iad3dx02v1'\n")
+        == "iad3dx02v1"
+    )
+    assert parse_cluster_name("'iad3dx02v1'\n") == "iad3dx02v1"
+    assert parse_cluster_name('"clname"\n') == "clname"
+
+
 def test_parse_cell_ips_from_cellip_ora() -> None:
     text = 'cell="192.168.136.5";cell="192.168.136.6"\n'
     assert parse_cell_ips(text) == ["192.168.136.5", "192.168.136.6"]
@@ -643,6 +655,60 @@ def test_exacli_success() -> None:
     assert rec.cell_user == "cloud_user_exacs-cl01"
     # Primary (first) IP of each cell is used.
     assert {r.cell_target for r in records} == {"192.168.136.5", "192.168.136.7"}
+
+
+def test_exacli_storage_user_is_bare_when_crsctl_quotes_cluster_name() -> None:
+    """Regression: ExaCS crsctl output `... name is 'clname'` must NOT yield
+    cloud_user_'clname' as the storage user."""
+
+    seen_commands = []
+
+    def runner(cmd: str) -> CommandResult:
+        seen_commands.append(cmd)
+        if "crsctl get cluster name" in cmd:
+            return _result("CRS-6724: Current cluster name is 'iad3dx02v1'\n")
+        if "cat /etc/oracle/cell/network-config/cellip.ora" in cmd:
+            return _result('cell="100.106.2.233;100.106.2.234"\n')
+        if "list cell detail" in cmd:
+            return _result(CELL_DETAIL_SINGLE)
+        if "list flashcache detail" in cmd:
+            return _result(FLASH_DETAIL_SINGLE)
+        if "list physicaldisk detail" in cmd:
+            return _result(PHYSICALDISK_DETAIL_SINGLE)
+        if "command -v exacli" in cmd:
+            return _result("/usr/local/bin/exacli\n")
+        return _result("")
+
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), _exacli_access(),
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert records[0].collection_status == "success"
+    # The storage user must NOT contain literal quotes.
+    assert records[0].cell_user == "cloud_user_iad3dx02v1"
+    # And no exacli call should have been issued with a quoted username.
+    assert not any("cloud_user_'iad3dx02v1'" in c for c in seen_commands)
+
+
+def test_exacli_refuses_cluster_name_with_stray_quote() -> None:
+    """If a future Oracle version embeds quotes in the middle of the name,
+    fail loudly rather than silently issue a broken storage user."""
+
+    def runner(cmd: str) -> CommandResult:
+        if "crsctl get cluster name" in cmd:
+            # Pathological: a stray quote inside the bare-name fallback path.
+            return _result("CRS-6724: Current cluster name is bad'name\n")
+        return _result("")
+
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), _exacli_access(),
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert records[0].collection_status == "failed"
+    assert records[0].error_category == "CELL_COMMAND_FAILED"
+    assert "stray characters" in records[0].collection_error
 
 
 def test_exacli_auth_required() -> None:
