@@ -243,6 +243,163 @@ def test_command_builders() -> None:
     assert "crsctl get cluster name" in build_crsctl_cluster_name_command("/u01/grid", "grid")
 
 
+def test_cookie_refresh_command_pipes_password_via_stdin_only() -> None:
+    """The password must arrive at exacli via stdin, never on argv or env."""
+
+    from collectors.cell_inventory_collector import build_exacli_cookie_refresh_command
+
+    cmd = build_exacli_cookie_refresh_command(
+        "/usr/bin/exacli", "cloud_user_xx", "1.2.3.4",
+        password_command="/opt/oracle/get_cloud_user_password.sh",
+        timeout_seconds=60,
+    )
+    # Outer scaffolding: timeout-bounded bash -c.
+    assert cmd.startswith("timeout 60s bash -c ")
+    # Password command is invoked inside a subshell into a shell variable.
+    assert "_p=$( /opt/oracle/get_cloud_user_password.sh )" in cmd
+    # The password is piped to exacli on stdin, never on argv.
+    assert "$_p" in cmd
+    assert "| /usr/bin/exacli -l cloud_user_xx -c 1.2.3.4" in cmd
+    # The refresh call uses --cookie-jar but NOT -n (otherwise exacli would
+    # refuse to read the password from stdin).
+    assert "--cookie-jar" in cmd
+    assert "--cookie-jar -e" in cmd  # i.e. no '-n' between --cookie-jar and -e
+    # Subshell var is unset and a sentinel printed on success.
+    assert "unset _p" in cmd
+    assert "COOKIE_REFRESH_OK" in cmd
+
+
+def test_cookie_probe_command_is_cheap_and_noninteractive() -> None:
+    from collectors.cell_inventory_collector import build_exacli_probe_command
+
+    probe = build_exacli_probe_command("/usr/bin/exacli", "cloud_user_xx", "1.2.3.4")
+    assert "-n" in probe  # non-interactive
+    assert "-e 'list cell'" in probe  # cheap call
+
+
+def test_exacli_auto_refreshes_cookie_when_expired_then_succeeds() -> None:
+    """Probe fails auth → refresh runs → cell collection succeeds."""
+
+    state = {"refreshed": False}
+
+    def runner(cmd: str) -> CommandResult:
+        if "crsctl get cluster name" in cmd:
+            return _result("CRS-6724: Current cluster name is exacs-cl01\n")
+        if "cat /etc/oracle/cell/network-config/cellip.ora" in cmd:
+            return _result('cell="192.168.136.5;192.168.136.6"\n')
+        if "command -v exacli" in cmd:
+            return _result("/usr/bin/exacli\n")
+        # Probe path: "list cell" (the cheap probe). Before refresh -> auth fail.
+        if "-e 'list cell'" in cmd and "list cell detail" not in cmd:
+            if not state["refreshed"]:
+                return _result(stderr="Authentication required: cookie expired", returncode=1)
+            return _result("name: cel01\n", returncode=0)
+        # Refresh pipeline.
+        if "COOKIE_REFRESH_OK" in cmd:
+            state["refreshed"] = True
+            return _result("COOKIE_REFRESH_OK\n", returncode=0)
+        # Real per-cell calls now succeed because the cookie is fresh.
+        if "list cell detail" in cmd:
+            return _result(CELL_DETAIL_SINGLE)
+        if "list flashcache detail" in cmd:
+            return _result(FLASH_DETAIL_SINGLE)
+        if "list physicaldisk detail" in cmd:
+            return _result(PHYSICALDISK_DETAIL_SINGLE)
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="exacli",
+        cell_ip_file="/etc/oracle/cell/network-config/cellip.ora",
+        exacli_user_template="cloud_user_{cluster_name}",
+        use_cookie_jar=True, no_prompt=True, timeout_seconds=45,
+        cookie_refresh=True, password_command="/opt/oracle/get_pwd.sh",
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), access,
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert state["refreshed"] is True
+    assert len(records) == 1
+    assert records[0].collection_status == "success"
+
+
+def test_exacli_skips_refresh_when_probe_already_succeeds() -> None:
+    """Cookie still valid → password_command must NOT be invoked."""
+
+    pw_calls = []
+
+    def runner(cmd: str) -> CommandResult:
+        if "crsctl get cluster name" in cmd:
+            return _result("CRS-6724: Current cluster name is exacs-cl01\n")
+        if "cellip.ora" in cmd:
+            return _result('cell="192.168.136.5;192.168.136.6"\n')
+        if "command -v exacli" in cmd:
+            return _result("/usr/bin/exacli\n")
+        if "/opt/oracle/get_pwd.sh" in cmd:
+            pw_calls.append(cmd)
+            return _result("topsecret\n")
+        if "-e 'list cell'" in cmd and "list cell detail" not in cmd:
+            return _result("name: cel01\n")
+        if "list cell detail" in cmd:
+            return _result(CELL_DETAIL_SINGLE)
+        if "list flashcache detail" in cmd:
+            return _result(FLASH_DETAIL_SINGLE)
+        if "list physicaldisk detail" in cmd:
+            return _result(PHYSICALDISK_DETAIL_SINGLE)
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="exacli",
+        cell_ip_file="/etc/oracle/cell/network-config/cellip.ora",
+        exacli_user_template="cloud_user_{cluster_name}",
+        cookie_refresh=True, password_command="/opt/oracle/get_pwd.sh",
+        use_cookie_jar=True, no_prompt=True, timeout_seconds=45,
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), access,
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert records[0].collection_status == "success"
+    assert pw_calls == []  # password retrieval never happened
+
+
+def test_exacli_refresh_surfaces_clear_password_command_failure() -> None:
+    def runner(cmd: str) -> CommandResult:
+        if "crsctl get cluster name" in cmd:
+            return _result("CRS-6724: Current cluster name is exacs-cl01\n")
+        if "cellip.ora" in cmd:
+            return _result('cell="192.168.136.5;192.168.136.6"\n')
+        if "command -v exacli" in cmd:
+            return _result("/usr/bin/exacli\n")
+        # Probe: auth required.
+        if "-e 'list cell'" in cmd and "list cell detail" not in cmd:
+            return _result(stderr="Authentication required: cookie expired", returncode=1)
+        # Refresh: password_command failure path (exit 81 from our wrapper).
+        if "COOKIE_REFRESH_OK" in cmd:
+            return _result(stderr="bad script", returncode=81)
+        if "list cell detail" in cmd:
+            return _result(stderr="Authentication required", returncode=1)
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="exacli",
+        cell_ip_file="/etc/oracle/cell/network-config/cellip.ora",
+        cookie_refresh=True, password_command="/bad/script",
+        timeout_seconds=45,
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), access,
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert records[0].collection_status == "failed"
+    assert records[0].error_category == "EXACLI_AUTH_REQUIRED"
+    # Diagnostic explains why refresh did not help.
+    assert "password_command_failed" in records[0].collection_error
+
+
 # ---------------------------------------------------------------------------
 # dcli flow (on-prem)
 # ---------------------------------------------------------------------------
@@ -507,7 +664,8 @@ def test_exacli_auth_required() -> None:
     )
     assert records[0].collection_status == "failed"
     assert records[0].error_category == "EXACLI_AUTH_REQUIRED"
-    assert "cookie jar" in records[0].collection_error
+    assert "exacli" in records[0].collection_error.lower()
+    assert "cookie" in records[0].collection_error.lower()
 
 
 def test_exacli_not_found() -> None:

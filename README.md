@@ -107,25 +107,47 @@ explicitly set: environments named/described with `oci`, `exacs`, or
 `exadata cloud` default to `exacli`; everything else defaults to
 `dcli_or_direct`. `cell_access.method:` still wins when present.
 
-### OCI ExaCS prerequisites
+### OCI ExaCS prerequisites and cookie auto-refresh
 
 Per Oracle's documented flow ([Using ExaCLI](https://docs.oracle.com/en-us/iaas/exadatacloud/doc/ecs-using-excli.html)),
-the collector never stores or prompts for a password. Before the first run:
+the collector never stores or prompts for a password. On each OCI DB VM:
 
-1. On each OCI DB VM, confirm `exacli` is on `PATH` (`command -v exacli`).
+1. Confirm `exacli` is on `PATH` (`command -v exacli`).
 2. Confirm `/etc/oracle/cell/network-config/cellip.ora` exists and is readable
    by the SSH service account.
-3. **Run an initial exacli login once** as that service account so the
-   per-user cookie jar is created — pick any cell IP from `cellip.ora` and the
-   cluster's `cloud_user_<clustername>`:
 
-   ```bash
-   exacli -l cloud_user_$(crsctl get cluster name | awk -F'is ' '{print $2}') \
-          -c <one_cell_ip> --cookie-jar
+ExaCS cookies expire after **24 hours**. The collector auto-refreshes them
+when you configure both `cell_access.cookie_refresh: true` and
+`cell_access.password_command`:
+
+```yaml
+oci:
+  cell_access:
+    method: exacli
+    cookie_refresh: true
+    password_command: /var/opt/oracle/exadbcs/getStorageCredential.sh
+```
+
+Auto-refresh flow (no human interaction; runs on every collection):
+
+1. The collector probes the existing cookie with a cheap `exacli ... --cookie-jar -n -e "list cell"`.
+2. **If the probe succeeds**, the cookie is good and no password is fetched.
+3. **If the probe fails with auth**, the collector runs a single remote bash
+   pipeline on the DB VM:
    ```
-   The collector then runs the same `exacli ... --cookie-jar -n -e "..."`
-   non-interactively, reusing that cookie. Until the cookie exists you will
-   see `error_category=EXACLI_AUTH_REQUIRED` and no cell is queried.
+   _p=$( <password_command> ) && printf '%s\n' "$_p" | exacli -l <user> -c <ip> --cookie-jar -e "list cell" && echo COOKIE_REFRESH_OK; unset _p
+   ```
+   The password is captured into a shell variable inside that remote subshell,
+   piped into `exacli` on stdin, and the variable is unset. **It never appears
+   on argv, in env, in this app's Python process, in this app's logs, or on the
+   wire as a plaintext SSH payload** — only inside the DB VM's transient subshell.
+4. The collector then retries the cell calls with the refreshed cookie.
+
+`password_command` is **whichever command Oracle provides on your DB VM** for
+retrieving the `cloud_user_<clustername>` password — or your own wrapper around
+it. If it requires sudo, include `sudo -n ...` directly in the value. Without
+auto-refresh configured, you must `exacli ... --cookie-jar` manually once per
+24h or see `error_category=EXACLI_AUTH_REQUIRED`.
 
 For the on-prem methods each cell/command is retried across `cell_access.users`
 (e.g. `root` then `celladmin`) until one succeeds. ExaCLI uses an existing cookie
