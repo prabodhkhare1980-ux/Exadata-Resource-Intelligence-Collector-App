@@ -10,13 +10,16 @@ environments:
       method: sudo
       sudo_password: none
       force_tty: true
-    # On-prem cells: try dcli, else SSH directly to each cell. Try root first
-    # (many on-prem cells deny celladmin), then celladmin.
+    # On-prem cells: use `dcli -g` only with a proper one-host-per-line cell
+    # group file; cellip.ora (cell="ip;ip" lines) is parsed into one cell per
+    # line and reached by direct SSH (sudo -n ssh <user>@<cell>) to one of its
+    # redundant IPs. Try root first (many on-prem cells deny celladmin).
     cell_access:
       method: dcli_or_direct
       users:
         - root
         - celladmin
+      direct_ssh_use_sudo: true
 
   oci:
     description: OCI Exadata estate

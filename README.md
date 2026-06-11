@@ -98,7 +98,7 @@ Storage cells are reached differently per estate, selected by each environment's
 
 | Method | Where | How |
 | --- | --- | --- |
-| `dcli_or_direct` | On-prem | Use `dcli -g <cell_group> -l <user>` if `dcli` is present; otherwise discover cells (from `cell_group_files` / `/etc/hosts`) and SSH to each cell directly |
+| `dcli_or_direct` | On-prem | Use `dcli -g <cell_group> -l <user>` **only** with a proper one-host-per-line group file; `cellip.ora` (lines of `cell="ip;ip"`) is parsed into one cell per line and each is reached by direct SSH (`sudo -n ssh <user>@<cell>`) to one of its two redundant IPs |
 | `direct_ssh` | On-prem | Always SSH to each discovered cell and run `cellcli` |
 | `exacli` | OCI ExaCS | From the DB VM, resolve the cluster name via `crsctl get cluster name`, build the `cloud_user_<clustername>` storage user, read cell IPs from `cellip.ora`, and run `exacli -l <user> -c <ip> --cookie-jar -n -e "..."` |
 
@@ -112,6 +112,20 @@ cells go to `cell_inventory.{csv,json}`; unreachable cells go to
 `EXACLI_AUTH_REQUIRED`, `CELL_IP_FILE_NOT_FOUND`, `CELL_COMMAND_FAILED`, `PARSE_ERROR`).
 The dashboard's **Cell Inventory** page summarises cells/version/capacity by cluster
 and lists failed access. No scripts are copied to targets and no credentials are stored.
+
+To test cell collection on its own (without running the full pipeline), use the
+diagnostic driver — it prints a per-cell summary (target / method / user / status /
+error category / captured stderr) and writes the same `cell_inventory*.{csv,json}`:
+
+```bash
+python -m scripts.run_cell_inventory --config config/clusters.local.yaml
+python -m scripts.run_cell_inventory --config config/clusters.local.yaml --cluster onprem-rac01 --verbose
+python -m scripts.run_cell_inventory --config config/clusters.local.yaml --no-write   # print only
+```
+
+Note: `output/cell_inventory.{csv,json}` contains **successful cells only** — if it is
+empty (header row only), every cell failed and the reason is in
+`output/cell_inventory_errors.{csv,json}` (and in the driver's summary).
 
 ## Oracle inventory mapping rules
 

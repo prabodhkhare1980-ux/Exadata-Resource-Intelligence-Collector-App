@@ -184,31 +184,34 @@ def build_dcli_cellcli_command(
 
 
 def build_direct_ssh_cellcli_command(
-    cell: str, cell_user: str, cellcli_command: str, timeout_seconds: int = 45
+    cell: str, cell_user: str, cellcli_command: str, timeout_seconds: int = 45,
+    *, use_sudo: bool = True,
 ) -> str:
     """Build a nested ``ssh <user>@<cell> "cellcli -e '<cmd>'"`` command.
 
     Runs from the DB node over the existing SSH session. BatchMode keeps it
     non-interactive (no password prompt); a failed key/login surfaces as an
-    auth error rather than hanging.
+    auth error rather than hanging. ``use_sudo`` wraps the nested ssh in
+    ``sudo -n`` so the DB node's privileged identity (which typically holds
+    the cell SSH keys, as ``dcli`` itself is run as root) is used.
     """
 
     remote = f"cellcli -e {shlex.quote(cellcli_command)}"
-    return " ".join(
-        [
-            "timeout",
-            f"{int(timeout_seconds)}s",
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "ConnectTimeout=10",
-            f"{cell_user}@{cell}",
-            shlex.quote(remote),
-        ]
-    )
+    parts = ["timeout", f"{int(timeout_seconds)}s"]
+    if use_sudo:
+        parts += ["sudo", "-n"]
+    parts += [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        f"{cell_user}@{cell}",
+        shlex.quote(remote),
+    ]
+    return " ".join(parts)
 
 
 def build_crsctl_cluster_name_command(grid_home: str, grid_owner: str) -> str:
@@ -305,6 +308,49 @@ def parse_cell_ips(output: str) -> list[str]:
             seen.add(ip)
             ips.append(ip)
     return ips
+
+
+def looks_like_cellip_ora(text: str) -> bool:
+    """True when the file is cellip.ora-style (``cell="ip;ip"`` lines)."""
+
+    lowered = (text or "").lower()
+    if "cell=" in lowered:
+        return True
+    # Bare "ip;ip" redundant pairs also indicate the cellip format.
+    for line in (text or "").splitlines():
+        if ";" in line and _IPV4.search(line):
+            return True
+    return False
+
+
+def parse_cellip_ora(text: str) -> list[list[str]]:
+    """Parse cellip.ora into one cell per line, each with its redundant IPs.
+
+    A line ``cell="30.117.250.15;30.117.250.16"`` is a single storage cell
+    reachable at either IP. Returns ``[["30.117.250.15", "30.117.250.16"], ...]``
+    so callers connect to one IP per cell (with the second as fallback)
+    instead of treating every IP as a separate cell.
+    """
+
+    cells: list[list[str]] = []
+    seen_cells: set[tuple[str, ...]] = set()
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        ips: list[str] = []
+        for match in _IPV4.finditer(stripped):
+            ip = match.group(1)
+            if ip not in ips:
+                ips.append(ip)
+        if not ips:
+            continue
+        key = tuple(ips)
+        if key in seen_cells:
+            continue
+        seen_cells.add(key)
+        cells.append(ips)
+    return cells
 
 
 def parse_cell_group_hosts(output: str) -> list[str]:
@@ -547,24 +593,32 @@ class CellInventoryCollector:
         dcli_path = parse_command_v(ctx.run(build_command_check("dcli")).stdout)
         dcli_available = bool(dcli_path)
 
-        cell_group_used, cell_hosts = self._discover_cell_group(ctx)
+        cell_group_used, is_dcli_group, cells = self._discover_cells(ctx)
+        flat_targets = [ip for cell in cells for ip in cell]
 
         force_direct = ctx.access.method == "direct_ssh"
-        if dcli_available and cell_group_used and not force_direct:
-            return self._collect_via_dcli(ctx, cell_group_used, cell_hosts, dcli_available)
 
-        if ctx.access.allow_direct_cell_ssh and cell_hosts:
-            return self._collect_via_direct_ssh(ctx, cell_hosts, dcli_available, cell_group_used)
+        # `dcli -g <file>` only works with a proper one-host-per-line group
+        # file. cellip.ora (cell="ip;ip" lines) is NOT such a file, so we
+        # never pass it to dcli -g; those cells go to direct SSH below.
+        if dcli_available and is_dcli_group and cell_group_used and not force_direct:
+            return self._collect_via_dcli(ctx, cell_group_used, flat_targets, dcli_available)
+
+        if ctx.access.allow_direct_cell_ssh and cells:
+            return self._collect_via_direct_ssh(ctx, cells, dcli_available, cell_group_used)
 
         # Nothing worked: build one diagnostic error record explaining why.
-        if not dcli_available and not cell_hosts:
+        if not cells:
             error = (
-                "dcli not found and no cell hosts could be discovered from "
+                "no cell targets discovered from "
                 f"{', '.join(ctx.access.cell_group_files)} or /etc/hosts"
             )
-            category = "DCLI_NOT_FOUND"
+            category = "CELL_IP_FILE_NOT_FOUND" if cell_group_used else "DCLI_NOT_FOUND"
         elif not ctx.access.allow_direct_cell_ssh:
-            error = "dcli not found and allow_direct_cell_ssh is disabled"
+            error = (
+                "cells were discovered but no usable dcli group file is present "
+                "and allow_direct_cell_ssh is disabled"
+            )
             category = "DCLI_NOT_FOUND"
         else:
             error = "no cell group file found and no cell hosts discovered"
@@ -572,39 +626,48 @@ class CellInventoryCollector:
         return [
             self._error_record(
                 ctx,
-                method="dcli" if dcli_available else "direct_ssh",
-                target="",
+                method="dcli" if dcli_available and is_dcli_group else "direct_ssh",
+                target=",".join(flat_targets),
                 user="",
                 user_attempted="",
                 error=error,
                 category=category,
                 dcli_available=dcli_available,
                 cell_group_used=cell_group_used,
-                cell_hosts=cell_hosts,
+                cell_hosts=flat_targets,
             )
         ]
 
-    def _discover_cell_group(self, ctx: "_Ctx") -> tuple[str, list[str]]:
-        """Return (first readable cell group/ip file, discovered cell hosts)."""
+    def _discover_cells(self, ctx: "_Ctx") -> tuple[str, bool, list[list[str]]]:
+        """Discover cell targets from the configured files.
 
-        cell_group_used = ""
-        hosts: list[str] = []
+        Returns ``(cell_group_file_used, is_dcli_group, cells)`` where
+        ``cells`` is one entry per storage cell, each a list of candidate
+        addresses (cellip.ora lines carry two redundant IPs per cell).
+        ``is_dcli_group`` is True only for a proper one-host-per-line file
+        that can be passed to ``dcli -g``.
+        """
+
         for path in ctx.access.cell_group_files:
             result = ctx.run(build_cat_command(path))
-            if result.ok and result.stdout.strip():
-                cell_group_used = path
-                if "cellip.ora" in path or _IPV4.search(result.stdout):
-                    hosts = parse_cell_ips(result.stdout) or parse_cell_group_hosts(result.stdout)
-                else:
-                    hosts = parse_cell_group_hosts(result.stdout)
+            if not (result.ok and result.stdout.strip()):
+                continue
+            text = result.stdout
+            if "cellip.ora" in path or looks_like_cellip_ora(text):
+                cells = parse_cellip_ora(text)
+                if cells:
+                    return path, False, cells
+            else:
+                hosts = parse_cell_group_hosts(text)
                 if hosts:
-                    break
-        if not hosts:
-            # Last resort: cell-like entries in /etc/hosts.
-            etc = ctx.run("grep -iE 'cel[l0-9]' /etc/hosts 2>/dev/null || true")
-            if etc.ok and etc.stdout.strip():
-                hosts = _hosts_from_etc_hosts(etc.stdout)
-        return cell_group_used, hosts
+                    return path, True, [[h] for h in hosts]
+        # Last resort: cell-like entries in /etc/hosts (direct SSH only).
+        etc = ctx.run("grep -iE 'cel[l0-9]' /etc/hosts 2>/dev/null || true")
+        if etc.ok and etc.stdout.strip():
+            hosts = _hosts_from_etc_hosts(etc.stdout)
+            if hosts:
+                return "", False, [[h] for h in hosts]
+        return "", False, []
 
     def _collect_via_dcli(
         self, ctx: "_Ctx", cell_group: str, cell_hosts: list[str], dcli_available: bool
@@ -669,61 +732,68 @@ class CellInventoryCollector:
         ]
 
     def _collect_via_direct_ssh(
-        self, ctx: "_Ctx", cell_hosts: list[str], dcli_available: bool, cell_group_used: str
+        self, ctx: "_Ctx", cells: list[list[str]], dcli_available: bool, cell_group_used: str
     ) -> list[CellInventoryRecord]:
+        flat = [ip for cell in cells for ip in cell]
         records: list[CellInventoryRecord] = []
-        for cell in cell_hosts:
+        for candidate_ips in cells:
             records.append(
-                self._collect_one_cell_direct(ctx, cell, dcli_available, cell_group_used, cell_hosts)
+                self._collect_one_cell_direct(
+                    ctx, candidate_ips, dcli_available, cell_group_used, flat
+                )
             )
         return records
 
+    def _ssh_cell(self, ctx, ip, user, cellcli_cmd):
+        return build_direct_ssh_cellcli_command(
+            ip, user, cellcli_cmd, ctx.access.timeout_seconds,
+            use_sudo=ctx.access.direct_ssh_use_sudo,
+        )
+
     def _collect_one_cell_direct(
-        self, ctx: "_Ctx", cell: str, dcli_available: bool, cell_group_used: str, cell_hosts: list[str]
+        self, ctx: "_Ctx", candidate_ips: list[str], dcli_available: bool,
+        cell_group_used: str, cell_hosts: list[str],
     ) -> CellInventoryRecord:
+        """Try each redundant IP x each user until cellcli answers."""
+
         last_error: CommandResult | None = None
         attempted: list[str] = []
-        for user in ctx.access.users:
-            attempted.append(user)
-            cmd = build_direct_ssh_cellcli_command(
-                cell, user, CELLCLI_DETAIL_COMMANDS["cell"], ctx.access.timeout_seconds
-            )
-            cell_res = ctx.run(cmd)
-            if not cell_res.ok:
-                last_error = cell_res
-                continue
-            attrs = parse_cellcli_detail(cell_res.stdout)
-            if not attrs:
-                last_error = cell_res
-                continue
-            flash = parse_cellcli_detail_multi(
-                ctx.run(build_direct_ssh_cellcli_command(
-                    cell, user, CELLCLI_DETAIL_COMMANDS["flashcache"], ctx.access.timeout_seconds
-                )).stdout
-            )
-            disks = parse_cellcli_detail_multi(
-                ctx.run(build_direct_ssh_cellcli_command(
-                    cell, user, CELLCLI_DETAIL_COMMANDS["physicaldisk"], ctx.access.timeout_seconds
-                )).stdout
-            )
-            return self._success_record(
-                ctx,
-                method="direct_ssh",
-                target=cell,
-                user=user,
-                attrs=attrs,
-                flash=flash,
-                disks=disks,
-                dcli_available=dcli_available,
-                cell_group_used=cell_group_used,
-                cell_hosts=cell_hosts,
-                command=cmd,
-            )
+        for ip in candidate_ips:
+            for user in ctx.access.users:
+                attempted.append(f"{user}@{ip}")
+                cmd = self._ssh_cell(ctx, ip, user, CELLCLI_DETAIL_COMMANDS["cell"])
+                cell_res = ctx.run(cmd)
+                if not cell_res.ok:
+                    last_error = cell_res
+                    continue
+                attrs = parse_cellcli_detail(cell_res.stdout)
+                if not attrs:
+                    last_error = cell_res
+                    continue
+                flash = parse_cellcli_detail_multi(
+                    ctx.run(self._ssh_cell(ctx, ip, user, CELLCLI_DETAIL_COMMANDS["flashcache"])).stdout
+                )
+                disks = parse_cellcli_detail_multi(
+                    ctx.run(self._ssh_cell(ctx, ip, user, CELLCLI_DETAIL_COMMANDS["physicaldisk"])).stdout
+                )
+                return self._success_record(
+                    ctx,
+                    method="direct_ssh",
+                    target=ip,
+                    user=user,
+                    attrs=attrs,
+                    flash=flash,
+                    disks=disks,
+                    dcli_available=dcli_available,
+                    cell_group_used=cell_group_used,
+                    cell_hosts=cell_hosts,
+                    command=cmd,
+                )
         category = "CELL_AUTH" if last_error and _is_auth_error(last_error) else "CELL_COMMAND_FAILED"
         return self._error_record(
             ctx,
             method="direct_ssh",
-            target=cell,
+            target=",".join(candidate_ips),
             user="",
             user_attempted=",".join(attempted),
             error=_raw_error(last_error) if last_error else "direct ssh to cell failed",
@@ -731,9 +801,10 @@ class CellInventoryCollector:
             dcli_available=dcli_available,
             cell_group_used=cell_group_used,
             cell_hosts=cell_hosts,
-            command=build_direct_ssh_cellcli_command(
-                cell, attempted[-1] if attempted else "", CELLCLI_DETAIL_COMMANDS["cell"],
-                ctx.access.timeout_seconds,
+            command=self._ssh_cell(
+                ctx, candidate_ips[0] if candidate_ips else "",
+                ctx.access.users[-1] if ctx.access.users else "",
+                CELLCLI_DETAIL_COMMANDS["cell"],
             ),
         )
 
@@ -770,8 +841,10 @@ class CellInventoryCollector:
                     category="CELL_IP_FILE_NOT_FOUND",
                 )
             ]
-        cell_ips = parse_cell_ips(ip_res.stdout)
-        if not cell_ips:
+        # cellip.ora groups two redundant IPs per cell; query each cell once
+        # (primary IP, second as fallback) rather than once per IP.
+        cells = parse_cellip_ora(ip_res.stdout)
+        if not cells:
             return [
                 self._error_record(
                     ctx, method="exacli", target="", user=cell_user, user_attempted=cell_user,
@@ -779,31 +852,33 @@ class CellInventoryCollector:
                     category="CELL_IP_FILE_NOT_FOUND",
                 )
             ]
+        flat_ips = [ip for cell in cells for ip in cell]
 
         # C. exacli binary.
         exacli_path = parse_command_v(ctx.run(build_exacli_path_probe()).stdout)
         if not exacli_path:
             return [
                 self._error_record(
-                    ctx, method="exacli", target=",".join(cell_ips), user=cell_user,
+                    ctx, method="exacli", target=",".join(flat_ips), user=cell_user,
                     user_attempted=cell_user,
                     error="exacli not found on PATH or in /usr/local/bin, /usr/bin",
-                    category="EXACLI_NOT_FOUND", cell_hosts=cell_ips,
+                    category="EXACLI_NOT_FOUND", cell_hosts=flat_ips,
                 )
             ]
 
-        # D. Per-cell collection.
+        # D. Per-cell collection (one record per cell).
         records: list[CellInventoryRecord] = []
-        for ip in cell_ips:
+        for candidate_ips in cells:
             records.append(
-                self._collect_one_cell_exacli(ctx, exacli_path, cell_user, ip, cell_ips)
+                self._collect_one_cell_exacli(ctx, exacli_path, cell_user, candidate_ips, flat_ips)
             )
         return records
 
     def _collect_one_cell_exacli(
-        self, ctx: "_Ctx", exacli_path: str, cell_user: str, ip: str, cell_ips: list[str]
+        self, ctx: "_Ctx", exacli_path: str, cell_user: str,
+        candidate_ips: list[str], all_ips: list[str],
     ) -> CellInventoryRecord:
-        def exacli(cmd: str) -> str:
+        def exacli(ip: str, cmd: str) -> str:
             return build_exacli_command(
                 exacli_path, cell_user, ip, cmd,
                 use_cookie_jar=ctx.access.use_cookie_jar,
@@ -811,38 +886,45 @@ class CellInventoryCollector:
                 timeout_seconds=ctx.access.timeout_seconds,
             )
 
-        cell_cmd = exacli(CELLCLI_DETAIL_COMMANDS["cell"])
-        cell_res = ctx.run(cell_cmd)
-        if not cell_res.ok:
-            if _is_exacli_auth_error(cell_res):
+        last_res: CommandResult | None = None
+        last_cmd = ""
+        for ip in candidate_ips:
+            cell_cmd = exacli(ip, CELLCLI_DETAIL_COMMANDS["cell"])
+            last_cmd = cell_cmd
+            cell_res = ctx.run(cell_cmd)
+            last_res = cell_res
+            if not cell_res.ok:
+                if _is_exacli_auth_error(cell_res):
+                    return self._error_record(
+                        ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
+                        error=(
+                            "exacli authentication required. Run an initial exacli login "
+                            "manually on the DB node to create the cookie jar, or configure "
+                            "secure credential handling later."
+                        ),
+                        category="EXACLI_AUTH_REQUIRED", cell_hosts=all_ips, command=cell_cmd,
+                        raw_error=_raw_error(cell_res),
+                    )
+                continue  # connection issue on this IP — try the redundant one
+            attrs = parse_cellcli_detail(cell_res.stdout)
+            if not attrs:
                 return self._error_record(
                     ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
-                    error=(
-                        "exacli authentication required. Run an initial exacli login "
-                        "manually on the DB node to create the cookie jar, or configure "
-                        "secure credential handling later."
-                    ),
-                    category="EXACLI_AUTH_REQUIRED", cell_hosts=cell_ips, command=cell_cmd,
-                    raw_error=_raw_error(cell_res),
+                    error="exacli returned no parseable cell detail",
+                    category="PARSE_ERROR", cell_hosts=all_ips, command=cell_cmd,
+                    raw_error=cell_res.stdout.strip(),
                 )
-            return self._error_record(
-                ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
-                error=_raw_error(cell_res), category="CELL_COMMAND_FAILED",
-                cell_hosts=cell_ips, command=cell_cmd,
+            flash = parse_cellcli_detail_multi(ctx.run(exacli(ip, CELLCLI_DETAIL_COMMANDS["flashcache"])).stdout)
+            disks = parse_cellcli_detail_multi(ctx.run(exacli(ip, CELLCLI_DETAIL_COMMANDS["physicaldisk"])).stdout)
+            return self._success_record(
+                ctx, method="exacli", target=ip, user=cell_user, attrs=attrs,
+                flash=flash, disks=disks, cell_hosts=all_ips, command=cell_cmd,
             )
-        attrs = parse_cellcli_detail(cell_res.stdout)
-        if not attrs:
-            return self._error_record(
-                ctx, method="exacli", target=ip, user=cell_user, user_attempted=cell_user,
-                error="exacli returned no parseable cell detail",
-                category="PARSE_ERROR", cell_hosts=cell_ips, command=cell_cmd,
-                raw_error=cell_res.stdout.strip(),
-            )
-        flash = parse_cellcli_detail_multi(ctx.run(exacli(CELLCLI_DETAIL_COMMANDS["flashcache"])).stdout)
-        disks = parse_cellcli_detail_multi(ctx.run(exacli(CELLCLI_DETAIL_COMMANDS["physicaldisk"])).stdout)
-        return self._success_record(
-            ctx, method="exacli", target=ip, user=cell_user, attrs=attrs,
-            flash=flash, disks=disks, cell_hosts=cell_ips, command=cell_cmd,
+        return self._error_record(
+            ctx, method="exacli", target=",".join(candidate_ips), user=cell_user,
+            user_attempted=cell_user,
+            error=_raw_error(last_res) if last_res else "exacli failed for all cell IPs",
+            category="CELL_COMMAND_FAILED", cell_hosts=all_ips, command=last_cmd,
         )
 
     # -- record builders --------------------------------------------------
