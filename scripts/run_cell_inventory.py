@@ -127,15 +127,18 @@ def main(argv: list[str] | None = None) -> int:
             continue
         host = cluster.hosts[0]
         access = inventory.cell_access_by_environment.get(cluster.environment) or CellAccessConfig()
+        LOGGER.info(
+            "Cluster %s (env=%s): cell access method=%s users=%s timeout=%ss",
+            cluster.name, cluster.environment, access.method,
+            ",".join(access.users), access.timeout_seconds,
+        )
         grid_home, grid_owner = "", ""
         if access.method == "exacli":
             grid_home, grid_owner = _discover_grid_env(runner, host)
             LOGGER.info(
-                "Cluster %s: exacli via %s (grid_home=%s grid_owner=%s)",
-                cluster.name, host.name, grid_home or "?", grid_owner or "?",
+                "  exacli via %s (cell_ip_file=%s, grid_home=%s, grid_owner=%s)",
+                host.name, access.cell_ip_file, grid_home or "?", grid_owner or "?",
             )
-        else:
-            LOGGER.info("Cluster %s: method=%s via %s", cluster.name, access.method, host.name)
         try:
             records.extend(
                 collector.collect_cluster(

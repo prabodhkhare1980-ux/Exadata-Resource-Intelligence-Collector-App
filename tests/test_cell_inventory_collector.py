@@ -185,6 +185,53 @@ def test_parse_cell_size_gb_units() -> None:
     assert parse_cell_size_gb("garbage") is None
 
 
+def test_method_inferred_from_env_name(tmp_path) -> None:
+    """oci-style env names default to exacli; explicit method still wins."""
+
+    from inventory import load_inventory
+
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        """
+environments:
+  onprem:
+    ssh_user: srcordma
+    auth: {method: ssh_key, private_key: .secrets/ssh/k}
+    privilege: {enabled: true, method: sudo, sudo_password: none, force_tty: true}
+  oci:
+    description: OCI Exadata estate
+    ssh_user: srcordma
+    auth: {method: ssh_key, private_key: .secrets/ssh/k}
+    privilege: {enabled: true, method: sudo, sudo_password: none, force_tty: true}
+  exacs-prod:
+    ssh_user: srcordma
+    auth: {method: ssh_key, private_key: .secrets/ssh/k}
+    privilege: {enabled: true, method: sudo, sudo_password: none, force_tty: true}
+  legacy-with-override:
+    description: weird mixed env
+    ssh_user: srcordma
+    auth: {method: ssh_key, private_key: .secrets/ssh/k}
+    privilege: {enabled: true, method: sudo, sudo_password: none, force_tty: true}
+    cell_access: {method: exacli}
+clusters:
+  - {name: c1, environment: onprem, hosts: [{name: h1, address: 10.0.0.1}]}
+  - {name: c2, environment: oci, hosts: [{name: h2, address: 10.0.0.2}]}
+  - {name: c3, environment: exacs-prod, hosts: [{name: h3, address: 10.0.0.3}]}
+  - {name: c4, environment: legacy-with-override, hosts: [{name: h4, address: 10.0.0.4}]}
+collection:
+  cell_inventory: {enabled: true}
+""",
+        encoding="utf-8",
+    )
+    inv = load_inventory(str(cfg))
+    assert inv.cell_access_by_environment["onprem"].method == "dcli_or_direct"
+    # Inferred from env name "oci" / "exacs-prod".
+    assert inv.cell_access_by_environment["oci"].method == "exacli"
+    assert inv.cell_access_by_environment["exacs-prod"].method == "exacli"
+    # Explicit method overrides the inference.
+    assert inv.cell_access_by_environment["legacy-with-override"].method == "exacli"
+
+
 def test_command_builders() -> None:
     assert "dcli -g /root/cell_group -l celladmin" in build_dcli_cellcli_command(
         "/root/cell_group", "celladmin", "list cell detail"
