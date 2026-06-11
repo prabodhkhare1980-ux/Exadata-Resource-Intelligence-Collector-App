@@ -85,6 +85,10 @@ def normalize_asm(df: pd.DataFrame) -> pd.DataFrame:
         "used_pct",
         "warning_level",
     ]
+    if df is None or df.empty:
+        # Early exit avoids running arithmetic / .clip / .map on an empty
+        # object-dtype frame -- pandas < 3.0 raises TypeError on those.
+        return pd.DataFrame(columns=columns)
     table = ensure_columns(df, columns)[columns].copy()
     for column in ["total_tb", "free_tb", "usable_tb", "used_pct"]:
         table[column] = pd.to_numeric(table[column], errors="coerce")
