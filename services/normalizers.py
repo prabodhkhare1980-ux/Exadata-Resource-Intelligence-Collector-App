@@ -1188,3 +1188,139 @@ def normalize_cell_inventory_errors(df: pd.DataFrame) -> pd.DataFrame:
     table = ensure_columns(table, columns).copy()
     table["warning_level"] = "CRITICAL"
     return table[columns + ["warning_level"]]
+
+
+# ---------------------------------------------------------------------------
+# PDB inventory (Multitenant license posture).
+# ---------------------------------------------------------------------------
+
+
+_PDB_RENAME_MAP = {
+    "Cluster": "cluster",
+    "HOST_NAME": "host_name",
+    "CDB_NAME": "cdb_name",
+    "PDB_NAME": "pdb_name",
+    "CON_ID": "con_id",
+    "OPEN_MODE": "open_mode",
+    "RESTRICTED": "restricted",
+    "TOTAL_SIZE_GB": "total_size_gb",
+    "Collected_At": "collected_at",
+}
+
+
+def normalize_pdb_inventory(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize ``pdb_inventory.{json,csv}`` for the Dash page.
+
+    The collector emits one row per PDB per local instance, plus a single
+    informational row per non-CDB DB (``collection_error='no_pluggable_databases'``)
+    so the DB still shows up in the file. This helper:
+
+    * renames the PascalCase columns to snake_case;
+    * de-duplicates real PDB rows across RAC instances of the same CDB
+      (cluster + cdb_name + pdb_name), since a 2-node RAC otherwise produces
+      two rows per PDB even though it's the same PDB;
+    * drops the informational ``no_pluggable_databases`` rows so the
+      analytics surface only contains real PDB data;
+    * coerces ``con_id`` and ``total_size_gb`` to numeric.
+    """
+
+    columns = [
+        "cluster", "host_name", "db_unique_name", "cdb_name", "pdb_name",
+        "con_id", "open_mode", "restricted", "total_size_gb",
+        "collection_status", "collection_error", "collected_at",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    table = df.rename(
+        columns={old: new for old, new in _PDB_RENAME_MAP.items() if old in df.columns and new not in df.columns}
+    ).copy()
+    table = ensure_columns(table, columns).copy()
+
+    # Drop the no-PDB informational rows (PDB_NAME empty + collection_error
+    # explicitly marked) so analytics aren't skewed.
+    text_pdb = table["pdb_name"].astype(str).str.strip()
+    keep = text_pdb.ne("") & text_pdb.str.lower().ne("nan")
+    table = table[keep].copy()
+
+    # Coerce numerics.
+    for column in ("con_id", "total_size_gb"):
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+
+    # Same PDB shows up once per RAC instance with the same cluster+cdb+pdb;
+    # collapse to one row, keeping the largest size_gb observed (handles
+    # snapshot timing skew).
+    if not table.empty:
+        table = (
+            table.sort_values("total_size_gb", ascending=False, na_position="last")
+            .drop_duplicates(subset=["cluster", "cdb_name", "pdb_name"], keep="first")
+            .reset_index(drop=True)
+        )
+
+    return table[columns]
+
+
+def build_pdb_cluster_rollup(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-cluster Multitenant rollup: CDB count, PDB count, size sums.
+
+    A ``pdbs_per_cdb_max`` of 3 or more is the common Multitenant licensing
+    threshold for the "free PDB" allowance on EE -- callers may want to
+    style rows above that. This helper just computes the numbers.
+    """
+
+    columns = [
+        "cluster", "cdbs", "pdbs", "pdbs_per_cdb_avg", "pdbs_per_cdb_max",
+        "total_pdb_size_gb", "open_pdbs", "mounted_pdbs", "restricted_pdbs",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    for cluster, group in df.groupby(df["cluster"].fillna(""), dropna=False):
+        if not str(cluster).strip():
+            continue
+        pdb_per_cdb = group.groupby("cdb_name")["pdb_name"].nunique()
+        open_modes = group["open_mode"].astype(str).str.upper()
+        restricted = group["restricted"].astype(str).str.upper()
+        rows.append({
+            "cluster": cluster,
+            "cdbs": int(group["cdb_name"].nunique()),
+            "pdbs": int(group["pdb_name"].nunique()),
+            "pdbs_per_cdb_avg": round(float(pdb_per_cdb.mean()), 2) if len(pdb_per_cdb) else 0.0,
+            "pdbs_per_cdb_max": int(pdb_per_cdb.max()) if len(pdb_per_cdb) else 0,
+            "total_pdb_size_gb": round(
+                float(pd.to_numeric(group["total_size_gb"], errors="coerce").sum(skipna=True)), 2
+            ),
+            "open_pdbs": int((open_modes == "READ WRITE").sum() + (open_modes == "READ ONLY").sum()),
+            "mounted_pdbs": int((open_modes == "MOUNTED").sum()),
+            "restricted_pdbs": int((restricted == "YES").sum()),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_pdbs_per_cdb(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-CDB PDB count + size, ranked by PDB count (Multitenant exposure)."""
+
+    columns = ["cluster", "cdb_name", "pdb_count", "total_size_gb", "license_flag"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    grouped = (
+        df.groupby(["cluster", "cdb_name"], dropna=False)
+        .agg(
+            pdb_count=("pdb_name", "nunique"),
+            total_size_gb=(
+                "total_size_gb",
+                lambda s: round(float(pd.to_numeric(s, errors="coerce").sum(skipna=True)), 2),
+            ),
+        )
+        .reset_index()
+    )
+    # On EE, more than 3 PDBs per CDB typically requires Multitenant license.
+    # We label, the page styles; thresholds remain editable in one place.
+    grouped["license_flag"] = grouped["pdb_count"].apply(
+        lambda n: "REVIEW (>3 PDBs)" if (pd.notna(n) and int(n) > 3) else "OK"
+    )
+    return grouped.sort_values(
+        ["pdb_count", "total_size_gb"], ascending=[False, False]
+    ).reset_index(drop=True)[columns]

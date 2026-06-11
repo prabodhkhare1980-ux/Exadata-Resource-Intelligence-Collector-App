@@ -16,6 +16,7 @@ NAV_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("Fleet Inventory", "/inventory/fleet"),
             ("DB Inventory & Capacity", "/db/inventory"),
+            ("PDB Inventory", "/db/pdbs"),
         ],
     ),
     (
