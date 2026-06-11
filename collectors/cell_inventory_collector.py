@@ -280,14 +280,21 @@ def build_exacli_cookie_refresh_command(
     1. Captures the cloud_user password from ``password_command``'s stdout
        into a shell variable (the password never enters our app, never
        traverses our SSH connection in plaintext, never lands on argv).
-    2. Pipes the password into ``exacli ... --cookie-jar`` (no ``-n``) so
-       ExaCLI mints a fresh cookie at the DB VM user's standard location
-       (typically ``~/.exacli/cookies``).
-    3. Unsets the shell variable.
+    2. Pipes ``<password>\\ny\\n`` into ``exacli ... --cookie-jar`` (no
+       ``-n``). On a **first** connection to a cell, ExaCLI reads the
+       password, then surfaces ``EXA-30016`` and prompts ``Do you want to
+       accept and store this certificate? (Press y/n)``; the trailing
+       ``y\\n`` answers that prompt and the cert is added to the cookie
+       jar. On subsequent connections the cert is already trusted so the
+       extra ``y\\n`` is left unread in the pipe and discarded harmlessly.
+    3. Captures exacli's stderr to a shell variable, then on failure
+       echoes a sentinel-wrapped block so the caller can surface the real
+       exacli error (``EXA-30033`` / wrong password / etc.) without ever
+       echoing the password (exacli never prints the password on stderr).
+    4. Unsets the password variable.
 
-    Emits ``COOKIE_REFRESH_OK`` on success so the caller can verify cleanly
-    without grepping the user's exacli output. ``timeout`` caps the
-    blast radius of a stuck password script.
+    Emits ``COOKIE_REFRESH_OK`` on success. Distinct exit codes (81 vs 82)
+    let the caller tell a password-script failure from an exacli rejection.
     """
 
     inner_exacli = " ".join(
@@ -299,12 +306,14 @@ def build_exacli_cookie_refresh_command(
             "-e", shlex.quote(probe_command),
         ]
     )
-    # The password script and exacli both run inside the same bash -c, so
-    # the password never leaves that subshell.
     pipeline = (
         f"_p=$( {password_command} ) || exit 81; "
-        f"printf '%s\\n' \"$_p\" | {inner_exacli} > /dev/null 2>&1 || exit 82; "
-        f"unset _p; "
+        f"_err=$( printf '%s\\ny\\n' \"$_p\" | {inner_exacli} 2>&1 >/dev/null ) "
+        f"|| {{ "
+        f"  printf 'EXACLI_OUT_START\\n%s\\nEXACLI_OUT_END\\n' \"$_err\"; "
+        f"  unset _p _err; exit 82; "
+        f"}}; "
+        f"unset _p _err; "
         f"echo COOKIE_REFRESH_OK"
     )
     return " ".join(
@@ -316,6 +325,22 @@ def build_exacli_cookie_refresh_command(
             shlex.quote(pipeline),
         ]
     )
+
+
+_EXACLI_OUT_RE = re.compile(
+    r"EXACLI_OUT_START\n(?P<body>.*?)\nEXACLI_OUT_END", re.DOTALL,
+)
+
+
+def extract_refresh_exacli_error(stdout: str) -> str:
+    """Pull exacli's captured error block out of a failed refresh's stdout."""
+
+    if not stdout:
+        return ""
+    match = _EXACLI_OUT_RE.search(stdout)
+    if not match:
+        return ""
+    return match.group("body").strip()
 
 
 def build_exacli_probe_command(
@@ -1005,6 +1030,14 @@ class CellInventoryCollector:
         if rc == 81:
             return "cookie_refresh_failed:password_command_failed"
         if rc == 82:
+            exacli_err = extract_refresh_exacli_error(refresh.stdout or "")
+            if exacli_err:
+                # exacli only writes its own diagnostic messages to stderr
+                # (EXA-30033/EXA-30016/no cookies/etc.) — never the password.
+                return (
+                    "cookie_refresh_failed:exacli_rejected_password: "
+                    + exacli_err.replace("\n", " | ")[:300]
+                )
             return "cookie_refresh_failed:exacli_rejected_password"
         # Don't surface the refresh command body (it contains the password
         # script invocation) — only the captured stderr suffix is useful.

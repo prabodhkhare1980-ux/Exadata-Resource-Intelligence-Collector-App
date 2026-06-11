@@ -276,9 +276,37 @@ def test_cookie_refresh_command_pipes_password_via_stdin_only() -> None:
     # refuse to read the password from stdin).
     assert "--cookie-jar" in cmd
     assert "--cookie-jar -e" in cmd  # i.e. no '-n' between --cookie-jar and -e
-    # Subshell var is unset and a sentinel printed on success.
-    assert "unset _p" in cmd
+    # Pipeline must feed BOTH the password and a `y` for the EXA-30016 cert
+    # trust prompt that exacli surfaces on first-time cell connections.
+    assert "'%s\\ny\\n'" in cmd
+    # ExaCLI stderr is captured into a shell var (no /dev/null) so a
+    # rejection surfaces the actual EXA-#### diagnostic, never the password.
+    assert "_err=$(" in cmd
+    assert "EXACLI_OUT_START" in cmd
+    assert "EXACLI_OUT_END" in cmd
+    # Subshell vars are unset and a sentinel printed on success.
+    assert "unset _p _err" in cmd
     assert "COOKIE_REFRESH_OK" in cmd
+
+
+def test_extract_refresh_exacli_error_pulls_block() -> None:
+    from collectors.cell_inventory_collector import extract_refresh_exacli_error
+
+    captured = (
+        "some unrelated stdout\n"
+        "EXACLI_OUT_START\n"
+        "EXA-30016: This connection is not secure.\n"
+        "EXA-30033: User must enter password...\n"
+        "EXACLI_OUT_END\n"
+        "trailer\n"
+    )
+    extracted = extract_refresh_exacli_error(captured)
+    assert "EXA-30016" in extracted
+    assert "EXA-30033" in extracted
+    assert "unrelated" not in extracted
+
+    assert extract_refresh_exacli_error("") == ""
+    assert extract_refresh_exacli_error("no markers here") == ""
 
 
 def test_cookie_probe_command_is_cheap_and_noninteractive() -> None:
@@ -434,6 +462,51 @@ def test_exacli_refresh_is_per_cell_not_per_cluster() -> None:
     assert all(r.collection_status == "success" for r in records)
     # Refresh ran ONLY for the cell that needed it (cell #2 primary IP).
     assert refresh_targets == ["192.168.136.7"]
+
+
+def test_exacli_refresh_surfaces_captured_exacli_error_when_password_rejected() -> None:
+    """When exacli rejects the refresh, the captured EXA-#### output flows
+    into the per-cell diagnostic so operators see exactly why."""
+
+    def runner(cmd: str) -> CommandResult:
+        if "crsctl get cluster name" in cmd:
+            return _result("CRS-6724: Current cluster name is exacs-cl01\n")
+        if "cellip.ora" in cmd:
+            return _result('cell="192.168.136.5;192.168.136.6"\n')
+        if "command -v exacli" in cmd:
+            return _result("/usr/bin/exacli\n")
+        if "COOKIE_REFRESH_OK" in cmd:
+            # Simulate the bash -c -wrapped refresh: exit 82 with the
+            # EXACLI_OUT block from the real exacli reject.
+            return _result(
+                stdout=(
+                    "EXACLI_OUT_START\n"
+                    "EXA-30016: This connection is not secure.\n"
+                    "EXA-30033: User must enter password\n"
+                    "EXACLI_OUT_END\n"
+                ),
+                returncode=82,
+            )
+        if "list cell detail" in cmd:
+            return _result(stderr="No cookies found", returncode=1)
+        return _result("")
+
+    access = CellAccessConfig(
+        enabled=True, method="exacli",
+        cell_ip_file="/etc/oracle/cell/network-config/cellip.ora",
+        cookie_refresh=True, password_command="/bad/script",
+        timeout_seconds=45,
+    )
+    collector = CellInventoryCollector(runner=None)
+    records = collector.collect_cluster(
+        FakeCluster(), FakeHost(), access,
+        grid_home="/u01/app/19/grid", grid_owner="grid", command_runner=runner,
+    )
+    assert records[0].collection_status == "failed"
+    assert records[0].error_category == "EXACLI_AUTH_REQUIRED"
+    # The captured exacli diagnostic now flows into the per-cell error.
+    assert "EXA-30016" in records[0].collection_error
+    assert "EXA-30033" in records[0].collection_error
 
 
 def test_exacli_refresh_surfaces_clear_password_command_failure() -> None:
