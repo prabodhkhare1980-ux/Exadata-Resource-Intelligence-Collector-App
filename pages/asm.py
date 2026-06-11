@@ -1,4 +1,14 @@
-"""ASM Analytics page."""
+"""ASM Analytics page.
+
+ASM ``v$asm_diskgroup`` reports TOTAL_MB / FREE_MB as **raw** capacity
+(sum of all disks, mirror copies included). On HIGH redundancy that's 3x
+inflated relative to what a DBA can actually put in the diskgroup. This
+page shows usable capacity as the primary view (Usable Total / Used /
+Free TB), with the raw figures kept side-by-side for hardware context.
+
+Usable Free comes from ``USABLE_FILE_MB`` (already accounts for both
+mirror factor and rebalance reserve). Usable Total/Used are raw / mirror.
+"""
 
 from __future__ import annotations
 
@@ -21,15 +31,20 @@ from services.normalizers import (
 dash.register_page(__name__, path="/storage/asm", name="ASM Analytics")
 
 
+# Detail-table column layout. Usable columns are the primary capacity view;
+# raw (sum-of-all-disks) columns sit to the right for hardware context.
 DISKGROUP_DETAIL_COLUMNS = [
     {"id": "cluster", "name": "CLUSTER", "type": "text"},
     {"id": "diskgroup_name", "name": "DISKGROUP", "type": "strong"},
-    {"id": "type", "name": "TYPE", "type": "type_badge"},
+    {"id": "type", "name": "REDUNDANCY", "type": "type_badge"},
     {"id": "state", "name": "STATE", "type": "state_badge"},
-    {"id": "used_tb", "name": "USED TB", "type": "number", "decimals": 2},
-    {"id": "free_tb", "name": "FREE TB", "type": "number", "decimals": 2},
-    {"id": "total_tb", "name": "TOTAL TB", "type": "number", "decimals": 2},
+    {"id": "usable_used_tb", "name": "USABLE USED TB", "type": "number", "decimals": 2},
+    {"id": "usable_free_tb", "name": "USABLE FREE TB", "type": "number", "decimals": 2},
+    {"id": "usable_total_tb", "name": "USABLE TOTAL TB", "type": "number", "decimals": 2},
     {"id": "used_pct", "name": "% USED", "type": "progress"},
+    {"id": "used_tb", "name": "RAW USED TB", "type": "number", "decimals": 2},
+    {"id": "free_tb", "name": "RAW FREE TB", "type": "number", "decimals": 2},
+    {"id": "total_tb", "name": "RAW TOTAL TB", "type": "number", "decimals": 2},
     {"id": "timestamp", "name": "TIMESTAMP", "type": "text"},
 ]
 
@@ -58,20 +73,26 @@ def render_asm(filter_state: dict | None):
     detail_df = build_asm_diskgroup_detail(raw)
     detail_df = apply_cluster_filter(detail_df, selected)
 
-    total_tb = pd.to_numeric(df["total_tb"], errors="coerce").sum(skipna=True)
-    free_tb = pd.to_numeric(df["free_tb"], errors="coerce").sum(skipna=True)
-    used_tb = max(total_tb - free_tb, 0)
-    usable_tb = pd.to_numeric(df["usable_tb"], errors="coerce").sum(skipna=True)
+    # Raw totals (sum of all disks across mirror copies).
+    raw_total = pd.to_numeric(df["total_tb"], errors="coerce").sum(skipna=True)
+    raw_free = pd.to_numeric(df["free_tb"], errors="coerce").sum(skipna=True)
+    # Usable: post-redundancy from the detail view, which already mapped
+    # redundancy type -> mirror factor per diskgroup.
+    usable_total = pd.to_numeric(detail_df["usable_total_tb"], errors="coerce").sum(skipna=True)
+    usable_used = pd.to_numeric(detail_df["usable_used_tb"], errors="coerce").sum(skipna=True)
+    usable_free = pd.to_numeric(df["usable_tb"], errors="coerce").sum(skipna=True)
     critical = int((df["warning_level"].map(normalize_severity) == "CRITICAL").sum())
     warning = int((df["warning_level"].map(normalize_severity) == "WARNING").sum())
 
     cards = kpi_row(
         [
             kpi_card("Diskgroups", len(df), "INFO"),
-            kpi_card("Total (TB)", f"{total_tb:,.2f}", "INFO"),
-            kpi_card("Used (TB)", f"{used_tb:,.2f}", "INFO"),
-            kpi_card("Free (TB)", f"{free_tb:,.2f}", "INFO"),
-            kpi_card("Usable (TB)", f"{usable_tb:,.2f}", "INFO"),
+            kpi_card("Usable Total (TB)", f"{usable_total:,.2f}", "INFO"),
+            kpi_card("Usable Used (TB)", f"{usable_used:,.2f}", "INFO"),
+            kpi_card("Usable Free (TB)", f"{usable_free:,.2f}", "INFO"),
+            kpi_card("Raw Total (TB)", f"{raw_total:,.2f}", "INFO",
+                     hint="sum of all disks, mirror copies included"),
+            kpi_card("Raw Free (TB)", f"{raw_free:,.2f}", "INFO"),
             kpi_card("Critical diskgroups", critical, "CRITICAL" if critical else "OK"),
             kpi_card("Warning diskgroups", warning, "WARNING" if warning else "OK"),
         ]
@@ -85,6 +106,11 @@ def render_asm(filter_state: dict | None):
             DISKGROUP_DETAIL_COLUMNS,
             empty_message="No ASM diskgroup rows to display.",
             download_stem="asm_diskgroups",
+        ),
+        subtitle=(
+            "Usable Free comes from ASM USABLE_FILE_MB (accounts for mirror "
+            "factor + rebalance reserve). Usable Total/Used are derived as "
+            "Raw / mirror_factor (HIGH=3, NORMAL=2, EXTERNAL=1, FLEX/EXTEND=2)."
         ),
     )
 
@@ -100,14 +126,14 @@ def render_asm(filter_state: dict | None):
             )
         ),
     )
-    top_tb = section_panel(
-        "Top diskgroups by used TB",
+    top_usable_used = section_panel(
+        "Top diskgroups by usable used TB",
         dcc.Graph(
             figure=horizontal_top_bar(
-                chart_df.assign(used_tb_val=chart_df["total_tb"] - chart_df["free_tb"]),
-                "used_tb_val",
+                chart_df,
+                "usable_used_tb",
                 "diskgroup_label",
-                "Top diskgroups by used TB",
+                "Top diskgroups by usable used TB",
             )
         ),
     )
@@ -123,7 +149,7 @@ def render_asm(filter_state: dict | None):
         [
             cards,
             diskgroups_panel,
-            html.Div([top_pct, top_tb], className="panel-grid"),
+            html.Div([top_pct, top_usable_used], className="panel-grid"),
             risk_panel,
         ]
     )

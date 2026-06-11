@@ -61,16 +61,16 @@ def test_normalize_asm_fills_used_pct_when_missing() -> None:
         ]
     )
     df = normalize_asm(raw)
-    assert list(df.columns) == [
-        "cluster",
-        "host",
-        "diskgroup_name",
-        "total_tb",
-        "free_tb",
-        "usable_tb",
-        "used_pct",
-        "warning_level",
-    ]
+    # Schema gained usable_* columns (redundancy-aware capacity) and the
+    # `type` column needed to compute them; assert presence rather than
+    # exact ordering so future schema additions are not breaking changes.
+    expected_columns = {
+        "cluster", "host", "diskgroup_name", "type",
+        "total_tb", "free_tb", "usable_tb",
+        "usable_total_tb", "usable_used_tb",
+        "used_pct", "warning_level",
+    }
+    assert expected_columns.issubset(set(df.columns))
     assert df["warning_level"].iloc[0] == "WARNING"
     assert df["used_pct"].iloc[0] == 80.0
 
