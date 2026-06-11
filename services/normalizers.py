@@ -76,12 +76,19 @@ def normalize_asm(df: pd.DataFrame) -> pd.DataFrame:
         "cluster",
         "host",
         "diskgroup_name",
+        "type",
         "total_tb",
         "free_tb",
         "usable_tb",
+        "usable_total_tb",
+        "usable_used_tb",
         "used_pct",
         "warning_level",
     ]
+    if df is None or df.empty:
+        # Early exit avoids running arithmetic / .clip / .map on an empty
+        # object-dtype frame -- pandas < 3.0 raises TypeError on those.
+        return pd.DataFrame(columns=columns)
     table = ensure_columns(df, columns)[columns].copy()
     for column in ["total_tb", "free_tb", "usable_tb", "used_pct"]:
         table[column] = pd.to_numeric(table[column], errors="coerce")
@@ -92,8 +99,47 @@ def normalize_asm(df: pd.DataFrame) -> pd.DataFrame:
             (table["total_tb"] - table["free_tb"]) / table["total_tb"] * 100
         ).where(table["total_tb"] > 0)
         table.loc[needs_pct, "used_pct"] = derived[needs_pct].round(2)
+    # Usable totals derived from redundancy type. usable_tb (= USABLE_FILE_MB
+    # converted to TB) is what ASM reports as usable free, and already
+    # accounts for both the mirror factor AND the rebalance reserve --
+    # leave it as is. usable_total/usable_used are simple raw / mirror.
+    mirror = table["type"].map(_asm_mirror_factor)
+    table["usable_total_tb"] = (table["total_tb"] / mirror).round(2)
+    raw_used = (table["total_tb"] - table["free_tb"]).clip(lower=0)
+    table["usable_used_tb"] = (raw_used / mirror).round(2)
     table["warning_level"] = table["warning_level"].map(normalize_severity)
     return table
+
+
+# ---------------------------------------------------------------------------
+# ASM redundancy -> mirror factor
+# ---------------------------------------------------------------------------
+
+# Maps the ASM diskgroup redundancy type to the mirror factor used when
+# converting raw (sum-of-all-disks) figures to usable (after mirroring)
+# figures. FLEX (Exadata default since 19c) and EXTEND (X8M+) actually
+# choose redundancy PER FILE; the most common default is 2 (NORMAL-like).
+# Unknown types stay at 1 so we never silently inflate "free" space.
+_ASM_MIRROR_FACTOR = {
+    "HIGH": 3,
+    "NORMAL": 2,
+    "EXTERNAL": 1,
+    "EXT": 1,
+    "FLEX": 2,
+    "EXTEND": 2,
+    "EXTENDED": 2,
+}
+
+
+def _asm_mirror_factor(value: Any) -> float:
+    """Return the mirror factor for a redundancy ``type`` value (float so
+    ``raw / factor`` always returns float, even when the value is missing
+    or unknown -- in which case factor 1 leaves the raw number untouched).
+    """
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return 1.0
+    return float(_ASM_MIRROR_FACTOR.get(str(value).strip().upper(), 1))
 
 
 def _meminfo_mem_total_gb(value: Any) -> float | None:
@@ -328,25 +374,34 @@ def build_hugepages_node_detail(
 def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
     """Build the ASM diskgroups detail table matching the dashboard layout.
 
-    Columns: cluster, diskgroup_name, type, state, used_tb, free_tb,
-    total_tb, used_pct, timestamp.
+    Returns one row per diskgroup with both **usable** (post-redundancy)
+    and **raw** (sum-of-all-disks) capacity columns -- a 519 TB raw HIGH
+    diskgroup only has ~173 TB of usable space, and DBAs need to see both
+    views for planning.
+
+    Columns: cluster, diskgroup_name, type, state, usable_used_tb,
+    usable_free_tb, usable_total_tb, used_pct, used_tb (raw),
+    free_tb (raw), total_tb (raw), timestamp, warning_level.
     """
 
+    detail_columns = [
+        "cluster",
+        "diskgroup_name",
+        "type",
+        "state",
+        "usable_used_tb",
+        "usable_free_tb",
+        "usable_total_tb",
+        "used_pct",
+        "used_tb",
+        "free_tb",
+        "total_tb",
+        "mirror_factor",
+        "timestamp",
+        "warning_level",
+    ]
     if asm_raw is None or asm_raw.empty:
-        return pd.DataFrame(
-            columns=[
-                "cluster",
-                "diskgroup_name",
-                "type",
-                "state",
-                "used_tb",
-                "free_tb",
-                "total_tb",
-                "used_pct",
-                "timestamp",
-                "warning_level",
-            ]
-        )
+        return pd.DataFrame(columns=detail_columns)
     table = ensure_columns(
         asm_raw,
         [
@@ -356,6 +411,7 @@ def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
             "state",
             "total_tb",
             "free_tb",
+            "usable_tb",
             "used_pct",
             "record_type",
             "collected_at",
@@ -373,9 +429,18 @@ def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
         & (table["diskgroup_name"].astype(str).str.strip() != "")
     ]
 
-    for column in ["total_tb", "free_tb", "used_pct"]:
+    for column in ["total_tb", "free_tb", "usable_tb", "used_pct"]:
         table[column] = pd.to_numeric(table[column], errors="coerce")
     table["used_tb"] = (table["total_tb"] - table["free_tb"]).clip(lower=0).round(2)
+
+    # Usable views from redundancy type. usable_tb (from USABLE_FILE_MB)
+    # already accounts for both mirror AND rebalance reserve -- that's our
+    # usable_free. usable_total is raw_total / mirror; usable_used is
+    # raw_used / mirror.
+    table["mirror_factor"] = table["type"].map(_asm_mirror_factor)
+    table["usable_total_tb"] = (table["total_tb"] / table["mirror_factor"]).round(2)
+    table["usable_used_tb"] = (table["used_tb"] / table["mirror_factor"]).round(2)
+    table["usable_free_tb"] = table["usable_tb"].round(2)
 
     needs_pct = table["used_pct"].isna() & table["total_tb"].notna() & table["free_tb"].notna()
     if needs_pct.any():
@@ -387,20 +452,7 @@ def build_asm_diskgroup_detail(asm_raw: pd.DataFrame) -> pd.DataFrame:
     table["timestamp"] = table["collected_at"]
     table["warning_level"] = table["warning_level"].map(normalize_severity)
 
-    return table[
-        [
-            "cluster",
-            "diskgroup_name",
-            "type",
-            "state",
-            "used_tb",
-            "free_tb",
-            "total_tb",
-            "used_pct",
-            "timestamp",
-            "warning_level",
-        ]
-    ].reset_index(drop=True)
+    return table[detail_columns].reset_index(drop=True)
 
 
 def normalize_hugepages(df: pd.DataFrame) -> pd.DataFrame:
@@ -503,13 +555,52 @@ def normalize_hugepages(df: pd.DataFrame) -> pd.DataFrame:
     return table[canonical_columns]
 
 
+_FS_SIZE_UNITS_GB = {
+    "K": 1.0 / (1024 * 1024),
+    "M": 1.0 / 1024,
+    "G": 1.0,
+    "T": 1024.0,
+    "P": 1024.0 * 1024,
+}
+
+
+def parse_df_size_gb(value: Any) -> float | None:
+    """Parse a ``df -h``-style size token (``98G`` / ``1.2T`` / ``500M``) to GB.
+
+    Returns None for empty / unparseable values so the caller can skip
+    aggregation cleanly. Bare numerics are treated as GB (already the
+    convention used by ``df --block-size=1G``).
+    """
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip().rstrip("B").strip()
+    if not text or text in ("-", "—"):
+        return None
+    import re as _re
+    match = _re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*([KMGTP])?$", text, _re.IGNORECASE)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "G").upper()
+    return round(number * _FS_SIZE_UNITS_GB.get(unit, 1.0), 3)
+
+
 def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
-    """Build a normalized filesystem table from OS inventory output."""
+    """Build a normalized filesystem table from OS inventory output.
+
+    Output columns: cluster, host, filesystem, type, mount, size_gb,
+    used_gb, available_gb, used_pct, warning_level, severity_rank.
+    Numeric *_gb columns come from parsing the ``df -h`` text tokens.
+    """
 
     rows: list[dict[str, Any]] = []
     if df.empty:
         return pd.DataFrame(
-            columns=["cluster", "host", "filesystem", "mount", "used_pct", "warning_level"]
+            columns=[
+                "cluster", "host", "filesystem", "type", "mount",
+                "size_gb", "used_gb", "available_gb", "used_pct", "warning_level",
+            ]
         )
     for _, record in df.iterrows():
         filesystems = record.get("filesystems")
@@ -530,27 +621,38 @@ def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
     table = pd.DataFrame(rows)
     if table.empty:
         return pd.DataFrame(
-            columns=["cluster", "host", "filesystem", "mount", "used_pct", "warning_level"]
+            columns=[
+                "cluster", "host", "filesystem", "type", "mount",
+                "size_gb", "used_gb", "available_gb", "used_pct", "warning_level",
+            ]
         )
     table = ensure_columns(
         table,
         [
-            "cluster",
-            "host",
-            "filesystem",
-            "mount",
-            "mounted_on",
-            "use_pct",
-            "used_pct",
+            "cluster", "host", "filesystem", "type",
+            "mount", "mounted_on",
+            "size", "used", "available",
+            "use_pct", "used_pct", "use_percent",
             "warning_level",
         ],
     )
-    if table["used_pct"].isna().all() and not table["use_pct"].isna().all():
-        table["used_pct"] = table["use_pct"]
+    # used_pct: prefer it, fall back to use_pct, then use_percent.
+    pct_source = table["used_pct"]
+    if pct_source.isna().all() and not table["use_pct"].isna().all():
+        pct_source = table["use_pct"]
+    if pct_source.isna().all() and not table["use_percent"].isna().all():
+        pct_source = table["use_percent"]
     table["used_pct"] = pd.to_numeric(
-        table["used_pct"].astype(str).str.rstrip("%"), errors="coerce"
+        pct_source.astype(str).str.rstrip("%"), errors="coerce"
     )
     table["mount"] = table["mount"].fillna(table["mounted_on"])
+
+    # Parse df -h sizes (98G / 1.2T / etc.) into numeric GB so we can
+    # aggregate, rank, and compute totals.
+    table["size_gb"] = table["size"].map(parse_df_size_gb)
+    table["used_gb"] = table["used"].map(parse_df_size_gb)
+    table["available_gb"] = table["available"].map(parse_df_size_gb)
+
     if table["warning_level"].isna().all():
         table["warning_level"] = table["used_pct"].map(severity_from_pct)
     else:
@@ -559,6 +661,50 @@ def explode_filesystems(df: pd.DataFrame) -> pd.DataFrame:
     return table.sort_values(
         ["severity_rank", "used_pct"], ascending=[True, False], na_position="last"
     )
+
+
+def build_filesystem_host_rollup(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-host filesystem rollup: count, total GB, used GB, max % used."""
+
+    columns = [
+        "cluster", "host", "filesystems",
+        "size_gb", "used_gb", "available_gb",
+        "avg_used_pct", "max_used_pct",
+        "critical_count", "warning_count",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    rows: list[dict[str, Any]] = []
+    for (cluster, host), group in df.groupby(
+        [df["cluster"].fillna(""), df["host"].fillna("")], dropna=False
+    ):
+        levels = group["warning_level"].map(normalize_severity)
+        rows.append({
+            "cluster": cluster,
+            "host": host,
+            "filesystems": int(len(group)),
+            "size_gb": round(
+                float(pd.to_numeric(group["size_gb"], errors="coerce").sum(skipna=True)), 2
+            ),
+            "used_gb": round(
+                float(pd.to_numeric(group["used_gb"], errors="coerce").sum(skipna=True)), 2
+            ),
+            "available_gb": round(
+                float(pd.to_numeric(group["available_gb"], errors="coerce").sum(skipna=True)), 2
+            ),
+            "avg_used_pct": round(
+                float(pd.to_numeric(group["used_pct"], errors="coerce").mean(skipna=True)), 1
+            ) if group["used_pct"].notna().any() else 0.0,
+            "max_used_pct": round(
+                float(pd.to_numeric(group["used_pct"], errors="coerce").max(skipna=True)), 1
+            ) if group["used_pct"].notna().any() else 0.0,
+            "critical_count": int((levels == "CRITICAL").sum()),
+            "warning_count": int((levels == "WARNING").sum()),
+        })
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        ["critical_count", "warning_count", "max_used_pct"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
 
 
 def normalize_db_performance(df: pd.DataFrame) -> pd.DataFrame:
